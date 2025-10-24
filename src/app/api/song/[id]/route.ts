@@ -1,9 +1,9 @@
-// app/api/song/[id]/route.ts
+// src/app/api/song/[id]/route.ts
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 import type { NextRequest } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { Buffer } from "node:buffer";
 import { DB_SCHEMA } from "@/lib/dbSchema";
 
@@ -101,6 +101,9 @@ export async function GET(
             return badRequest("id must be a positive integer");
         }
 
+        // 👇 Lazily create the admin client at request time
+        const supabaseAdmin = getSupabaseAdmin();
+
         const { data, error } = await supabaseAdmin
             .schema(DB_SCHEMA)
             .rpc("song_mxl_get", { p_song_id: songId });
@@ -110,10 +113,11 @@ export async function GET(
             return serverError(error.message);
         }
 
-        const row = Array.isArray(data) && data.length > 0 ? data[0] as Row : null;
+        const row = Array.isArray(data) && data.length > 0 ? (data[0] as Row) : null;
         if (!row) {
             return notFound("Song not found");
         }
+
         let ab: ArrayBuffer;
         try {
             ab = normalizeToArrayBuffer(row.song_mxl);
@@ -123,10 +127,10 @@ export async function GET(
         }
 
         if (req.nextUrl.searchParams.get("debug") === "1") {
-            return new Response(
-                JSON.stringify({ ok: true, byteLength: ab.byteLength }),
-                { status: 200, headers: { "Content-Type": "application/json" } }
-            );
+            return new Response(JSON.stringify({ ok: true, byteLength: ab.byteLength }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+            });
         }
 
         return new Response(ab, {

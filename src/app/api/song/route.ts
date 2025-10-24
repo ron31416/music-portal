@@ -4,7 +4,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { SONG_COL } from "@/lib/songCols";
 import { Buffer } from "node:buffer";
 import { DB_SCHEMA } from "@/lib/dbSchema";
@@ -26,8 +26,6 @@ function err(message: string, status = 400, extra?: { message?: string }): NextR
 
 /* =========================
    Validation
-   - We read incoming fields via SONG_COL keys,
-     then validate a canonical object with Zod.
    ========================= */
 
 const CanonicalSaveSchema = z.object({
@@ -35,7 +33,7 @@ const CanonicalSaveSchema = z.object({
     song_title: z.string().trim().min(1, "song_title is required"),
     composer_first_name: z.string().trim().min(1, "composer_first_name is required"),
     composer_last_name: z.string().trim().min(1, "composer_last_name is required"),
-    // Your DB function expects a NUMBER, not a name:
+    // DB expects NUMBER, not name:
     skill_level_number: z.number().int().positive({ message: "skill_level_number must be a positive integer" }),
     file_name: z.string().trim().min(1, "file_name is required"),
     // Base64 of the .mxl zip; required on create, optional on pure metadata update.
@@ -71,7 +69,6 @@ function base64ToByteaHex(b64: string): string {
 
 /* =========================
    POST /api/song  (create/update a song)
-   Uses your RPC: song_upsert(p_*), returns integer song_id
    ========================= */
 
 export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrResponse>> {
@@ -119,6 +116,9 @@ export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrR
             return err("invalid_base64", 400, { message: "mxl_base64 is not valid base64." });
         }
 
+        // 👇 lazily create the admin client inside the handler
+        const supabaseAdmin = getSupabaseAdmin();
+
         // RPC to your actual function + argument names
         const { data, error } = await supabaseAdmin
             .schema(DB_SCHEMA)
@@ -133,13 +133,13 @@ export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrR
             });
 
         if (error) {
-            if (error.code === "23505") {
+            if ((error as { code?: string } | null)?.code === "23505") {
                 return err("conflict", 409, { message: "A song with the same file name or (title, composer, level) already exists." });
             }
-            if (error.code === "P0002") {
+            if ((error as { code?: string } | null)?.code === "P0002") {
                 return err("not_found", 404, { message: "song_id not found for update." });
             }
-            return err(error.message ?? "RPC song_upsert failed", 500);
+            return err((error as { message?: string } | null)?.message ?? "RPC song_upsert failed", 500);
         }
 
         const songId = typeof data === "number" ? data : null;
@@ -152,7 +152,6 @@ export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrR
 
 /* =========================
    DELETE /api/song?id=<song_id>
-   Hard-delete via RPC: song_delete(p_song_id)
    ========================= */
 
 export async function DELETE(req: NextRequest): Promise<NextResponse<OkResponse | ErrResponse>> {
@@ -168,6 +167,9 @@ export async function DELETE(req: NextRequest): Promise<NextResponse<OkResponse 
             return err("invalid_id", 400, { message: "song_id must be a positive integer." });
         }
 
+        // 👇 lazily create the admin client inside the handler
+        const supabaseAdmin = getSupabaseAdmin();
+
         const { data, error } = await supabaseAdmin
             .schema(DB_SCHEMA)
             .rpc("song_delete", {
@@ -176,12 +178,12 @@ export async function DELETE(req: NextRequest): Promise<NextResponse<OkResponse 
 
         if (error) {
             // If you don't have ON DELETE CASCADE on child tables, FK violations may surface as 23503
-            if (error.code === "23503") {
+            if ((error as { code?: string } | null)?.code === "23503") {
                 return err("constraint_violation", 409, {
                     message: "Cannot delete: this song is referenced by other records.",
                 });
             }
-            return err(error.message ?? "RPC song_delete failed", 500);
+            return err((error as { message?: string } | null)?.message ?? "RPC song_delete failed", 500);
         }
 
         const deletedCount = typeof data === "number" ? data : Number(data ?? 0);

@@ -4,7 +4,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { USER_COL } from "@/lib/userCols";
 import { DB_SCHEMA } from "@/lib/dbSchema";
 import { z } from "zod";
@@ -48,6 +48,7 @@ export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrR
         if (!isObjectRecord(raw)) {
             return err("Invalid JSON body", 400);
         }
+
         const candidate: CanonicalSaveInput = {
             user_id: (() => {
                 const v = raw[USER_COL.userId];
@@ -64,13 +65,17 @@ export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrR
             user_last_name: String(raw[USER_COL.userLastName] ?? ""),
             user_role_number: Number(raw[USER_COL.userRoleNumber]),
         };
+
         const parsed = CanonicalSaveSchema.safeParse(candidate);
         if (!parsed.success) {
             const first = parsed.error.issues[0];
             return err(first?.message ?? "Invalid request body", 400);
         }
         const input = parsed.data;
-        // RPC to your actual function + argument names
+
+        // 👇 Lazily initialize Supabase admin here
+        const supabaseAdmin = getSupabaseAdmin();
+
         const { data, error } = await supabaseAdmin
             .schema(DB_SCHEMA)
             .rpc("user_upsert", {
@@ -81,6 +86,7 @@ export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrR
                 p_user_last_name: input.user_last_name,
                 p_user_role_number: input.user_role_number,
             });
+
         if (error) {
             if (error.code === "23505") {
                 return err("conflict", 409, { message: "A user with the same username or email already exists." });
@@ -90,6 +96,7 @@ export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrR
             }
             return err(error.message ?? "RPC user_upsert failed", 500);
         }
+
         const userId = typeof data === "number" ? data : null;
         return ok({ ok: true, user_id: userId }, 200);
     } catch (e) {
@@ -108,15 +115,19 @@ export async function DELETE(req: NextRequest): Promise<NextResponse<OkResponse 
         if (!idRaw) {
             return err("missing_id", 400, { message: "Provide ?id=<user_id> in the query string." });
         }
+
         const idNum = Number(idRaw);
         if (!Number.isInteger(idNum) || idNum <= 0) {
             return err("invalid_id", 400, { message: "user_id must be a positive integer." });
         }
+
+        // 👇 Lazily initialize Supabase admin here
+        const supabaseAdmin = getSupabaseAdmin();
+
         const { data, error } = await supabaseAdmin
             .schema(DB_SCHEMA)
-            .rpc("user_delete", {
-                p_user_id: idNum,
-            });
+            .rpc("user_delete", { p_user_id: idNum });
+
         if (error) {
             if (error.code === "23503") {
                 return err("constraint_violation", 409, {
@@ -125,10 +136,12 @@ export async function DELETE(req: NextRequest): Promise<NextResponse<OkResponse 
             }
             return err(error.message ?? "RPC user_delete failed", 500);
         }
+
         const deletedCount = typeof data === "number" ? data : Number(data ?? 0);
         if (deletedCount < 1) {
             return err("not_found", 404, { message: "user_id not found." });
         }
+
         return ok({ ok: true, user_id: idNum }, 200);
     } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

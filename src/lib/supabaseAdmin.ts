@@ -1,16 +1,27 @@
 // src/lib/supabaseAdmin.ts
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { envServer } from "./envServer";
 
-// Server-side Supabase client using the service role key.
-// Do NOT import this from client components.
-export const supabaseAdmin: SupabaseClient = createClient(
-  envServer.SUPABASE_URL,
-  envServer.SUPABASE_SERVICE_ROLE_KEY,
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
+let _admin: SupabaseClient | null = null;
+
+/** Lazily create the Supabase admin client only when actually used (not at import time). */
+export function getSupabaseAdmin(): SupabaseClient {
+  if (_admin) {
+    return _admin;
   }
-);
+
+  const url =
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+
+  if (!url || !serviceRoleKey) {
+    // Throw only when a handler actually needs the client at runtime
+    throw new Error(
+      "Supabase admin is not configured (missing SUPABASE_URL/NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)."
+    );
+  }
+
+  _admin = createClient(url, serviceRoleKey, {
+    auth: { persistSession: false },
+  });
+  return _admin;
+}

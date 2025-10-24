@@ -1,0 +1,9 @@
+# *
+User-agent: *
+Disallow: /
+
+# Host
+Host: https://music-viewer-v2.vercel.app
+
+# Sitemaps
+Sitemap: https://music-viewer-v2.vercel.app/sitemap.xml
