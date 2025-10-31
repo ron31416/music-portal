@@ -47,9 +47,9 @@ export default function HomePage(): React.ReactElement {
       showSpinner: boolean = true
     ): Promise<void> => {
       setListError("");
-      if (showSpinner) setListLoading(true);
+      if (showSpinner) { setListLoading(true); }
 
-      if (listAbortRef.current !== null) listAbortRef.current.abort();
+      if (listAbortRef.current !== null) { listAbortRef.current.abort(); }
 
       const controller = new AbortController();
       listAbortRef.current = controller;
@@ -67,7 +67,7 @@ export default function HomePage(): React.ReactElement {
           controller.signal
         );
 
-        if (seq !== listSeqRef.current) return;
+        if (seq !== listSeqRef.current) { return; }
 
         setRows(data);
       } catch (e: unknown) {
@@ -77,7 +77,7 @@ export default function HomePage(): React.ReactElement {
           setRows([]);
         }
       } finally {
-        if (seq === listSeqRef.current) setListLoading(false);
+        if (seq === listSeqRef.current) { setListLoading(false); }
       }
     },
     [sort, sortDir]
@@ -86,7 +86,7 @@ export default function HomePage(): React.ReactElement {
   React.useEffect(() => {
     void refreshSongList();
     return () => {
-      if (listAbortRef.current !== null) listAbortRef.current.abort();
+      if (listAbortRef.current !== null) { listAbortRef.current.abort(); }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

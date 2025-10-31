@@ -62,7 +62,7 @@ function normalizeFieldStyle(
     isDark: boolean,
     T: TokenMap
 ): React.CSSProperties {
-    if (fieldCss && typeof fieldCss === "object") return fieldCss;
+    if (fieldCss && typeof fieldCss === "object") { return fieldCss; }
     return {
         width: "100%",
         padding: "6px 8px",
@@ -93,7 +93,7 @@ const AdminSongEditPanel: React.FC<AdminSongEditPanelProps> = (props) => {
 
     const T = React.useMemo<TokenMap>(() => {
         const fb = makeFallbackTokens(isDark);
-        if (!maybeTokens) return fb;
+        if (!maybeTokens) { return fb; }
         return {
             border: (maybeTokens.border ?? fb.border) as string | number,
             bgCard: (maybeTokens.bgCard ?? fb.bgCard) as string | number,
@@ -222,7 +222,7 @@ const AdminSongEditPanel: React.FC<AdminSongEditPanelProps> = (props) => {
 
                     <button
                         type="button"
-                        onClick={() => { const el = fileInputRef?.current; if (el) el.click(); }}
+                        onClick={() => { const el = fileInputRef?.current; if (el) { el.click(); } }}
                         style={{
                             padding: "8px 12px",
                             border: `1px solid ${String(T.border)}`,

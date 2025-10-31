@@ -51,14 +51,14 @@ function firstText(doc: Document, selector: string): string {
 }
 
 function firstNonEmpty(...vals: (string | undefined)[]): string {
-    for (const v of vals) if (v && v.trim()) return v.trim();
+    for (const v of vals) { if (v && v.trim()) { return v.trim(); } }
     return "";
 }
 
 function stripExt(name: string): string {
     const lower = (name || "").toLowerCase();
-    if (lower.endsWith(".musicxml")) return name.slice(0, -10);
-    if (lower.endsWith(".mxl")) return name.slice(0, -4);
+    if (lower.endsWith(".musicxml")) { return name.slice(0, -10); }
+    if (lower.endsWith(".mxl")) { return name.slice(0, -4); }
     return name;
 }
 
@@ -75,7 +75,7 @@ function collapseWs(s: string): string {
 
 function bytesToBase64(bytes: Uint8Array): string {
     let s = "";
-    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]!);
+    for (let i = 0; i < bytes.length; i++) { s += String.fromCharCode(bytes[i]!); }
     return btoa(s);
 }
 
@@ -87,7 +87,7 @@ function findRootfilePath(containerXml: string): string {
         el?.getAttribute("path") ||
         el?.getAttribute("href") ||
         "";
-    if (!p) throw new Error("MXL: META-INF/container.xml rootfile path missing");
+    if (!p) { throw new Error("MXL: META-INF/container.xml rootfile path missing"); }
     return p;
 }
 
@@ -121,11 +121,11 @@ async function extractMetadataAndXml(
         const { unzip } = await import("unzipit");
         const { entries } = await unzip(await file.arrayBuffer());
         const container = entries["META-INF/container.xml"];
-        if (!container) throw new Error("MXL: META-INF/container.xml missing");
+        if (!container) { throw new Error("MXL: META-INF/container.xml missing"); }
         const containerXml = await container.text();
         const rootPath = findRootfilePath(containerXml);
         const root = entries[rootPath];
-        if (!root) throw new Error(`MXL: rootfile missing in archive: ${rootPath}`);
+        if (!root) { throw new Error(`MXL: rootfile missing in archive: ${rootPath}`); }
         const xmlText = await root.text();
         const meta = extractFromMusicXml(xmlText, file.name);
         return { ...meta, xmlText };
@@ -156,7 +156,7 @@ async function xmlToMxl(xmlText: string, innerNameHint: string): Promise<Uint8Ar
 }
 
 function isLevel(x: unknown): x is Level {
-    if (typeof x !== "object" || x === null) return false;
+    if (typeof x !== "object" || x === null) { return false; }
     const r = x as Record<string, unknown>;
     return typeof r.number === "number" && Number.isFinite(r.number) && typeof r.name === "string";
 }
@@ -222,15 +222,15 @@ export default function AdminSongsPage(): React.ReactElement {
                 setLevelsLoading(true);
                 setLevelsError("");
                 const res = await fetch("/api/skill-level", { cache: "no-store" });
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
                 const json = (await res.json()) as unknown;
                 const payloadLevels =
                     (json && typeof json === "object" && (json as Record<string, unknown>).levels) as unknown;
 
-                if (cancelled) return;
+                if (cancelled) { return; }
                 if (Array.isArray(payloadLevels)) {
                     const normalized: Level[] = [];
-                    for (const item of payloadLevels) if (isLevel(item)) normalized.push(item);
+                    for (const item of payloadLevels) { if (isLevel(item)) { normalized.push(item); } }
                     setLevels(normalized);
                 } else {
                     setLevels([]);
@@ -242,7 +242,7 @@ export default function AdminSongsPage(): React.ReactElement {
                     setLevels([]);
                 }
             } finally {
-                if (!cancelled) setLevelsLoading(false);
+                if (!cancelled) { setLevelsLoading(false); }
             }
         }
         void loadLevels();
@@ -253,8 +253,8 @@ export default function AdminSongsPage(): React.ReactElement {
     React.useEffect(() => {
         void refreshSongList();
         return () => {
-            if (listAbortRef.current) listAbortRef.current.abort();
-            if (mxlAbortRef.current) mxlAbortRef.current.abort();
+            if (listAbortRef.current) { listAbortRef.current.abort(); }
+            if (mxlAbortRef.current) { mxlAbortRef.current.abort(); }
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
@@ -265,9 +265,9 @@ export default function AdminSongsPage(): React.ReactElement {
         showSpinner: boolean = true
     ): Promise<void> {
         setListError("");
-        if (showSpinner) setListLoading(true);
+        if (showSpinner) { setListLoading(true); }
 
-        if (listAbortRef.current) listAbortRef.current.abort();
+        if (listAbortRef.current) { listAbortRef.current.abort(); }
 
         const controller = new AbortController();
         listAbortRef.current = controller;
@@ -279,19 +279,19 @@ export default function AdminSongsPage(): React.ReactElement {
 
             const data = await fetchSongList(SONG_LIST_ENDPOINT, effSort, effDir, controller.signal);
 
-            if (seq !== listSeqRef.current) return;
+            if (seq !== listSeqRef.current) { return; }
 
             setRows(data);
 
             const m = new Map<string, number>();
-            for (const row of data) if (row.file_name) m.set(row.file_name, row.song_id);
+            for (const row of data) { if (row.file_name) { m.set(row.file_name, row.song_id); } }
             fileNameToIdRef.current = m;
         } catch (e: unknown) {
-            if ((e as { name?: string } | null)?.name === "AbortError") return;
+            if ((e as { name?: string } | null)?.name === "AbortError") { return; }
             setListError(e instanceof Error ? e.message : String(e));
             fileNameToIdRef.current = new Map();
         } finally {
-            if (seq === listSeqRef.current) setListLoading(false);
+            if (seq === listSeqRef.current) { setListLoading(false); }
         }
     }
 
@@ -313,7 +313,7 @@ export default function AdminSongsPage(): React.ReactElement {
             setXmlPreview("");
             setXmlLoading(true);
 
-            if (mxlAbortRef.current) mxlAbortRef.current.abort();
+            if (mxlAbortRef.current) { mxlAbortRef.current.abort(); }
 
             const controller = new AbortController();
             mxlAbortRef.current = controller;
@@ -333,19 +333,19 @@ export default function AdminSongsPage(): React.ReactElement {
                     try {
                         const j = await res.json();
                         const msg = (j && typeof j === "object" ? (j as Record<string, unknown>).message : "") as unknown;
-                        if (typeof msg === "string" && msg.trim().length > 0) detail = msg;
+                        if (typeof msg === "string" && msg.trim().length > 0) { detail = msg; }
                     } catch { }
                 } else if (ct.startsWith("text/")) {
                     try {
                         const t = await res.text();
-                        if (t) detail = t.slice(0, 200);
+                        if (t) { detail = t.slice(0, 200); }
                     } catch { }
                 }
                 throw new Error(`Fetch file failed: ${detail}`);
             }
 
             const blob = await res.blob();
-            if (seq !== mxlSeqRef.current) return;
+            if (seq !== mxlSeqRef.current) { return; }
 
             const ct = res.headers.get("content-type") || "";
             const isMxlByCt = ct.includes("musicxml+zip");
@@ -364,15 +364,15 @@ export default function AdminSongsPage(): React.ReactElement {
 
             setFile(f);
             const meta = await extractMetadataAndXml(f, { isMxl, isXml });
-            if (seq !== mxlSeqRef.current) return;
+            if (seq !== mxlSeqRef.current) { return; }
 
             setXmlPreview(meta.xmlText || "");
 
-            if (mxlSeqRef.current === seq) setXmlLoading(false);
+            if (mxlSeqRef.current === seq) { setXmlLoading(false); }
         } catch (e: unknown) {
-            if ((e as { name?: string } | null)?.name === "AbortError") return;
+            if ((e as { name?: string } | null)?.name === "AbortError") { return; }
             setError(e instanceof Error ? e.message : String(e));
-            if (mxlSeqRef.current === seq) setXmlLoading(false);
+            if (mxlSeqRef.current === seq) { setXmlLoading(false); }
         }
     };
 
@@ -402,7 +402,7 @@ export default function AdminSongsPage(): React.ReactElement {
         const existingId = fileNameToIdRef.current.get(f.name);
         if (typeof existingId === "number") {
             window.alert(`This file has already been loaded (song_id=${existingId}).`);
-            if (fileInputRef.current) fileInputRef.current.value = "";
+            if (fileInputRef.current) { fileInputRef.current.value = ""; }
             setFile(null);
             return;
         }
@@ -439,8 +439,8 @@ export default function AdminSongsPage(): React.ReactElement {
     function rtrimSpaces(s: string): string { return s.replace(/[ \t]+$/u, ""); }
     function isInLevels(val: string): boolean {
         const n = Number(val);
-        if (!Number.isFinite(n)) return false;
-        for (const l of levels) if (l.number === n) return true;
+        if (!Number.isFinite(n)) { return false; }
+        for (const l of levels) { if (l.number === n) { return true; } }
         return false;
     }
 
@@ -453,9 +453,9 @@ export default function AdminSongsPage(): React.ReactElement {
         const titleTrimmed = rtrimSpaces(title);
         const firstTrimmed = rtrimSpaces(composerFirst);
         const lastTrimmed = rtrimSpaces(composerLast);
-        if (title !== titleTrimmed) setTitle(titleTrimmed);
-        if (composerFirst !== firstTrimmed) setComposerFirst(firstTrimmed);
-        if (composerLast !== lastTrimmed) setComposerLast(lastTrimmed);
+        if (title !== titleTrimmed) { setTitle(titleTrimmed); }
+        if (composerFirst !== firstTrimmed) { setComposerFirst(firstTrimmed); }
+        if (composerLast !== lastTrimmed) { setComposerLast(lastTrimmed); }
 
         if (titleTrimmed.length === 0) { setError("Title is required."); return; }
         if (level.length === 0) { setError("Skill level is required."); return; }
@@ -486,7 +486,7 @@ export default function AdminSongsPage(): React.ReactElement {
 
             const outFileName = (() => {
                 const name = fileName || file?.name || `${titleTrimmed || "score"}.mxl`;
-                if (name.toLowerCase().endsWith(".mxl")) return name;
+                if (name.toLowerCase().endsWith(".mxl")) { return name; }
                 return `${stripExt(name)}.mxl`;
             })();
 
@@ -526,7 +526,7 @@ export default function AdminSongsPage(): React.ReactElement {
                 setSongId(json.song_id);
             }
 
-            if (fileInputRef.current) fileInputRef.current.value = "";
+            if (fileInputRef.current) { fileInputRef.current.value = ""; }
 
             await refreshSongList(undefined, undefined, false);
 
@@ -548,11 +548,11 @@ export default function AdminSongsPage(): React.ReactElement {
         if (songId === null) { setError("No song selected."); return; }
 
         const confirmed = window.confirm("Delete this song? This cannot be undone.");
-        if (!confirmed) return;
+        if (!confirmed) { return; }
 
         try {
             setDeleting(true);
-            if (mxlAbortRef.current) mxlAbortRef.current.abort();
+            if (mxlAbortRef.current) { mxlAbortRef.current.abort(); }
 
             const res = await fetch(`/api/song?id=${songId}`, { method: "DELETE" });
             if (!res.ok) {
@@ -562,12 +562,12 @@ export default function AdminSongsPage(): React.ReactElement {
                     try {
                         const j = (await res.json()) as unknown;
                         const msg = (j && typeof j === "object" ? (j as Record<string, unknown>).message : "") as unknown;
-                        if (typeof msg === "string" && msg.trim()) detail = msg;
+                        if (typeof msg === "string" && msg.trim()) { detail = msg; }
                     } catch { }
                 } else if (ct.startsWith("text/")) {
                     try {
                         const t = await res.text();
-                        if (t) detail = t.slice(0, 200);
+                        if (t) { detail = t.slice(0, 200); }
                     } catch { }
                 }
                 setError(detail || "Delete failed.");
