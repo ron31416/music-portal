@@ -414,44 +414,6 @@ export default function AdminUsersPage(): React.ReactElement {
                 fieldCss={fieldCss}
                 isDark={isDark}
             />
-
-            {/* Scoped guardrails against stray global CSS (no `any`) */}
-            <style jsx global>{`
-        /* Edit card: win even against global .card {...}!important */
-        #edit-card {
-          background: ${T.bgCard} !important;
-          color: ${T.fgCard} !important;
-          border: 1px solid ${T.border} !important;
-          border-radius: 8px !important;
-          padding: 16px !important;
-        }
-
-        /* Inputs inside the edit card stay readable in dark mode */
-        #edit-card input,
-        #edit-card select,
-        #edit-card textarea {
-          background: ${isDark ? "#121212" : "#ffffff"} !important;
-          color: ${isDark ? "#ffffff" : "#111111"} !important;
-          border: 1px solid ${T.border} !important;
-        }
-
-        /* ---- Users table header (ensure dark bg/fg) ---- */
-        #users-header {
-          background: ${T.headerBg} !important;
-          color: ${T.headerFg} !important;
-        }
-
-        /* Ensure header buttons/text use header fg color */
-        #users-header button,
-        #users-header * {
-          color: ${T.headerFg} !important;
-        }
-
-        /* Fill the empty part of the table body (below the last row) */
-        #users-header + div {
-          background: ${T.rowOdd} !important;
-        }
-      `}</style>
         </main>
     );
 }

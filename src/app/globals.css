@@ -1,23 +1,62 @@
+/* ===========================
+   Global reset & base colors
+   =========================== */
+
 :root {
+  /* Base light colors */
   --background: #ffffff;
   --foreground: #171717;
+
+  /* Derived aliases used by components */
+  --bg: var(--background);
+  --fg: var(--foreground);
+
+  /* Table / panel variables (light) */
+  --border: rgba(0, 0, 0, 0.18);
+  --bg-card: var(--bg);
+  --header-bg: #f7f7f7;
+  --header-fg: var(--fg);
+  --row-fg: var(--fg);
+  --row-even: #ffffff;
+  --row-odd: #f4f4f4;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
+    /* Base dark colors */
     --background: #0a0a0a;
     --foreground: #ededed;
+
+    /* Derived aliases */
+    --bg: var(--background);
+    --fg: var(--foreground);
+
+    /* Table / panel variables (dark) */
+    --border: rgba(255, 255, 255, 0.2);
+    --bg-card: var(--bg);
+    --header-bg: #101113;
+    --header-fg: var(--fg);
+    --row-fg: var(--fg);
+    --row-even: #0e0f10;
+    --row-odd: #0b0c0d;
   }
 }
 
+/* If you also support a manual `.dark` class, keep these aliases */
+.dark {
+  --bg: #0b0b0c;
+  --fg: #e7e7ea;
+}
+
+/* Document base */
 html,
 body {
   margin: 0;
   padding: 0;
   width: 100%;
   min-height: 100%;
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--bg);
+  color: var(--fg);
   font-family: Arial, Helvetica, sans-serif;
 }
 
@@ -31,20 +70,26 @@ a {
 }
 
 /* Reset headings */
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   margin: 0;
   font-weight: inherit;
   font-size: inherit;
 }
 
 /* Reset lists */
-ul, ol {
+ul,
+ol {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-/* Reset buttons and inputs */
+/* Reset buttons/inputs */
 button,
 input,
 select,
@@ -58,13 +103,20 @@ textarea {
   color: inherit;
 }
 
-/* Make buttons behave like plain inline-blocks until styled */
 button {
   cursor: pointer;
 }
 
-/* Accessible focus styling */
+/* Accessible focus */
 :focus-visible {
-  outline: 2px solid #0070f3; /* Example blue, easy to change */
+  outline: 2px solid #0070f3;
   outline-offset: 2px;
+}
+
+/* Guardrails: opt-in header color lock */
+header,
+[data-guardrail="header"],
+.guardrail-header {
+  background-color: var(--bg) !important;
+  color: var(--fg) !important;
 }

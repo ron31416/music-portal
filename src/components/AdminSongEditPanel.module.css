@@ -1,0 +1,234 @@
+/* src/components/AdminSongEditPanel.module.css */
+
+/* Light/dark toggles for the panel root */
+.light {
+    --theme: light;
+}
+
+/* sentinel var; no effect on styles */
+
+/* empty, but present for the TSX */
+.dark {
+    --bg: #0b0b0c;
+    --fg: #e5e7eb;
+    --muted: #9ca3af;
+    --ok: #34d399;
+    --err: #ff6b6b;
+    --ring: #60a5fa;
+    --border: #1f2937;
+    --panel: #0f1115;
+    --btn-fg: #ffffff;
+    --btn: #3b82f6;
+    --btn-hover: #2563eb;
+    --btn-sec-fg: #e5e7eb;
+    --btn-sec: #374151;
+    --btn-sec-hover: #4b5563;
+    --btn-danger: #ef4444;
+    --btn-danger-hover: #dc2626;
+    --field-bg: #111318;
+    --field-fg: #e5e7eb;
+    --field-border: #30363d;
+}
+
+/* Root panel; defines light defaults (SCOPED — no :root) */
+.panel {
+    --bg: #ffffff;
+    --fg: #121212;
+    --muted: #6b7280;
+    --ok: #0a7a26;
+    --err: #b00020;
+    --ring: #3b82f6;
+    --border: #e5e7eb;
+    --panel: #fafafa;
+    --btn-fg: #ffffff;
+    --btn: #2563eb;
+    --btn-hover: #1d4ed8;
+    --btn-sec-fg: #111827;
+    --btn-sec: #e5e7eb;
+    --btn-sec-hover: #d1d5db;
+    --btn-danger: #dc2626;
+    --btn-danger-hover: #b91c1c;
+    --field-bg: #ffffff;
+    --field-fg: #111827;
+    --field-border: #d1d5db;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+    background: var(--panel);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px 16px 12px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+    font-size: 14px;
+    line-height: 1.35;
+}
+
+/* Header */
+.headerRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.statusArea {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    font-size: 13px;
+}
+
+.ok {
+    color: var(--ok);
+}
+
+.error {
+    color: var(--err);
+}
+
+.spin {
+    color: var(--muted);
+}
+
+/* Fields grid */
+.grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 16px;
+    margin-bottom: 14px;
+}
+
+.label>span {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+}
+
+.input,
+.select,
+.textarea,
+.fileInput {
+    width: 100%;
+    background: var(--field-bg);
+    color: var(--field-fg);
+    border: 1px solid var(--field-border);
+    border-radius: 10px;
+    padding: 8px 10px;
+    outline: none;
+    transition: box-shadow .15s ease, border-color .15s ease;
+    font-size: 14px;
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus,
+.fileInput:focus {
+    border-color: var(--ring);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.28);
+}
+
+.xmlBlock {
+    grid-column: 1 / -1;
+}
+
+.textarea {
+    min-height: 140px;
+    font-family: var(--mono);
+    resize: vertical;
+    white-space: pre;
+}
+
+.fileRow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.fileName {
+    font-size: 12px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Actions */
+.actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 6px;
+}
+
+.leftActions,
+.rightActions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.primary,
+.secondary,
+.danger {
+    appearance: none;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    padding: 8px 14px;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+}
+
+.primary {
+    background: var(--btn);
+    color: var(--btn-fg);
+}
+
+.primary:hover {
+    background: var(--btn-hover);
+}
+
+.secondary {
+    background: var(--btn-sec);
+    color: var(--btn-sec-fg);
+}
+
+.secondary:hover {
+    background: var(--btn-sec-hover);
+}
+
+.danger {
+    background: var(--btn-danger);
+    color: var(--btn-fg);
+}
+
+.danger:hover {
+    background: var(--btn-danger-hover);
+}
+
+.primary[disabled],
+.secondary[disabled],
+.danger[disabled] {
+    opacity: .55;
+    cursor: not-allowed;
+}
+
+@media (max-width: 860px) {
+    .grid {
+        grid-template-columns: 1fr;
+    }
+
+    .xmlBlock {
+        grid-column: auto;
+    }
+}

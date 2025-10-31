@@ -4,8 +4,9 @@
 import React from "react";
 
 type Level = { number: number; name: string };
+type TokenMap = Readonly<Record<string, string | number>>;
 
-type Props = {
+export type AdminSongEditPanelProps = {
     // Values (controlled)
     title: string;
     composerFirst: string;
@@ -29,8 +30,7 @@ type Props = {
     canDelete: boolean;
     deleting: boolean;
 
-
-    // Handlers (controlled updates)
+    // Handlers
     onChangeTitle(value: string): void;
     onChangeComposerFirst(value: string): void;
     onChangeComposerLast(value: string): void;
@@ -41,70 +41,85 @@ type Props = {
     onOpenViewer(): void;
     onDelete(): void;
 
-    // Refs
-    fileInputRef: React.RefObject<HTMLInputElement | null>;
+    // Refs (nullable/optional)
+    fileInputRef?: React.RefObject<HTMLInputElement | null> | null;
 
-    // Theming / layout
-    T: Readonly<Record<string, string | number>>;
-    fieldCss: React.CSSProperties;
-    isDark: boolean;
-    xmlPreviewHeight: number;
+    // Theming / layout (optional)
+    T?: TokenMap;
+    fieldCss?: React.CSSProperties | string;
+    isDark?: boolean;
+    xmlPreviewHeight?: number;
 };
 
-export default function AdminSongEditPanel(props: Props): React.ReactElement {
+function makeFallbackTokens(isDark: boolean): TokenMap {
+    return isDark
+        ? { border: "#30363d", bgCard: "#0f1115", fgCard: "#e5e7eb", headerFg: "#9ca3af" }
+        : { border: "#e5e7eb", bgCard: "#fafafa", fgCard: "#111111", headerFg: "#374151" };
+}
+
+function normalizeFieldStyle(
+    fieldCss: React.CSSProperties | string | undefined,
+    isDark: boolean,
+    T: TokenMap
+): React.CSSProperties {
+    if (fieldCss && typeof fieldCss === "object") return fieldCss;
+    return {
+        width: "100%",
+        padding: "6px 8px",
+        border: `1px solid ${String(T.border)}`,
+        borderRadius: 6,
+        background: isDark ? "#1f1f1f" : "#ffffff",
+        color: isDark ? "#ffffff" : "#111111",
+        outline: "none",
+        fontSize: 14,
+        lineHeight: 1.35,
+    };
+}
+
+const AdminSongEditPanel: React.FC<AdminSongEditPanelProps> = (props) => {
     const {
-        title,
-        composerFirst,
-        composerLast,
-        level,
-        levels,
-        levelsLoading,
-        levelsError,
-        fileName,
-        xml,
-        xmlLoading,
-        parsing,
-        errorText,
-        saveOkText,
-        statusTick,
-
-        canSave,
-        saveLabel,
-        canView,
-        canDelete,
-        deleting,
-
-        onChangeTitle,
-        onChangeComposerFirst,
-        onChangeComposerLast,
-        onChangeLevel,
-        onChangeXml,
-        onPick,
-        onSave,
-        onOpenViewer,
-        onDelete,
-
+        title, composerFirst, composerLast, level, levels, levelsLoading, levelsError,
+        fileName, xml, xmlLoading, parsing, errorText, saveOkText, statusTick,
+        canSave, saveLabel, canView, canDelete, deleting,
+        onChangeTitle, onChangeComposerFirst, onChangeComposerLast, onChangeLevel,
+        onChangeXml, onPick, onSave, onOpenViewer, onDelete,
         fileInputRef,
-
-        T,
-        fieldCss,
-        isDark,
-        xmlPreviewHeight,
+        T: maybeTokens, fieldCss, isDark = false, xmlPreviewHeight = 200,
     } = props;
+
+    // Avoid SSR/CSR attr mismatch
+    const [hydrated, setHydrated] = React.useState(false);
+    React.useEffect(() => { setHydrated(true); }, []);
+
+    const T = React.useMemo<TokenMap>(() => {
+        const fb = makeFallbackTokens(isDark);
+        if (!maybeTokens) return fb;
+        return {
+            border: (maybeTokens.border ?? fb.border) as string | number,
+            bgCard: (maybeTokens.bgCard ?? fb.bgCard) as string | number,
+            fgCard: (maybeTokens.fgCard ?? fb.fgCard) as string | number,
+            headerFg: (maybeTokens.headerFg ?? fb.headerFg) as string | number,
+        };
+    }, [maybeTokens, isDark]);
+
+    const fieldCssObj = React.useMemo(
+        () => normalizeFieldStyle(fieldCss, isDark, T),
+        [fieldCss, isDark, T]
+    );
+
+    const themeAttr = hydrated ? (isDark ? "dark" : "light") : undefined;
 
     return (
         <section aria-label="Edit panel" style={{ marginTop: 8, background: "transparent" }}>
             <div
                 id="edit-card"
-                key={isDark ? "dark" : "light"} // force remount when theme flips
-                data-theme={isDark ? "dark" : "light"}
+                data-theme={themeAttr}
                 style={{
                     padding: 16,
-                    border: `1px solid ${T.border}`,
+                    border: `1px solid ${String(T.border)}`,
                     borderRadius: 8,
-                    background: T.bgCard as string,
-                    backgroundColor: T.bgCard as string,
-                    color: T.fgCard as string,
+                    background: String(T.bgCard),
+                    color: String(T.fgCard),
                 }}
             >
                 <div
@@ -122,7 +137,7 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                         type="text"
                         value={title}
                         onChange={(e) => { onChangeTitle(e.target.value); }}
-                        style={fieldCss}
+                        style={fieldCssObj}
                     />
 
                     <label style={{ alignSelf: "center", fontWeight: 600 }}>Composer</label>
@@ -132,14 +147,14 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                             value={composerFirst}
                             onChange={(e) => { onChangeComposerFirst(e.target.value); }}
                             placeholder="First"
-                            style={fieldCss}
+                            style={fieldCssObj}
                         />
                         <input
                             type="text"
                             value={composerLast}
                             onChange={(e) => { onChangeComposerLast(e.target.value); }}
                             placeholder="Last"
-                            style={fieldCss}
+                            style={fieldCssObj}
                         />
                     </div>
 
@@ -148,16 +163,14 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                         value={level}
                         onChange={(e) => { onChangeLevel(e.target.value); }}
                         disabled={levelsLoading || (levelsError.length > 0) || levels.length === 0}
-                        style={{ ...fieldCss, appearance: "auto" as const }}
+                        style={{ ...fieldCssObj, appearance: "auto" as const }}
                     >
                         <option value="" disabled>— Select a level —</option>
-                        {levels.map((lvl) => {
-                            return (
-                                <option key={lvl.number} value={String(lvl.number)}>
-                                    {lvl.name}
-                                </option>
-                            );
-                        })}
+                        {levels.map((lvl) => (
+                            <option key={lvl.number} value={String(lvl.number)}>
+                                {lvl.name}
+                            </option>
+                        ))}
                     </select>
 
                     {levelsError && (
@@ -167,7 +180,7 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                     )}
 
                     <label style={{ alignSelf: "center", fontWeight: 600 }}>File Name</label>
-                    <input type="text" value={fileName} readOnly style={fieldCss} />
+                    <input type="text" value={fileName} readOnly style={fieldCssObj} />
 
                     <label style={{ alignSelf: "start", fontWeight: 600, paddingTop: 6 }}>MusicXML</label>
                     <textarea
@@ -176,7 +189,7 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                         onChange={(e) => { onChangeXml(e.target.value); }}
                         spellCheck={false}
                         style={{
-                            ...fieldCss,
+                            ...fieldCssObj,
                             width: "100%",
                             margin: 0,
                             minHeight: xmlPreviewHeight,
@@ -198,9 +211,8 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                         gap: 12,
                     }}
                 >
-                    {/* Hidden file input lives inside the card */}
                     <input
-                        ref={fileInputRef}
+                        ref={fileInputRef ?? undefined}
                         id="song-file-input"
                         type="file"
                         accept=".mxl,.musicxml,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml,application/zip"
@@ -208,17 +220,12 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                         style={{ display: "none" }}
                     />
 
-                    {/* Left-side button: Load */}
                     <button
                         type="button"
-                        onClick={() => {
-                            if (fileInputRef.current) {
-                                fileInputRef.current.click();
-                            }
-                        }}
+                        onClick={() => { const el = fileInputRef?.current; if (el) el.click(); }}
                         style={{
                             padding: "8px 12px",
-                            border: `1px solid ${T.border}`,
+                            border: `1px solid ${String(T.border)}`,
                             borderRadius: 6,
                             background: isDark ? "#1f1f1f" : "#fafafa",
                             color: isDark ? "#fff" : "#111",
@@ -228,14 +235,13 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                         Load Song
                     </button>
 
-                    {/* Right-side buttons arranged: View (left), then status (center flex), then Save & Delete (right) */}
                     <button
                         type="button"
                         onClick={onOpenViewer}
                         disabled={!canView || xmlLoading}
                         style={{
                             padding: "8px 12px",
-                            border: `1px solid ${T.border}`,
+                            border: `1px solid ${String(T.border)}`,
                             borderRadius: 6,
                             background: isDark ? "#1f1f1f" : "#fafafa",
                             color: isDark ? "#fff" : "#111",
@@ -246,7 +252,6 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                         View Song
                     </button>
 
-                    {/* Middle: status message fills available space */}
                     <span
                         key={`status-${statusTick}`}
                         aria-live="polite"
@@ -259,7 +264,7 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             textAlign: "center",
-                            color: parsing ? (isDark ? "#ccc" : "#555") : (errorText ? "#ff6b6b" : (T.headerFg as string)),
+                            color: parsing ? (isDark ? "#ccc" : "#555") : (errorText ? "#ff6b6b" : String(T.headerFg)),
                             fontWeight: 500,
                             margin: 0,
                             visibility: (parsing || errorText || saveOkText) ? "visible" : "hidden",
@@ -274,7 +279,7 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                         disabled={!canSave}
                         style={{
                             padding: "8px 12px",
-                            border: `1px solid ${T.border}`,
+                            border: `1px solid ${String(T.border)}`,
                             borderRadius: 6,
                             background: isDark ? "#1f1f1f" : "#fafafa",
                             color: isDark ? "#fff" : "#111",
@@ -289,16 +294,16 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
                         type="button"
                         onClick={onDelete}
                         disabled={!canDelete}
+                        title={canDelete ? "Delete this song permanently" : "Delete unavailable"}
                         style={{
                             padding: "8px 12px",
-                            border: `1px solid ${T.border}`,
+                            border: `1px solid ${String(T.border)}`,
                             borderRadius: 6,
                             background: isDark ? "#1f1f1f" : "#fafafa",
                             color: isDark ? "#fff" : "#111",
                             cursor: canDelete ? "pointer" : "not-allowed",
                             opacity: canDelete ? 1 : 0.5,
                         }}
-                        title={canDelete ? "Delete this song permanently" : "Delete unavailable"}
                     >
                         {deleting ? "Deleting…" : "Delete Song"}
                     </button>
@@ -306,4 +311,6 @@ export default function AdminSongEditPanel(props: Props): React.ReactElement {
             </div>
         </section>
     );
-}
+};
+
+export default AdminSongEditPanel;

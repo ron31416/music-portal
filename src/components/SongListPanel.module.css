@@ -1,0 +1,48 @@
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.header {
+    display: grid;
+    /* gridTemplateColumns stays inline in TS */
+    padding: 8px 10px;
+    background: var(--header-bg);
+    color: var(--header-fg);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 13px;
+    transition: opacity 120ms linear;
+}
+
+.row {
+    display: grid;
+    /* gridTemplateColumns stays inline in TS */
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    align-items: center;
+    color: var(--row-fg);
+    cursor: pointer;
+}
+
+.rowEven {
+    background: var(--row-even);
+}
+
+.rowOdd {
+    background: var(--row-odd);
+}
+
+.cellEllipsis {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.loadingText {
+    color: var(--header-fg);
+    opacity: 0.85;
+}

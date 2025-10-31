@@ -5,7 +5,7 @@ import React from "react";
 import { SONG_COL, type SongColToken } from "@/lib/songCols";
 import type { SongListItem } from "@/lib/types";
 import SortHeaderButton from "@/components/common/SortHeaderButton";
-import type { ThemeTokens } from "@/lib/theme";
+import panelCss from "./SongListPanel.module.css";
 
 type SortDir = "asc" | "desc";
 
@@ -23,12 +23,11 @@ type Props = {
     // Row interaction
     onRowClick(row: SongListItem): void;
 
-    // Layout / theming
-    gridCols: React.CSSProperties["gridTemplateColumns"]; // e.g., "170px 170px 380px 90px"
-    tableMinPx: number;                                    // sum of column widths
-    rowPx: number;                                         // e.g., 28
-    visibleRowCount: number;                               // e.g., 25
-    T: ThemeTokens;
+    // Layout
+    gridCols: React.CSSProperties["gridTemplateColumns"]; // "170px 170px 380px 90px"
+    tableMinPx: number;                                   // sum of column widths
+    rowPx: number;                                        // e.g., 40
+    visibleRowCount: number;                              // e.g., 12
 };
 
 export default function SongListPanel(props: Props): React.ReactElement {
@@ -44,13 +43,17 @@ export default function SongListPanel(props: Props): React.ReactElement {
         tableMinPx,
         rowPx,
         visibleRowCount,
-        T,
     } = props;
 
     const bodyPx = rowPx * visibleRowCount;
 
+    // Normalize numeric sizes to px strings so SSR/CSR match exactly
+    const tableMinCss = `${tableMinPx}px`;
+    const bodyCss = `${bodyPx}px`;
+    const rowHeightCss = `${rowPx}px`;
+
     return (
-        <section aria-label="Songs" style={{ marginTop: 0 }}>
+        <section aria-label="Songs">
             {/* Inline status line, but keep the table mounted */}
             {listError && (
                 <p style={{ color: "#ff6b6b", margin: "4px 0 8px" }}>
@@ -59,18 +62,24 @@ export default function SongListPanel(props: Props): React.ReactElement {
             )}
 
             {/* Outer safety wrapper: keeps layout tidy on narrow screens */}
-            <div style={{ width: "100%", overflowX: "auto" }}>
+            <div
+                style={{
+                    width: "100%",
+                    maxWidth: "960px",    // cap the card area
+                    margin: "0 auto",     // center within page
+                    overflowX: "auto",    // allow horizontal scroll if needed
+                    WebkitOverflowScrolling: "touch",
+                }}
+            >
                 <div
+                    className={panelCss.card}
                     style={{
                         position: "relative",
-                        width: tableMinPx,            // match the grid width
-                        maxWidth: "100%",             // don’t exceed viewport
-                        margin: "0 auto",             // center the card
-                        border: `1px solid ${T.border}`,
-                        borderRadius: 6,
+                        minWidth: tableMinCss,
+                        width: tableMinCss,
+                        margin: "0 auto",
                         overflowX: "hidden",
                         overflowY: "hidden",
-                        background: T.bgCard,
                     }}
                 >
                     {/* Loader overlay that does not collapse layout */}
@@ -87,25 +96,19 @@ export default function SongListPanel(props: Props): React.ReactElement {
                                 pointerEvents: "none",
                             }}
                         >
-                            <p style={{ color: T.headerFg, opacity: 0.85 }}>Loading…</p>
+                            <p className={panelCss.loadingText}>Loading…</p>
                         </div>
                     )}
 
                     {/* Header */}
                     <div
                         id="songs-header"
+                        className={panelCss.header}
                         style={{
-                            display: "grid",
                             gridTemplateColumns: gridCols,
-                            width: tableMinPx,
-                            padding: "8px 10px",
-                            background: T.headerBg,
-                            color: T.headerFg,
-                            borderBottom: `1px solid ${T.border}`,
-                            fontWeight: 600,
-                            fontSize: 13,
+                            minWidth: tableMinCss,
+                            width: "100%",
                             opacity: listLoading ? 0.7 : 1,
-                            transition: "opacity 120ms linear",
                         }}
                     >
                         <SortHeaderButton<SongColToken>
@@ -141,10 +144,10 @@ export default function SongListPanel(props: Props): React.ReactElement {
                     {/* Body: fixed height, scrollbar only when needed */}
                     <div
                         style={{
-                            height: bodyPx,
+                            height: bodyCss, // "Npx"
                             overflowY: rows.length > visibleRowCount ? "auto" : "hidden",
                             overflowX: "hidden",
-                            borderTop: `1px solid ${T.border}`,
+                            borderTop: "1px solid var(--border)",
                             opacity: listLoading ? 0.7 : 1,
                             transition: "opacity 120ms linear",
                         }}
@@ -152,7 +155,7 @@ export default function SongListPanel(props: Props): React.ReactElement {
                     >
                         {/* Data rows */}
                         {rows.map((r, idx) => {
-                            const bg = idx % 2 === 0 ? (T.rowEven) : (T.rowOdd);
+                            const rowClass = idx % 2 === 0 ? panelCss.rowEven : panelCss.rowOdd;
                             return (
                                 <div
                                     key={r.song_id}
@@ -165,29 +168,23 @@ export default function SongListPanel(props: Props): React.ReactElement {
                                     }}
                                     role="button"
                                     tabIndex={0}
+                                    className={`${panelCss.row} ${rowClass}`}
                                     style={{
-                                        display: "grid",
                                         gridTemplateColumns: gridCols,
-                                        width: tableMinPx,
-                                        padding: "8px 10px",
-                                        borderBottom: `1px solid ${T.border}`,
-                                        fontSize: 13,
-                                        alignItems: "center",
-                                        cursor: "pointer",
-                                        background: bg,
-                                        color: T.rowFg,
-                                        height: rowPx,
+                                        minWidth: tableMinCss, // lock min size
+                                        width: "100%",        // fill available width
+                                        height: rowHeightCss,
                                         lineHeight: `${rowPx - 10}px`,
                                     }}
                                     title="Open in a new tab"
                                 >
-                                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    <div className={panelCss.cellEllipsis}>
                                         {r.composer_first_name || "\u2014"}
                                     </div>
-                                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    <div className={panelCss.cellEllipsis}>
                                         {r.composer_last_name || "\u2014"}
                                     </div>
-                                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    <div className={panelCss.cellEllipsis}>
                                         {r.song_title}
                                     </div>
                                     <div>{r.skill_level_name}</div>

@@ -4,37 +4,29 @@
 import React from "react";
 import Link from "next/link";
 
-import { usePrefersDark, themeTokens } from "@/lib/theme";
 import SongListPanel from "@/components/SongListPanel";
 import type { SongListItem } from "@/lib/types";
 import { type SongColToken, DEFAULT_SORT, DEFAULT_DIR } from "@/lib/songCols";
 import { fetchSongList } from "@/lib/songListFetch";
 
+import styles from "./page.module.css";
 
 // --- Config ---
-
-//                  First Last Title Level
+//                 First Last Title Level
 const GRID_COLS_PX = [140, 140, 260, 120] as const;
-const GRID_COLS: React.CSSProperties["gridTemplateColumns"] = GRID_COLS_PX.map((n) => `${n}px`).join(" ");
+const GRID_COLS: React.CSSProperties["gridTemplateColumns"] =
+  GRID_COLS_PX.map((n) => `${n}px`).join(" ");
 const TABLE_MIN_PX = GRID_COLS_PX.reduce((a, b) => a + b, 0);
 const TABLE_ROW_PX = 40;
 const TABLE_ROW_COUNT = 12;
 
 const SONG_LIST_ENDPOINT = "/api/songlist";
 
-
 // --- Types ---
-
 type SortDir = "asc" | "desc";
 
-
 // --- Component ---
-
 export default function HomePage(): React.ReactElement {
-  // Theme
-  const isDark = usePrefersDark();
-  const T = React.useMemo(() => themeTokens(isDark), [isDark]);
-
   // Data/state
   const [rows, setRows] = React.useState<SongListItem[]>([]);
   const [listLoading, setListLoading] = React.useState(false);
@@ -54,18 +46,11 @@ export default function HomePage(): React.ReactElement {
       overrideDir?: SortDir,
       showSpinner: boolean = true
     ): Promise<void> => {
-      // reset error + optionally show spinner
       setListError("");
-      if (showSpinner) {
-        setListLoading(true);
-      }
+      if (showSpinner) setListLoading(true);
 
-      // cancel any in-flight request
-      if (listAbortRef.current !== null) {
-        listAbortRef.current.abort();
-      }
+      if (listAbortRef.current !== null) listAbortRef.current.abort();
 
-      // set up new request + sequence
       const controller = new AbortController();
       listAbortRef.current = controller;
       const seq = listSeqRef.current + 1;
@@ -75,33 +60,24 @@ export default function HomePage(): React.ReactElement {
         const effSort = overrideSort ?? sort;
         const effDir: SortDir = overrideDir ?? sortDir;
 
-        // shared fetch + normalize
         const data = await fetchSongList(
           SONG_LIST_ENDPOINT,
-          effSort,            // SongColToken | null is compatible with string | null
-          effDir,             // "asc" | "desc"
+          effSort,
+          effDir,
           controller.signal
         );
 
-        // ignore stale responses
-        if (seq !== listSeqRef.current) {
-          return;
-        }
+        if (seq !== listSeqRef.current) return;
 
         setRows(data);
       } catch (e: unknown) {
-        // swallow aborts; surface other errors
         const name = (e as { name?: string } | null)?.name ?? "";
-        if (name === "AbortError") {
-          return;
+        if (name !== "AbortError") {
+          setListError(e instanceof Error ? e.message : String(e));
+          setRows([]);
         }
-        setListError(e instanceof Error ? e.message : String(e));
-        setRows([]);
       } finally {
-        // only clear spinner if this is the latest request
-        if (seq === listSeqRef.current) {
-          setListLoading(false);
-        }
+        if (seq === listSeqRef.current) setListLoading(false);
       }
     },
     [sort, sortDir]
@@ -110,9 +86,7 @@ export default function HomePage(): React.ReactElement {
   React.useEffect(() => {
     void refreshSongList();
     return () => {
-      if (listAbortRef.current !== null) {
-        listAbortRef.current.abort();
-      }
+      if (listAbortRef.current !== null) listAbortRef.current.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -127,12 +101,14 @@ export default function HomePage(): React.ReactElement {
 
   const openInNewTab = (id: number): void => {
     const tabId = Date.now().toString(36);
-    const url = `/viewer?tab=${tabId}&id=${id}`;
-    window.open(url, "_blank", "noopener,noreferrer");
+    window.open(`/viewer?tab=${tabId}&id=${id}`, "_blank", "noopener,noreferrer");
   };
 
   return (
-    <main className="mx-auto max-w-2xl p-6 space-y-6">
+    <main
+      className="mx-auto max-w-2xl p-6 space-y-6"
+      style={{ paddingTop: 56 }} // headroom for fixed Admin pill
+    >
       {/* Top-right Admin button */}
       <Link
         href="/admin"
@@ -140,31 +116,12 @@ export default function HomePage(): React.ReactElement {
         prefetch={false}
         target="_blank"
         rel="noopener noreferrer"
-        style={{
-          position: "fixed",
-          top: 12,
-          right: 12,
-          zIndex: 1000,
-          padding: "8px 12px",
-          border: `1px solid ${T.border}`,
-          borderRadius: 6,
-          background: T.bgCard,
-          color: T.fgCard,
-          textDecoration: "none",
-          fontSize: 13,
-          fontWeight: 600,
-          boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
-          cursor: "pointer",
-        }}
+        className={styles.adminLink}
       >
         Admin
       </Link>
 
-      <h1 className="text-3xl font-semibold" style={{ color: T.fgCard }}>
-        Music Portal
-      </h1>
-
-      <section style={{ marginTop: 24 }}>
+      <section>
         <SongListPanel
           rows={rows}
           listLoading={listLoading}
@@ -172,26 +129,15 @@ export default function HomePage(): React.ReactElement {
           sort={sort}
           sortDir={sortDir}
           onToggleSort={toggleSort}
-          onRowClick={(row) => { openInNewTab(row.song_id); }}
+          onRowClick={(row) => {
+            openInNewTab(row.song_id);
+          }}
           gridCols={GRID_COLS}
           tableMinPx={TABLE_MIN_PX}
           rowPx={TABLE_ROW_PX}
           visibleRowCount={TABLE_ROW_COUNT}
-          T={T}
         />
       </section>
-
-      {/* Global guardrails for header colors in case of stray CSS */}
-      <style jsx global>{`
-        #songs-header {
-          background: ${T.headerBg} !important;
-          color: ${T.headerFg} !important;
-        }
-        #songs-header button,
-        #songs-header * {
-          color: ${T.headerFg} !important;
-        }
-      `}</style>
     </main>
   );
 }

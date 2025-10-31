@@ -1,0 +1,32 @@
+.hub {
+    min-height: 100vh;
+    /* use svh if you prefer mobile dynamic bars */
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    background: var(--bg);
+    color: var(--fg);
+}
+
+.hubButton {
+    appearance: none;
+    border-radius: 10px;
+    padding: 10px 16px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--fg);
+    font-size: 16px;
+    line-height: 20px;
+    font-weight: 600;
+    transition: opacity 120ms linear, transform 60ms ease;
+}
+
+.hubButton:hover {
+    opacity: 0.9;
+}
+
+.hubButton:active {
+    transform: translateY(1px);
+}
