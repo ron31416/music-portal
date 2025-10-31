@@ -1,9 +1,9 @@
 {
-  "name": "music-portal-v0",
+  "name": "music-portal",
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=20 <23"
+    "node": ">=20 <25"
   },
   "scripts": {
     "dev": "next dev --turbopack",
