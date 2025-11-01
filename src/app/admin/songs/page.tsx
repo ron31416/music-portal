@@ -12,7 +12,7 @@ import { fetchSongList } from "@/lib/songListFetch";
 
 /* ========================
    Config
-   ========================= */
+   ======================== */
 
 //               First  Last  Title  Level  File
 const GRID_COLS_PX = [140, 140, 260, 100, 440] as const;
