@@ -10,7 +10,7 @@ import type { SongListItem } from "@/lib/types";
 import { SONG_COL, type SongColToken, DEFAULT_SORT, DEFAULT_DIR } from "@/lib/songCols";
 import { fetchSongList } from "@/lib/songListFetch";
 
-/* ========================
+/* =======================
    Config
    ======================== */
 
