@@ -2,7 +2,7 @@
 "use client";
 
 import React from "react";
-import styles from "./AdminHub.module.css";
+import styles from "./page.module.css";
 
 export default function AdminHubPage(): React.ReactElement {
   const goSongs = (): void => {
