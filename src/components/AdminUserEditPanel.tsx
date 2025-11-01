@@ -1,8 +1,9 @@
-
 "use client";
 import React from "react";
+import styles from "./AdminUserEditPanel.module.css";
 
 type Role = { number: number; name: string };
+
 type Props = {
     userName: string;
     userEmail: string;
@@ -27,112 +28,90 @@ type Props = {
     onPick(): void;
     onSave(): void;
     onDelete(): void;
-    T: Readonly<Record<string, string | number>>;
-    fieldCss: React.CSSProperties;
     isDark: boolean;
 };
 
 export default function AdminUserEditPanel(props: Props): React.ReactElement {
     const {
-        userName,
-        userEmail,
-        userFirst,
-        userLast,
-        roleNumber,
-        roles,
-        rolesLoading,
-        rolesError,
-        errorText,
-        saveOkText,
-        statusTick,
-        saveLabel,
-        canDelete,
-        deleting,
-        onChangeUserName,
-        onChangeUserEmail,
-        onChangeUserFirst,
-        onChangeUserLast,
-        onChangeRoleNumber,
-        onPick,
-        onSave,
-        onDelete,
-        T,
-        fieldCss,
-        isDark,
+        userName, userEmail, userFirst, userLast,
+        roleNumber, roles, rolesLoading, rolesError,
+        errorText, saveOkText, statusTick,
+        canSave, saveLabel, canDelete, deleting,
+        onChangeUserName, onChangeUserEmail, onChangeUserFirst, onChangeUserLast,
+        onChangeRoleNumber, onPick, onSave, onDelete, isDark,
     } = props;
 
-    // Require all fields to be non-empty for save
-    const canSave = Boolean(
-        userName && userEmail && userFirst && userLast && roleNumber && !rolesLoading && roles.length > 0 && !rolesError
-    );
+    const rolesDisabled = rolesLoading || !!rolesError || roles.length === 0;
 
     return (
-        <section aria-label="Edit panel" style={{ marginTop: 8, background: "transparent" }}>
-            <div
-                id="edit-card"
-                key={isDark ? "dark" : "light"}
-                data-theme={isDark ? "dark" : "light"}
-                style={{
-                    padding: 16,
-                    border: `1px solid ${T.border}`,
-                    borderRadius: 8,
-                    background: T.bgCard as string,
-                    backgroundColor: T.bgCard as string,
-                    color: T.fgCard as string,
-                }}
-            >
-                <div
-                    style={{
-                        marginTop: 0,
-                        display: "grid",
-                        gridTemplateColumns: "120px 1fr",
-                        rowGap: 10,
-                        columnGap: 12,
-                        background: "transparent",
-                    }}
-                >
-                    <label style={{ alignSelf: "center", fontWeight: 600 }}>Username</label>
+        <section aria-label="Edit panel" className={styles.panelSection} data-theme={isDark ? "dark" : "light"}>
+            <div className={styles.panel}>
+                <div className={styles.grid}>
+                    <label className={styles.label} htmlFor="user-name">Username</label>
                     <input
+                        id="user-name"
+                        className={styles.input}
                         type="text"
                         value={userName}
-                        onChange={(e) => { onChangeUserName(e.target.value); }}
-                        style={fieldCss}
+                        onChange={(e) => onChangeUserName(e.target.value)}
+                        aria-label="Username"
+                        autoComplete="off"
+                        data-lpignore="true"
+                        data-form-type="other"
                     />
 
-                    <label style={{ alignSelf: "center", fontWeight: 600 }}>Email</label>
+                    <label className={styles.label} htmlFor="user-email">Email</label>
                     <input
+                        id="user-email"
+                        className={styles.input}
                         type="email"
                         value={userEmail}
-                        onChange={(e) => { onChangeUserEmail(e.target.value); }}
-                        style={fieldCss}
+                        onChange={(e) => onChangeUserEmail(e.target.value)}
+                        aria-label="Email"
+                        autoComplete="off"
+                        data-lpignore="true"
+                        data-form-type="other"
                     />
 
-                    <label style={{ alignSelf: "center", fontWeight: 600 }}>Name</label>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <label className={styles.label} htmlFor="user-name-first">Name</label>
+                    <div className={styles.nameRow}>
                         <input
+                            id="user-name-first"
+                            className={styles.input}
                             type="text"
                             value={userFirst}
-                            onChange={(e) => { onChangeUserFirst(e.target.value); }}
+                            onChange={(e) => onChangeUserFirst(e.target.value)}
                             placeholder="First"
-                            style={fieldCss}
+                            aria-label="First name"
+                            autoComplete="off"
+                            data-lpignore="true"
+                            data-form-type="other"
                         />
                         <input
+                            id="user-name-last"
+                            className={styles.input}
                             type="text"
                             value={userLast}
-                            onChange={(e) => { onChangeUserLast(e.target.value); }}
+                            onChange={(e) => onChangeUserLast(e.target.value)}
                             placeholder="Last"
-                            style={fieldCss}
+                            aria-label="Last name"
+                            autoComplete="off"
+                            data-lpignore="true"
+                            data-form-type="other"
                         />
                     </div>
 
-                    <label style={{ alignSelf: "center", fontWeight: 600 }}>Role Number</label>
+                    <label className={styles.label} htmlFor="user-role">Role</label>
                     <select
+                        id="user-role"
+                        className={styles.select}
                         value={roleNumber}
-                        onChange={(e) => { onChangeRoleNumber(e.target.value); }}
-                        disabled={rolesLoading || (rolesError.length > 0) || roles.length === 0}
-                        style={{ ...fieldCss, appearance: "auto" as const }}
+                        onChange={(e) => onChangeRoleNumber(e.target.value)}
+                        disabled={rolesDisabled}
+                        aria-disabled={rolesDisabled}
+                        aria-busy={rolesLoading || undefined}
                     >
-                        <option value="" disabled>— Select a role —</option>
+                        <option value="" disabled>-- Select a role --</option>
                         {roles.map((role) => (
                             <option key={role.number} value={String(role.number)}>
                                 {role.name}
@@ -140,91 +119,47 @@ export default function AdminUserEditPanel(props: Props): React.ReactElement {
                         ))}
                     </select>
 
-                    {rolesError && (
-                        <div style={{ gridColumn: "1 / span 2", color: "#b00020" }}>
+                    {rolesError ? (
+                        <div className={`${styles.statusArea} ${styles.error}`} role="alert" aria-live="assertive" style={{ gridColumn: "1 / span 2" }}>
                             Failed to load roles: {rolesError}
                         </div>
-                    )}
+                    ) : null}
                 </div>
 
-                <div
-                    style={{
-                        marginTop: 16,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 12,
-                    }}
-                >
-                    <button
-                        type="button"
-                        onClick={onPick}
-                        style={{
-                            padding: "8px 12px",
-                            border: `1px solid ${T.border}`,
-                            borderRadius: 6,
-                            background: isDark ? "#1f1f1f" : "#fafafa",
-                            color: isDark ? "#fff" : "#111",
-                            cursor: "pointer",
-                        }}
-                    >
-                        Clear
-                    </button>
+                <div className={styles.actions}>
+                    <div className={styles.leftActions}>
+                        <button type="button" onClick={onPick} className={styles.secondary} aria-label="Clear selection">
+                            Clear
+                        </button>
+                    </div>
 
-                    <span
-                        key={`status-${statusTick}`}
-                        aria-live="polite"
-                        role={errorText ? "alert" : (saveOkText ? "status" : undefined)}
-                        title={errorText || saveOkText || ""}
-                        style={{
-                            flex: 1,
-                            minWidth: 0,
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            textAlign: "center",
-                            color: errorText ? "#ff6b6b" : (T.headerFg as string),
-                            fontWeight: 500,
-                            margin: 0,
-                            visibility: (errorText || saveOkText) ? "visible" : "hidden",
-                        }}
-                    >
-                        {errorText || saveOkText || ""}
-                    </span>
+                    <div className={styles.statusWrap}>
+                        <span
+                            key={`status-${statusTick}`}
+                            className={`${styles.statusArea} ${errorText ? styles.error : saveOkText ? styles.ok : ""}`}
+                            role={errorText ? "alert" : saveOkText ? "status" : undefined}
+                            aria-live={errorText ? "assertive" : saveOkText ? "polite" : "off"}
+                            title={errorText || saveOkText || ""}
+                        >
+                            {errorText || saveOkText || ""}
+                        </span>
+                    </div>
 
-                    <button
-                        type="button"
-                        onClick={onSave}
-                        disabled={!canSave}
-                        style={{
-                            padding: "8px 12px",
-                            border: `1px solid ${T.border}`,
-                            borderRadius: 6,
-                            background: isDark ? "#1f1f1f" : "#fafafa",
-                            color: isDark ? "#fff" : "#111",
-                            cursor: canSave ? "pointer" : "not-allowed",
-                            opacity: canSave ? 1 : 0.5,
-                        }}
-                    >
-                        {saveLabel}
-                    </button>
-
-                    <button
-                        type="button"
-                        onClick={onDelete}
-                        disabled={!canDelete}
-                        style={{
-                            padding: "8px 12px",
-                            border: `1px solid ${T.border}`,
-                            borderRadius: 6,
-                            background: isDark ? "#1f1f1f" : "#fafafa",
-                            color: isDark ? "#fff" : "#111",
-                            cursor: canDelete ? "pointer" : "not-allowed",
-                            opacity: canDelete ? 1 : 0.5,
-                        }}
-                        title={canDelete ? "Delete this user permanently" : "Delete unavailable"}
-                    >
-                        {deleting ? "Deleting…" : "Delete User"}
-                    </button>
+                    <div className={styles.rightActions}>
+                        <button type="button" onClick={onSave} className={styles.primary} disabled={!canSave} aria-disabled={!canSave}>
+                            {saveLabel}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onDelete}
+                            className={styles.danger}
+                            disabled={!canDelete}
+                            aria-disabled={!canDelete}
+                            title={canDelete ? "Delete this user permanently" : "Delete unavailable"}
+                        >
+                            {deleting ? "Deleting..." : "Delete User"}
+                        </button>
+                    </div>
                 </div>
             </div>
         </section>

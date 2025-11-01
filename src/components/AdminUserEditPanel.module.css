@@ -1,0 +1,138 @@
+/* Container */
+.panelSection {
+    margin-top: 8px;
+    background: transparent;
+}
+
+.panel {
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--fg-card);
+}
+
+/* Grid */
+.grid {
+    margin-top: 0;
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    row-gap: 10px;
+    column-gap: 12px;
+    background: transparent;
+}
+
+.label {
+    align-self: center;
+    font-weight: 600;
+}
+
+/* Shared field styling for inputs and select */
+.input,
+.select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--input-bg, var(--bg-card));
+    color: var(--input-fg, var(--fg-card));
+    outline: none;
+}
+
+.select {
+    appearance: auto;
+}
+
+.nameRow {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+/* Actions row */
+.actions {
+    margin-top: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.leftActions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.rightActions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+/* Buttons */
+.primary,
+.secondary,
+.danger {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--button-bg, #2a2a2a);
+    color: var(--button-fg, #fff);
+    cursor: pointer;
+}
+
+.primary {
+    background: var(--primary-bg, var(--button-bg, #2a2a2a));
+    color: var(--primary-fg, var(--button-fg, #fff));
+}
+
+.secondary {
+    background: var(--secondary-bg, var(--bg-card));
+    color: var(--secondary-fg, var(--fg-card));
+}
+
+/* Keep Delete neutral unless theme defines danger vars */
+.danger {
+    background: var(--danger-bg, var(--button-bg, #2a2a2a));
+    color: var(--danger-fg, var(--button-fg, #fff));
+}
+
+.primary:disabled,
+.secondary:disabled,
+.danger:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* Status */
+.statusWrap {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    justify-content: center;
+}
+
+.statusArea {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+    font-weight: 500;
+    margin: 0;
+    visibility: hidden;
+    color: var(--header-fg, var(--fg-card));
+}
+
+.statusArea.ok,
+.statusArea.error {
+    visibility: visible;
+}
+
+.ok {
+    color: var(--header-fg, var(--fg-card));
+}
+
+.error {
+    color: var(--status-error, #ff6b6b);
+}

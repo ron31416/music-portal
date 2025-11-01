@@ -5,8 +5,8 @@ import React from "react";
 import { USER_COL, type UserColToken } from "@/lib/userCols";
 import type { UserListItem } from "@/lib/types";
 import SortHeaderButton from "@/components/common/SortHeaderButton";
-import type { ThemeTokens } from "@/lib/theme";
 import { formatDateTime } from "@/lib/dateUtils";
+import panelCss from "./AdminUserListPanel.module.css";
 
 type SortDir = "asc" | "desc";
 
@@ -24,12 +24,11 @@ type Props = {
   // Row selection
   onRowClick(row: UserListItem): void;
 
-  // Layout / theming (kept identical to AdminPage constants)
+  // Layout (kept identical to Admin page constants)
   gridCols: React.CSSProperties["gridTemplateColumns"];
   tableMinPx: number;
   rowPx: number;
   visibleRowCount: number;
-  T: ThemeTokens;
 };
 
 export default function AdminUserListPanel(props: Props): React.ReactElement {
@@ -45,8 +44,12 @@ export default function AdminUserListPanel(props: Props): React.ReactElement {
     tableMinPx,
     rowPx,
     visibleRowCount,
-    T,
   } = props;
+
+  // Normalize numbers → px strings for SSR/CSR parity
+  const tableMinCss = `${tableMinPx}px`;
+  const bodyCss = `${rowPx * visibleRowCount}px`;
+  const rowHeightCss = `${rowPx}px`;
 
   return (
     <section aria-label="Users" style={{ marginTop: 0 }}>
@@ -57,20 +60,27 @@ export default function AdminUserListPanel(props: Props): React.ReactElement {
       )}
 
       {/* Outer wrapper keeps layout tidy on narrow screens */}
-      <div style={{ width: "100%", overflowX: "auto" }}>
+      <div
+        style={{
+          width: "100%",
+          maxWidth: "960px",
+          margin: "0 auto",
+          overflowX: "auto",
+          WebkitOverflowScrolling: "touch",
+        }}
+      >
         <div
+          className={panelCss.card}
           style={{
             position: "relative",
-            width: tableMinPx,
-            maxWidth: "100%",
+            minWidth: tableMinCss, // grid can't shrink below total columns
+            width: tableMinCss, // horizontal scroll kicks in when viewport < min
             margin: "0 auto",
-            border: `1px solid ${T.border}`,
-            borderRadius: 6,
             overflowX: "hidden",
             overflowY: "hidden",
-            background: T.bgCard,
           }}
         >
+          {/* Loader overlay that does not collapse layout */}
           {listLoading && (
             <div
               aria-hidden="true"
@@ -84,25 +94,19 @@ export default function AdminUserListPanel(props: Props): React.ReactElement {
                 pointerEvents: "none",
               }}
             >
-              <p style={{ color: T.headerFg, opacity: 0.85 }}>Loading…</p>
+              <p className={panelCss.loadingText}>Loading…</p>
             </div>
           )}
 
           {/* Header row */}
           <div
             id="users-header"
+            className={panelCss.header}
             style={{
-              display: "grid",
               gridTemplateColumns: gridCols,
-              width: tableMinPx,
-              padding: "8px 10px",
-              background: T.headerBg,
-              color: T.headerFg,
-              borderBottom: `1px solid ${T.border}`,
-              fontWeight: 600,
-              fontSize: 13,
+              minWidth: tableMinCss,
+              width: "100%",
               opacity: listLoading ? 0.7 : 1,
-              transition: "opacity 120ms linear",
             }}
           >
             <SortHeaderButton<UserColToken>
@@ -152,17 +156,17 @@ export default function AdminUserListPanel(props: Props): React.ReactElement {
           {/* Body section */}
           <div
             style={{
-              height: rowPx * visibleRowCount,
+              height: bodyCss,
               overflowY: rows.length > visibleRowCount ? "auto" : "hidden",
               overflowX: "hidden",
-              borderTop: `1px solid ${T.border}`,
+              borderTop: "1px solid var(--border)",
               opacity: listLoading ? 0.7 : 1,
               transition: "opacity 120ms linear",
             }}
             aria-busy={listLoading}
           >
             {rows.map((r, idx) => {
-              const bg = (idx % 2 === 0) ? T.rowEven : T.rowOdd;
+              const rowClass = idx % 2 === 0 ? panelCss.rowEven : panelCss.rowOdd;
               return (
                 <div
                   key={r.user_id}
@@ -175,39 +179,35 @@ export default function AdminUserListPanel(props: Props): React.ReactElement {
                   }}
                   role="button"
                   tabIndex={0}
+                  className={`${panelCss.row} ${rowClass}`}
                   style={{
-                    display: "grid",
                     gridTemplateColumns: gridCols,
-                    width: tableMinPx,
-                    padding: "8px 10px",
-                    borderBottom: `1px solid ${T.border}`,
-                    fontSize: 13,
-                    alignItems: "center",
-                    cursor: "pointer",
-                    background: bg,
-                    color: T.rowFg,
-                    height: rowPx,
+                    minWidth: tableMinCss,
+                    width: "100%",
+                    height: rowHeightCss,
                     lineHeight: `${rowPx - 10}px`,
                   }}
+                  title="Load for edit"
                 >
-                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div className={panelCss.cellEllipsis}>
                     {r.user_name || "\u2014"}
                   </div>
-                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div className={panelCss.cellEllipsis}>
                     {r.user_email || "\u2014"}
                   </div>
-                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div className={panelCss.cellEllipsis}>
                     {r.user_first_name || "\u2014"}
                   </div>
-                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div className={panelCss.cellEllipsis}>
                     {r.user_last_name || "\u2014"}
                   </div>
-                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div className={panelCss.cellEllipsis}>
                     {r.user_role_name}
                   </div>
-                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div className={panelCss.cellEllipsis}>
                     {formatDateTime(r.updated_datetime)}
-                  </div>                </div>
+                  </div>
+                </div>
               );
             })}
           </div>
