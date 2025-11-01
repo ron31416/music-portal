@@ -3,11 +3,12 @@
 const isProd = process.env.VERCEL_ENV === 'production';
 
 module.exports = {
-  // Replace the fallback with your real prod domain
-  siteUrl: process.env.SITE_URL || 'https://music-viewer-v2.vercel.app',
+  // now driven by env per environment (dev/staging/prod)
+  siteUrl: process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000',
+
   generateRobotsTxt: true,
 
-  // Optional: keep previews out of Google
+  // optional: keep previews out of Google, identical to your current logic
   robotsTxtOptions: isProd
     ? {}
     : { policies: [{ userAgent: '*', disallow: '/' }] },
