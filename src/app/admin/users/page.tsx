@@ -12,7 +12,7 @@ import { fetchUserList } from "@/lib/userListFetch";
 import { fetchUserRoles, type UserRole } from "@/lib/userRoleFetch";
 
 
-// --- Config ---
+// --- Config ----
 
 //                  Name Email FName LName Role Upd
 const GRID_COLS_PX = [100, 200, 150, 150, 100, 150] as const;
