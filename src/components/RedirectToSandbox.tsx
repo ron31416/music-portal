@@ -1,4 +1,4 @@
-// src/components/RedirectToSandgox.tsx
+// src/app/RedirectToSandbox.tsx
 'use client';
 import { useEffect } from 'react';
 
@@ -22,33 +22,37 @@ export default function RedirectToSandbox() {
     useEffect(() => {
         try {
             const { protocol, hostname, pathname, search, hash } = window.location;
+
             // Debug escape hatch
             if (new URLSearchParams(search).has('nosandbox')) { return; }
             // Only operate on https (avoid dev http churn)
             if (protocol !== 'https:') { return; }
 
-            // If this host isn't the apex or a subdomain of it, do nothing
+            // Only operate on apex or its subdomains
             const isApexOrSub = hostname === APEX || hostname.endsWith('.' + APEX);
             if (!isApexOrSub) { return; }
 
+            // Split labels and drop a leading 'www' if present
             const parts = hostname.split('.');
+            if (parts[0] === 'www') { parts.shift(); }
 
-            // If it's already slugged, do nothing (idempotent)
+            // Already slugged? (idempotent)
             if (looksLikeSlug(parts[0])) { return; }
 
-            // Determine subdomain prefix before the apex ('' | 'dev' | 'staging' | 'foo.dev' | ...)
-            const suffix = '.' + APEX;
-            const prefix =
-                hostname === APEX ? '' : hostname.slice(0, hostname.length - suffix.length); // e.g. '', 'dev', 'staging', 'foo.dev'
+            // Apex labels, e.g. ['ronsmusicstore','com']
+            const apexLabels = APEX.split('.');
+
+            // Prefix labels are everything before the apex ('' | 'dev' | 'staging' | 'foo','dev' | …)
+            const prefixLabels = parts.slice(0, Math.max(0, parts.length - apexLabels.length));
 
             const slug = makeSlug(10);
-            const targetHost = prefix ? `${slug}.${prefix}.${APEX}` : `${slug}.${APEX}`;
+            const targetHost = [slug, ...prefixLabels, ...apexLabels].join('.');
             const target = `${protocol}//${targetHost}${pathname}${search}${hash}`;
 
             // Swap without adding history entry
             window.location.replace(target);
         } catch {
-            // noop
+            /* noop */
         }
     }, []);
 
