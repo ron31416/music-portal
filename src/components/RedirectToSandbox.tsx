@@ -1,3 +1,4 @@
+// src/components/RedirectToSandgox.tsx
 'use client';
 import { useEffect } from 'react';
 
