@@ -1,40 +1,51 @@
 // src/lib/sandboxUrl.ts
 const APEX = process.env.NEXT_PUBLIC_APEX_DOMAIN || "";
 
-/** True when we’re running under the production apex/wildcard host */
-function isProdLikeHost(h: string): boolean {
-    if (!APEX) { return false; }
-    return h === APEX || h.endsWith("." + APEX);
+/** True when hostname is apex or a subdomain of apex */
+function isApexOrSub(host: string): boolean {
+    return !!APEX && (host === APEX || host.endsWith("." + APEX));
 }
 
 /** Short, DNS-safe random slug (lowercase letters+digits) */
 function randSlug(len = 10): string {
-    // Use crypto when available; otherwise Math.random fallback
     try {
         const arr = new Uint8Array(len);
         crypto.getRandomValues(arr);
-        // map each byte into 0..35 and convert to base36 (0-9a-z)
         return Array.from(arr, b => (b % 36).toString(36)).join("");
     } catch {
         return Math.random().toString(36).slice(2, 2 + len);
     }
 }
 
+/** Detect if first label looks like a random slug */
+function isLikelySlug(label: string | undefined): boolean {
+    return !!label && /^[a-z0-9]{8,12}$/.test(label);
+}
+
 /**
  * Build a sandboxed URL on a fresh subdomain so Chrome’s per-origin zoom is isolated.
- * In dev/preview (no wildcard), we stay on the current host.
+ * In non-apex hosts (localhost / Vercel previews) we do not change host.
  */
 export function makeSandboxUrl(path: string): string {
-    const proto = typeof window !== "undefined" && window.location?.protocol === "http:" ? "http:" : "https:";
-    const here = typeof window !== "undefined" ? window.location : null;
+    const loc = typeof window !== "undefined" ? window.location : null;
+    const proto = loc?.protocol === "http:" ? "http:" : "https:";
     const pathname = path.startsWith("/") ? path : `/${path}`;
 
-    if (here && isProdLikeHost(here.hostname)) {
-        const slug = randSlug(10);
-        return `${proto}//${slug}.${APEX}${pathname}`;
+    if (loc && isApexOrSub(loc.hostname)) {
+        const parts = loc.hostname.split(".");
+        const first = parts[0] ?? "";
+
+        // If we already have slug.dev/apex form, replace slug; else prepend one
+        if (isLikelySlug(first) && parts.length > 2) {
+            parts[0] = randSlug(10);
+        } else {
+            parts.unshift(randSlug(10));
+        }
+
+        return `${proto}//${parts.join(".")}${pathname}`;
     }
 
-    // Dev/preview fallback: no subdomain switch (zoom isolation won’t apply locally)
-    const host = here ? here.host : APEX;
+    // Local or preview fallback
+    const host = loc ? loc.host : APEX;
     return `${proto}//${host}${pathname}`;
 }
