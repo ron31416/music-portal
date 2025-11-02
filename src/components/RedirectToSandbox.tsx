@@ -13,25 +13,42 @@ function makeSlug(len = 10): string {
     }
 }
 
+function looksLikeSlug(label?: string) {
+    return !!label && /^[a-z0-9]{8,12}$/.test(label);
+}
+
 export default function RedirectToSandbox() {
     useEffect(() => {
         try {
             const { protocol, hostname, pathname, search, hash } = window.location;
-
-            // Debug escape hatch: append ?nosandbox=1 to stay on apex/www
+            // Debug escape hatch
             if (new URLSearchParams(search).has('nosandbox')) { return; }
+            // Only operate on https (avoid dev http churn)
+            if (protocol !== 'https:') { return; }
 
-            const onHttps = protocol === 'https:';
-            const isExactApex = hostname === APEX;
-            const isWww = hostname === `www.${APEX}`;
+            // If this host isn't the apex or a subdomain of it, do nothing
+            const isApexOrSub = hostname === APEX || hostname.endsWith('.' + APEX);
+            if (!isApexOrSub) { return; }
 
-            // Redirect only from apex or www to a random subdomain
-            if (onHttps && (isExactApex || isWww)) {
-                const slug = makeSlug(10);
-                const target = `${protocol}//${slug}.${APEX}${pathname}${search}${hash}`;
-                window.location.replace(target); // no history entry
-            }
-        } catch { }
+            const parts = hostname.split('.');
+
+            // If it's already slugged, do nothing (idempotent)
+            if (looksLikeSlug(parts[0])) { return; }
+
+            // Determine subdomain prefix before the apex ('' | 'dev' | 'staging' | 'foo.dev' | ...)
+            const suffix = '.' + APEX;
+            const prefix =
+                hostname === APEX ? '' : hostname.slice(0, hostname.length - suffix.length); // e.g. '', 'dev', 'staging', 'foo.dev'
+
+            const slug = makeSlug(10);
+            const targetHost = prefix ? `${slug}.${prefix}.${APEX}` : `${slug}.${APEX}`;
+            const target = `${protocol}//${targetHost}${pathname}${search}${hash}`;
+
+            // Swap without adding history entry
+            window.location.replace(target);
+        } catch {
+            // noop
+        }
     }, []);
 
     return null;
