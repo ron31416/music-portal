@@ -1,5 +1,8 @@
 // src/lib/sandboxUrl.ts
+
 const APEX = process.env.NEXT_PUBLIC_APEX_DOMAIN || "";
+
+console.warn("[sandbox] module loaded", { APEX });
 
 /** True when hostname is apex or a subdomain of apex */
 function isApexOrSub(host: string): boolean {
