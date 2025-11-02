@@ -31,6 +31,8 @@ export function makeSandboxUrl(path: string): string {
     const proto = loc?.protocol === "http:" ? "http:" : "https:";
     const pathname = path.startsWith("/") ? path : `/${path}`;
 
+    console.warn("[sandbox]", { APEX, host: typeof window !== "undefined" ? window.location.hostname : "(ssr)" });
+
     if (loc && isApexOrSub(loc.hostname)) {
         const parts = loc.hostname.split(".");
         const first = parts[0] ?? "";
@@ -49,3 +51,4 @@ export function makeSandboxUrl(path: string): string {
     const host = loc ? loc.host : APEX;
     return `${proto}//${host}${pathname}`;
 }
+
