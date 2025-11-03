@@ -1,8 +1,14 @@
+// src/app/login/page.tsx
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabaseBrowser } from "@/lib/supabaseBrowser";
+
+// prefer Vercel /env value — fallback to window (local dev)
+const ORIGIN =
+    process.env.NEXT_PUBLIC_SITE_URL ??
+    (typeof window !== "undefined" ? window.location.origin : "");
 
 export default function LoginPage() {
     const router = useRouter();
@@ -13,14 +19,14 @@ export default function LoginPage() {
     const [busy, setBusy] = useState<boolean>(false);
     const [msg, setMsg] = useState<string>("");
 
-    // where to take users after successful auth
-    const redirectTo = useMemo<string>(() => {
-        const next = params.get("next");
-        if (typeof next === "string" && next.startsWith("/")) {
-            return next;
-        }
-        return "/"; // default home
+    // normalize ?next=
+    const nextPath = useMemo<string>(() => {
+        const n = params.get("next");
+        return typeof n === "string" && n.startsWith("/") ? n : "/";
     }, [params]);
+
+    // build absolute callback URL for supabase
+    const redirectToAbs = `${ORIGIN}/auth/callback?next=${encodeURIComponent(nextPath)}`;
 
     const signInWithEmail = useCallback(async () => {
         if (!email) {
@@ -32,9 +38,7 @@ export default function LoginPage() {
         try {
             const { error } = await supabase.auth.signInWithOtp({
                 email,
-                options: {
-                    emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(redirectTo)}`,
-                },
+                options: { emailRedirectTo: redirectToAbs },
             });
             if (error) {
                 setMsg(`Sign-in failed: ${error.message}`);
@@ -46,7 +50,7 @@ export default function LoginPage() {
         } finally {
             setBusy(false);
         }
-    }, [email, supabase, redirectTo]);
+    }, [email, supabase, redirectToAbs]);
 
     const signInWithGoogle = useCallback(async () => {
         setBusy(true);
@@ -54,21 +58,17 @@ export default function LoginPage() {
         try {
             const { error } = await supabase.auth.signInWithOAuth({
                 provider: "google",
-                options: {
-                    redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(redirectTo)}`,
-                },
+                options: { redirectTo: redirectToAbs },
             });
             if (error) {
                 setMsg(`Google sign-in failed: ${error.message}`);
                 setBusy(false);
-            } else {
-                // On success, Supabase will redirect; nothing else to do here.
             }
         } catch {
             setMsg("Unexpected error starting Google sign-in.");
             setBusy(false);
         }
-    }, [supabase, redirectTo]);
+    }, [supabase, redirectToAbs]);
 
     const goHome = useCallback(() => {
         router.push("/");
