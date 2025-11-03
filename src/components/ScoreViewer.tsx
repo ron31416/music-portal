@@ -909,6 +909,31 @@ function drawMeasureBoxes(
     r.setAttribute("stroke-width", "1");
     r.setAttribute("vector-effect", "non-scaling-stroke");
     g.appendChild(r);
+
+    // Label each measure using its numeric suffix from id like "measure-12"
+    const numMatch = m.id.match(/measure[-_\s]?(\d+)/i);
+
+    // Position label at top-left of the snapped tile (so it aligns per-system)
+    const tx = Math.round(m.rect.x) + 4;
+    const ty = Math.round(yTop) + 12;
+
+    const t = createSvgEl("text");
+    t.textContent = (numMatch?.[1] ?? m.id);
+    t.setAttribute("x", String(tx));
+    t.setAttribute("y", String(ty));
+    t.setAttribute("font-size", "11");
+    t.setAttribute("font-family", "system-ui, sans-serif");
+    t.setAttribute("dominant-baseline", "hanging");
+
+    // Outline for readability over staff lines
+    t.setAttribute("fill", "black");
+    t.setAttribute("paint-order", "stroke");
+    t.setAttribute("stroke", "white");
+    t.setAttribute("stroke-width", "2");
+    t.setAttribute("stroke-linejoin", "round");
+
+    g.appendChild(t);
+
   }
 
   outer.appendChild(layer);
@@ -2817,6 +2842,7 @@ export default function ScoreViewer({
       startT = performance.now();          // ← add
     };
 
+
     const onTouchMove = (e: TouchEvent) => {
       if (!active || !readyRef.current || busyRef.current) {
         return;
@@ -2870,6 +2896,59 @@ export default function ScoreViewer({
       cleanupOuter.removeEventListener("touchend", onTouchEnd);
     };
   }, [goNext, goPrev]);
+
+  // Mouse single-click paging (disabled while busy)
+  // NOTE: ignores double-click so we can reserve it for future edit mode
+  useEffect(() => {
+    const outer = wrapRef.current;
+    if (!outer) { return; }
+
+    let downX = 0;
+    let downY = 0;
+    let downT = 0;
+    let armed = false;
+
+    // same thresholds as touch so behavior matches
+    const CLICK_MAX_MS = 250;
+    const CLICK_MAX_MOVE_PX = 12;
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (!readyRef.current || busyRef.current) { return; }
+      if (e.button !== 0) { return; }          // left click only
+      armed = true;
+      downX = e.clientX;
+      downY = e.clientY;
+      downT = performance.now();
+    };
+
+    const onMouseUp = (e: MouseEvent) => {
+      if (!armed) { return; }
+      armed = false;
+
+      if (!readyRef.current || busyRef.current) { return; }
+
+      // if this was part of a double-click, ignore (we’ll use dblclick later for edit mode)
+      if (e.detail >= 2) { return; }
+
+      const dt = performance.now() - downT;
+      const dx = e.clientX - downX;
+      const dy = e.clientY - downY;
+
+      const smallMove = Math.abs(dx) <= CLICK_MAX_MOVE_PX && Math.abs(dy) <= CLICK_MAX_MOVE_PX;
+      if (smallMove && dt <= CLICK_MAX_MS) {
+        e.preventDefault();
+        goNext();
+      }
+    };
+
+    outer.addEventListener("mousedown", onMouseDown);
+    outer.addEventListener("mouseup", onMouseUp);
+
+    return () => {
+      outer.removeEventListener("mousedown", onMouseDown);
+      outer.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [goNext]);
 
   // Recompute pagination when the visual viewport changes (URL bar, IME, orientation, etc.)
   useEffect(() => {
