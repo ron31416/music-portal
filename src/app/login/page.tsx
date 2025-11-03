@@ -74,6 +74,7 @@ export default function LoginPage() {
         router.push("/");
     }, [router]);
 
+    // src/app/login/page.tsx  (only the return block changes)
     return (
         <div className="min-h-screen flex items-center justify-center p-4">
             <div className="w-full max-w-sm rounded-2xl shadow-lg p-6 border">
@@ -113,9 +114,14 @@ export default function LoginPage() {
                     Continue with Google
                 </button>
 
-                {msg ? (
-                    <p className="text-sm mt-3">{msg}</p>
-                ) : null}
+                {msg ? <p className="text-sm mt-3">{msg}</p> : null}
+
+                {/* --- TEMP DEBUG so we know exactly what’s being sent --- */}
+                <div className="mt-4 text-xs break-all opacity-70">
+                    <div><b>ORIGIN:</b> {process.env.NEXT_PUBLIC_SITE_URL ?? "«window»"}</div>
+                    <div><b>window.origin:</b> {typeof window !== "undefined" ? window.location.origin : "(ssr)"}</div>
+                    <div><b>redirectTo:</b> {redirectToAbs}</div>
+                </div>
 
                 <button
                     type="button"
