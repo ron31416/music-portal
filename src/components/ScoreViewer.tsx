@@ -21,6 +21,9 @@ interface Props {
 
 interface Band { top: number; bottom: number; height: number }
 
+// Viewer-space rectangle (left/top/width/height in px, relative to wrapper host)
+interface Rect { x: number; y: number; w: number; h: number }
+
 // Type: function stored in a ref
 type ReflowCallback = () => Promise<void>;
 
@@ -696,6 +699,225 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   } finally {
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
   }
+}
+
+// --- Measure scanning + overlay (smoke test) ---
+// (keep scanMeasuresPx as-is)
+
+/** Typed SVG factory (TS strict-friendly) */
+function createSvgEl<K extends keyof SVGElementTagNameMap>(
+  tag: K,
+  ns = "http://www.w3.org/2000/svg"
+): SVGElementTagNameMap[K] {
+  return document.createElementNS(ns, tag) as SVGElementTagNameMap[K];
+}
+
+/**
+ * Scan measure groups from the current OSMD SVG, union staves within the same measure,
+ * and return unified per-measure rectangles relative to the wrapper host.
+ * Runs AFTER pagination transform so boxes align with what you see.
+ */
+function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ id: string; rect: Rect }> {
+  const prevFuncTag = outer.dataset.viewerFunc ?? "";
+  outer.dataset.viewerFunc = "scanMeasuresPx";
+  try {
+    const hostTop = outer.getBoundingClientRect().top;
+    const hostLeft = outer.getBoundingClientRect().left;
+
+    // Collect any group that looks like a measure; OSMD commonly emits ids with "measure"
+    const MEASURE_SEL = "g[id*='measure' i], g[class*='measure' i]";
+    const groups = Array.from(svgRoot.querySelectorAll<SVGGElement>(MEASURE_SEL));
+
+    // Map string id-key -> union rect
+    const map = new Map<string, Rect>();
+
+    const unionInto = (key: string, r: DOMRect) => {
+      const x = r.left - hostLeft;
+      const y = r.top - hostTop;
+      const w = r.width;
+      const h = r.height;
+      if (!(Number.isFinite(x) && Number.isFinite(y) && w > 0 && h > 0)) { return; }
+
+      const rect: Rect = { x, y, w, h };
+      const prev = map.get(key);
+      if (!prev) { map.set(key, rect); return; }
+
+      const x2 = Math.max(prev.x + prev.w, rect.x + rect.w);
+      const y2 = Math.max(prev.y + prev.h, rect.y + rect.h);
+      const nx = Math.min(prev.x, rect.x);
+      const ny = Math.min(prev.y, rect.y);
+      map.set(key, { x: nx, y: ny, w: x2 - nx, h: y2 - ny });
+    };
+
+    for (const g of groups) {
+      try {
+        // Normalize a stable key per measure: prefer the numeric prefix if present.
+        // Common patterns: "measure-12", "measure-12-1", etc. Fall back to id text.
+        const raw = g.getAttribute("id") || g.getAttribute("class") || "";
+        const m = raw.match(/measure[-_\s]?(\d+)/i);
+        const key = m ? `measure-${m[1]}` : raw || `(anon-measure)`;
+
+        const r = g.getBoundingClientRect();
+        if (r && r.width > 0 && r.height > 0) {
+          unionInto(key, r);
+        }
+      } catch { /* ignore bad nodes */ }
+    }
+
+    // Emit sorted by y then x for deterministic draw order
+    const rows = Array.from(map.entries())
+      .map(([id, rect]) => ({ id, rect }))
+      .sort((a, b) => (a.rect.y - b.rect.y) || (a.rect.x - b.rect.x));
+
+    return rows;
+  } finally {
+    try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
+  }
+}
+
+/** Draw/refresh a lightweight SVG overlay of measure rectangles (stroke-only),
+ * snapping vertical bounds to per-system page separators so boxes tile cleanly.
+ * STRICT TS SAFE (noUncheckedIndexedAccess compatible).
+ */
+function drawMeasureBoxes(
+  outer: HTMLDivElement,
+  svgRoot: SVGSVGElement,
+  bands: Band[],
+  startIndex: number,
+  nextStartIndex: number,            // -1 on last page
+  ySnap: number,
+  topGutterPx: number,
+  maskTopWithinMusicPx: number
+): void {
+  // Remove any previous layer
+  outer.querySelectorAll("[data-viewer-measureboxes='1']").forEach((n) => n.remove());
+
+  // Quick guards
+  if (!outer || !svgRoot || bands.length === 0) { return; }
+
+  // 1) Scan raw measure rects in wrapper coords (already post-translate)
+  const measures = scanMeasuresPx(outer, svgRoot);
+  if (measures.length === 0) { return; }
+
+  // 2) Build page-local system separators: sep[0..N]
+  const seps: number[] = [];
+  const topG = Math.max(0, topGutterPx);
+  seps.push(topG); // sep[0]
+
+  // Clamp indices defensively
+  const firstBand = Math.max(0, Math.min(startIndex | 0, Math.max(0, bands.length - 1)));
+  const lastBandInclRaw = (nextStartIndex >= 0 ? nextStartIndex : bands.length) - 1;
+  const lastBandIncl = Math.max(firstBand, Math.min(lastBandInclRaw, Math.max(0, bands.length - 1)));
+
+  if (lastBandIncl > firstBand) {
+    for (let i = firstBand; i < lastBandIncl; i++) {
+      const bCurr = bands[i];
+      const bNext = bands[i + 1];
+      if (!bCurr || !bNext) { continue; }
+
+      // Convert to page-local coords
+      const bottomCurr = Math.round(bCurr.bottom) - Math.ceil(ySnap) + topG;
+      const topNext = Math.round(bNext.top) - Math.ceil(ySnap) + topG;
+
+      // Midpoint seam between systems i and i+1 (rounded to px)
+      const seam = Math.round((bottomCurr + topNext) / 2);
+      seps.push(seam);
+    }
+  }
+
+  // Bottom limit (page-local)
+  const bottomLimit = Math.max(0, Math.floor(topG + maskTopWithinMusicPx));
+  seps.push(bottomLimit); // sep[last]
+
+  // Ensure non-decreasing (monotone), strict-safe
+  for (let i = 1; i < seps.length; i++) {
+    const prev = seps[i - 1];
+    const curr = seps[i];
+    if (prev !== undefined && curr !== undefined && curr < prev) {
+      seps[i] = prev;
+    }
+  }
+
+  // Fallback: at least two separators
+  if (seps.length < 2) {
+    seps.length = 0;
+    seps.push(topG, bottomLimit);
+  }
+
+  // Page window for THIS page (in page-local coords)
+  const pageTop = seps[0] ?? topG;
+  const pageBottom = seps[seps.length - 1] ?? bottomLimit;
+
+  // 3) Build overlay SVG
+  const layer = createSvgEl("svg");
+  layer.setAttribute("data-viewer-measureboxes", "1");
+  layer.setAttribute("aria-hidden", "true");
+  Object.assign(layer.style, {
+    position: "absolute",
+    inset: "0",
+    pointerEvents: "none",
+    zIndex: "20",
+  } as CSSStyleDeclaration);
+
+  const ow = outer.clientWidth || 0;
+  const oh = outer.clientHeight || 0;
+  layer.setAttribute("width", String(ow));
+  layer.setAttribute("height", String(oh));
+  layer.setAttribute("viewBox", `0 0 ${ow} ${oh}`);
+
+  const g = createSvgEl("g");
+  layer.appendChild(g);
+
+  // 4) Draw rects with snapped verticals per tile; keep horizontal x/w as-is
+  for (const m of measures) {
+    // center Y in page-local coords
+    const cy = Math.round(m.rect.y + m.rect.h / 2);
+
+    // Ignore measures outside this page’s vertical window
+    if (cy < pageTop || cy >= pageBottom) {
+      continue;
+    }
+
+    // Find tile index explicitly (avoid defaulting to last tile)
+    const lastIdx = seps.length - 2; // last valid tile index
+    let k = -1;
+    for (let t = 0; t <= lastIdx; t++) {
+      const y0 = seps[t];
+      const y1 = seps[t + 1];
+      if (y0 === undefined || y1 === undefined) { continue; }
+      if (cy >= y0 && cy < y1) { k = t; break; }
+    }
+    if (k < 0) { continue; } // safety
+
+    // Snap verticals to this tile’s top/bottom
+    const yTop = seps[k]!;
+    const yBot = seps[k + 1]!;
+    const y = Math.round(yTop) + 0.5;
+    const h = Math.max(0, Math.round(yBot - yTop) - 1);
+
+    // Keep horizontal as-is (align stroke to pixel grid)
+    const x = Math.round(m.rect.x) + 0.5;
+    const w = Math.max(0, Math.round(m.rect.w) - 1);
+
+    const r = createSvgEl("rect");
+    r.setAttribute("x", String(x));
+    r.setAttribute("y", String(y));
+    r.setAttribute("width", String(w));
+    r.setAttribute("height", String(h));
+    r.setAttribute("fill", "none");
+    r.setAttribute("stroke", "rgba(0,0,0,0.55)");
+    r.setAttribute("stroke-width", "1");
+    r.setAttribute("vector-effect", "non-scaling-stroke");
+    g.appendChild(r);
+  }
+
+  outer.appendChild(layer);
+}
+
+
+/** Remove the measure overlay layer if present. */
+function clearMeasureBoxes(outer: HTMLDivElement): void {
+  outer.querySelectorAll("[data-viewer-measureboxes='1']").forEach(n => n.remove());
 }
 
 
@@ -1403,6 +1625,11 @@ export default function ScoreViewer({
 
         if (!svg || !bands.length || !starts.length) { return; }
 
+        // TS strict: capture narrowed aliases so flow analysis stays stable below
+        const svgNN: SVGSVGElement = svg;
+        const bandsNN: Band[] = bands;
+        const startsNN: number[] = starts;
+
         // Clamp target page and remember it
         const pages = starts.length;
         const p = Math.max(0, Math.min(pageIdx, pages - 1));
@@ -1520,9 +1747,9 @@ export default function ScoreViewer({
 
         // Optional debug overlay
         if (debugOverlays) {
-          debugDrawBands(outer, bands, {
+          debugDrawBands(outer, bandsNN, {
             tag: `apply p${p + 1}`,
-            starts,
+            starts: startsNN,
             startIndex,
             nextStartIndex,
             ySnap,
@@ -1535,6 +1762,37 @@ export default function ScoreViewer({
         } else {
           clearDebugLayers(outer);
         }
+
+        // --- Measure rectangles smoke-test overlay ---
+        try {
+          clearMeasureBoxes(outer);
+          drawMeasureBoxes(
+            outer,
+            svgNN,
+            bandsNN,
+            startIndex,
+            nextStartIndex,
+            ySnap,
+            Math.max(0, topGutterPx),
+            maskTopWithinMusicPx
+          );
+        } catch { /* overlay render is best-effort; ignore failures */ }
+
+        // --- Measure rectangles smoke-test overlay ---
+        // Always redraw after pagination transform so outlines match what you see.
+        try {
+          clearMeasureBoxes(outer);
+          drawMeasureBoxes(
+            outer,
+            svgNN,                   // non-nullable alias
+            bandsNN,                 // non-nullable alias
+            startIndex,              // this page's first system index
+            nextStartIndex,          // -1 if last page
+            ySnap,                   // ceil(top of start band)
+            Math.max(0, topGutterPx),
+            maskTopWithinMusicPx     // page-local bottom cut for this page
+          );
+        } catch { /* overlay render is best-effort; ignore failures */ }
 
         // Stop layer promotion after page is applied
         svg.style.willChange = "auto";
@@ -1599,14 +1857,14 @@ export default function ScoreViewer({
       const ap = makeAfterPaint(outer);
 
       await withHostHidden(outer, async () => {
+        // Clear any stale overlays before a fresh render
+        try { clearMeasureBoxes(outer); } catch { }
+
         const uid = nextPerfUID(outer.dataset.viewerRun);
         await perfBlockAsync(
           uid,
           async () => { await renderViewer(outer, osmd); },
-          (ms) => {
-            outer.dataset.viewerRenderMs = String(ms);
-            void logStep(`renderViewer() runtime: ${ms}ms`, { outer });
-          }
+          (ms) => { void logStep(`osmd.render() runtime: ${ms}ms`, { outer }); }
         );
       });
 
@@ -1799,6 +2057,9 @@ export default function ScoreViewer({
   const paginateViewer = useCallback((): void => {
     const outer = wrapRef.current;
     if (!outer) { return; }
+
+    // Remove stale boxes; applyPage() will redraw them for the new page window
+    try { clearMeasureBoxes(outer); } catch { }
 
     // Prevent overlap
     if (repaginationRunningRef.current) { return; }
