@@ -7,6 +7,7 @@ import SongListPanel from "@/components/SongListPanel";
 import type { SongListItem } from "@/lib/types";
 import { type SongColToken, DEFAULT_SORT, DEFAULT_DIR } from "@/lib/songCols";
 import { fetchSongList } from "@/lib/songListFetch";
+import AuthHeaderClient from "@/components/auth/AuthHeaderClient";
 
 // --- Config ---
 //                 First Last Title Level
@@ -103,6 +104,9 @@ export default function HomeClient(): React.ReactElement {
 
     return (
         <section>
+            {/* Auth header lives INSIDE the same layout as the table so it aligns perfectly */}
+            <AuthHeaderClient title="Music Portal" next="/" />
+
             <SongListPanel
                 rows={rows}
                 listLoading={listLoading}

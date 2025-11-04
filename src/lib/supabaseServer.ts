@@ -1,7 +1,7 @@
 // src/lib/supabaseServer.ts
 import { cookies } from "next/headers";
-import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
 export async function getSupabaseServerClient(): Promise<SupabaseClient> {
     // In newer Next versions, cookies() is async

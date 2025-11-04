@@ -6,9 +6,8 @@ export default function Home() {
   return (
     <main
       className="mx-auto max-w-2xl p-6 space-y-6"
-      style={{ paddingTop: 56 }} // headroom for fixed Admin pill
+      style={{ paddingTop: 10 }}
     >
-      <AdminFab />
       <HomeClient />
     </main>
   );

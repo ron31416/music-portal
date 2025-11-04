@@ -5,14 +5,17 @@ import { useCallback, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabaseBrowser } from "@/lib/supabaseBrowser";
 
-// prefer Vercel /env value — fallback to window (local dev)
+// Prefer current browser origin in dev; fallback to env for server builds/Vercel
 const ORIGIN =
-    process.env.NEXT_PUBLIC_SITE_URL ??
-    (typeof window !== "undefined" ? window.location.origin : "");
+    typeof window !== "undefined"
+        ? window.location.origin
+        : (process.env.NEXT_PUBLIC_SITE_URL ?? "");
 
 export default function LoginPage() {
     const router = useRouter();
     const params = useSearchParams();
+    const mode = (params.get("mode") === "login" ? "login" : "create") as "login" | "create";
+
 
     const supabase = useMemo(() => getSupabaseBrowser(), []);
     const [email, setEmail] = useState<string>("");
@@ -78,7 +81,9 @@ export default function LoginPage() {
     return (
         <div className="min-h-screen flex items-center justify-center p-4">
             <div className="w-full max-w-sm rounded-2xl shadow-lg p-6 border">
-                <h1 className="text-xl font-semibold mb-4">Sign in</h1>
+                <h1 className="text-xl font-semibold mb-4">
+                    {mode === "create" ? "Create your account" : "Log in"}
+                </h1>
 
                 <label htmlFor="email" className="block text-sm mb-1">
                     Email for magic link
