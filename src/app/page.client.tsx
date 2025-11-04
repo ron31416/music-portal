@@ -105,7 +105,7 @@ export default function HomeClient(): React.ReactElement {
     return (
         <section>
             {/* Auth header lives INSIDE the same layout as the table so it aligns perfectly */}
-            <AuthHeaderClient title="Music Portal" next="/" />
+            <AuthHeaderClient title="Music Portal" />
 
             <SongListPanel
                 rows={rows}
