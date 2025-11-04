@@ -1,24 +1,26 @@
-// src/app/auth/error/page.tsx
-import Link from "next/link";
+"use client";
+import { useSearchParams, useRouter } from "next/navigation";
 
-export const dynamic = "force-static";
-
-export default function AuthErrorPage({
-    searchParams,
-}: {
-    searchParams?: Record<string, string | string[] | undefined>;
-}) {
-    const msg =
-        (typeof searchParams?.message === "string" && searchParams.message) ||
-        "Authentication error.";
+export default function AuthErrorPage() {
+    const params = useSearchParams();
+    const router = useRouter();
+    const msg = params.get("message") || "Unknown authentication error.";
 
     return (
-        <main className="mx-auto max-w-xl p-6 space-y-4">
-            <h1 className="text-2xl font-semibold">Page not found</h1>
-            <p className="text-sm">{msg}</p>
-            <Link className="underline text-sm" href="/">
-                Go back home
-            </Link>
-        </main>
+        <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+            <div style={{ width: "100%", maxWidth: 560, borderRadius: 16, border: "1px solid rgba(160,160,160,0.25)", boxShadow: "0 10px 30px rgba(0,0,0,0.25)", padding: 20 }}>
+                <h1 style={{ fontSize: 22, fontWeight: 700, margin: "4px 0 12px" }}>Authentication error</h1>
+                <p style={{ fontSize: 14, opacity: .9, whiteSpace: "pre-wrap" }}>{msg}</p>
+                <div style={{ marginTop: 18 }}>
+                    <button
+                        type="button"
+                        onClick={() => router.push("/")}
+                        style={{ borderRadius: 10, border: "1px solid rgba(160,160,160,0.35)", padding: "10px 12px", background: "transparent", color: "inherit", cursor: "pointer" }}
+                    >
+                        Go back home
+                    </button>
+                </div>
+            </div>
+        </div>
     );
 }
