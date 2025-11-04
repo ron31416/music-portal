@@ -5,7 +5,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabaseBrowser } from "@/lib/supabaseBrowser";
 
-// Prefer current browser origin in dev; fallback to env for server builds/Vercel
+// Prefer current browser origin in dev; fallback to env on Vercel
 const ORIGIN =
     typeof window !== "undefined"
         ? window.location.origin
@@ -14,21 +14,22 @@ const ORIGIN =
 export default function LoginPage() {
     const router = useRouter();
     const params = useSearchParams();
-    const mode = (params.get("mode") === "login" ? "login" : "create") as "login" | "create";
 
+    // Mode purely controls headings/copy; both flows hit the same endpoint.
+    const mode = (params.get("mode") === "login" ? "login" : "create") as "login" | "create";
 
     const supabase = useMemo(() => getSupabaseBrowser(), []);
     const [email, setEmail] = useState<string>("");
     const [busy, setBusy] = useState<boolean>(false);
     const [msg, setMsg] = useState<string>("");
 
-    // normalize ?next=
+    // Normalize ?next= (path only; never an origin)
     const nextPath = useMemo<string>(() => {
         const n = params.get("next");
         return typeof n === "string" && n.startsWith("/") ? n : "/";
     }, [params]);
 
-    // build absolute callback URL for supabase
+    // Absolute callback for Supabase
     const redirectToAbs = `${ORIGIN}/auth/callback?next=${encodeURIComponent(nextPath)}`;
 
     const signInWithEmail = useCallback(async () => {
@@ -73,69 +74,82 @@ export default function LoginPage() {
         }
     }, [supabase, redirectToAbs]);
 
-    const goHome = useCallback(() => {
-        router.push("/");
-    }, [router]);
+    const cancel = useCallback(() => {
+        router.push(nextPath || "/");
+    }, [router, nextPath]);
 
-    // src/app/login/page.tsx  (only the return block changes)
+    // --- minimal inline styles (no Tailwind) ---
+    const s = {
+        page: { minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 } as const,
+        card: {
+            width: "100%",
+            maxWidth: 420,
+            borderRadius: 16,
+            border: "1px solid rgba(160,160,160,0.25)",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+            padding: 20,
+            background: "rgba(20,20,20,0.6)",
+            backdropFilter: "blur(2px)",
+        } as const,
+        h1: { fontSize: 22, fontWeight: 700, margin: "4px 0 16px 0", textAlign: "center" } as const,
+        label: { display: "block", fontSize: 14, marginBottom: 6, opacity: 0.9 } as const,
+        input: {
+            width: "100%", borderRadius: 10, border: "1px solid rgba(160,160,160,0.35)",
+            padding: "10px 12px", marginBottom: 12, outline: "none", background: "transparent", color: "inherit",
+        } as const,
+        row: { display: "flex", gap: 10 } as const,
+        btnPrimary: {
+            flex: 1, borderRadius: 10, border: "1px solid rgba(160,160,160,0.35)",
+            padding: "10px 12px", cursor: "pointer", background: "rgba(220,220,220,0.1)", color: "inherit",
+        } as const,
+    };
+
     return (
-        <div className="min-h-screen flex items-center justify-center p-4">
-            <div className="w-full max-w-sm rounded-2xl shadow-lg p-6 border">
-                <h1 className="text-xl font-semibold mb-4">
-                    {mode === "create" ? "Create your account" : "Log in"}
-                </h1>
+        <div style={s.page}>
+            <div style={s.card}>
+                <h1 style={s.h1}>{mode === "create" ? "Create your account" : "Sign in"}</h1>
 
-                <label htmlFor="email" className="block text-sm mb-1">
-                    Email for magic link
-                </label>
+                <label htmlFor="email" style={s.label}>Email for magic link</label>
                 <input
                     id="email"
                     type="email"
                     inputMode="email"
                     autoComplete="email"
-                    className="w-full border rounded-lg px-3 py-2 mb-3"
+                    style={s.input}
                     value={email}
                     onChange={(e) => { setEmail(e.target.value); }}
                     disabled={busy}
                 />
 
-                <button
-                    type="button"
-                    className="w-full rounded-lg px-3 py-2 border mb-3"
-                    onClick={signInWithEmail}
-                    disabled={busy}
-                >
-                    Send magic link
-                </button>
-
-                <div className="text-center text-sm my-2">— or —</div>
-
-                <button
-                    type="button"
-                    className="w-full rounded-lg px-3 py-2 border"
-                    onClick={signInWithGoogle}
-                    disabled={busy}
-                >
-                    Continue with Google
-                </button>
-
-                {msg ? <p className="text-sm mt-3">{msg}</p> : null}
-
-                {/* --- TEMP DEBUG so we know exactly what’s being sent --- */}
-                <div className="mt-4 text-xs break-all opacity-70">
-                    <div><b>ORIGIN:</b> {process.env.NEXT_PUBLIC_SITE_URL ?? "«window»"}</div>
-                    <div><b>window.origin:</b> {typeof window !== "undefined" ? window.location.origin : "(ssr)"}</div>
-                    <div><b>redirectTo:</b> {redirectToAbs}</div>
+                <div style={s.row}>
+                    <button type="button" style={s.btnPrimary} onClick={signInWithEmail} disabled={busy}>
+                        Send magic link
+                    </button>
                 </div>
 
-                <button
-                    type="button"
-                    className="mt-6 text-sm underline"
-                    onClick={goHome}
-                    disabled={busy}
-                >
-                    Cancel
-                </button>
+                {/* Optional OAuth. Keep if you want; remove if you want email-only. */}
+                <div style={{ textAlign: "center", fontSize: 13, margin: "10px 0 6px", opacity: 0.75 }}>— or —</div>
+                <div style={s.row}>
+                    <button type="button" style={s.btnPrimary} onClick={signInWithGoogle} disabled={busy}>
+                        Continue with Google
+                    </button>
+                </div>
+
+                {msg ? <p style={{ fontSize: 13, marginTop: 12 }}>{msg}</p> : null}
+
+                <div style={{ marginTop: 18, textAlign: "center" }}>
+                    <button
+                        type="button"
+                        onClick={cancel}
+                        disabled={busy}
+                        style={{
+                            fontSize: 13, textDecoration: "underline", background: "transparent",
+                            border: "none", color: "inherit", cursor: "pointer"
+                        }}
+                    >
+                        Cancel
+                    </button>
+                </div>
             </div>
         </div>
     );
