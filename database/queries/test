@@ -1,3 +1,38 @@
+do $$begin raise exception 'do not run this file'; end$$;
+
+
+select t.table_name as table,
+       (xpath('/row/c/text()', query_to_xml(
+          format('select count(*) as c from %I.%I', t.table_schema, t.table_name),
+          false, true, '')))[1]::text::bigint as exact_rows
+from information_schema.tables t
+where t.table_schema = 'public' and t.table_type='BASE TABLE'
+order by t.table_name;
+
+
+select 'site_user'        as table, count(*) from public.site_user
+union all
+select 'skill_level'      , count(*) from public.skill_level
+union all
+select 'song'             , count(*) from public.song
+union all
+select 'user_role'        , count(*) from public.user_role
+union all
+select 'user_song'        , count(*) from public.user_song
+union all
+select 'user_song_measure', count(*) from public.user_song_measure;
+
+
+ANALYZE VERBOSE public;
+
+
+
+select relname as table, reltuples::bigint as approx_rows
+from pg_class 
+where relkind='r' and relnamespace = 'public'::regnamespace
+order by 1;
+
+
 select * from song
 
 
@@ -114,3 +149,5 @@ WHERE n.nspname = 'public';
 select * from preview.user_role_list()
 
 select * from preview.user_role_list()
+
+
