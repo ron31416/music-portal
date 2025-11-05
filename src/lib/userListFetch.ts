@@ -19,7 +19,6 @@ export function normalizeUserList(json: unknown): UserListItem[] {
                 if (typeof id === "number" && Number.isFinite(id)) {
                     out.push({
                         user_id: id,
-                        user_name: String(r.user_name ?? ""),
                         user_email: String(r.user_email ?? ""),
                         user_first_name: String(r.user_first_name ?? ""),
                         user_last_name: String(r.user_last_name ?? ""),

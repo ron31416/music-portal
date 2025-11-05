@@ -7,7 +7,6 @@
 
 export const USER_COL = {
   userId: "user_id",
-  userName: "user_name",
   userEmail: "user_email",
   userFirstName: "user_first_name",
   userLastName: "user_last_name",
@@ -30,7 +29,6 @@ export function isUserColToken(v: unknown): v is UserColToken {
    ============================================================ */
 
 export const SORTABLE_USER_TOKENS = [
-  USER_COL.userName,
   USER_COL.userEmail,
   USER_COL.userFirstName,
   USER_COL.userLastName,
@@ -49,7 +47,6 @@ export function isSortableUserColToken(v: unknown): v is SortableUserColToken {
    ============================================================ */
 
 export const userTokenToSql: Readonly<Record<SortableUserColToken, string>> = {
-  [USER_COL.userName]: "user_name",
   [USER_COL.userEmail]: "user_email",
   [USER_COL.userFirstName]: "user_first_name",
   [USER_COL.userLastName]: "user_last_name",

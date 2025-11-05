@@ -15,8 +15,8 @@ import { fetchUserRoles, type UserRole } from "@/lib/userRoleFetch";
    Config
    ========================= */
 
-//                  Name  Email  FName  LName  Role  Upd
-const GRID_COLS_PX = [100, 200, 150, 150, 100, 150] as const;
+//                  Email FName LName Role Upd
+const GRID_COLS_PX = [200, 150, 150, 100, 150] as const;
 const GRID_COLS: React.CSSProperties["gridTemplateColumns"] =
     GRID_COLS_PX.map((n) => `${n}px`).join(" ");
 const TABLE_MIN_PX = GRID_COLS_PX.reduce((a, b) => a + b, 0);
@@ -55,7 +55,6 @@ export default function AdminUsersPage(): React.ReactElement {
 
     // Fields
     const [userId, setUserId] = React.useState<number | null>(null);
-    const [userName, setUserName] = React.useState("");
     const [userEmail, setUserEmail] = React.useState("");
     const [userFirst, setUserFirst] = React.useState("");
     const [userLast, setUserLast] = React.useState("");
@@ -142,7 +141,6 @@ export default function AdminUsersPage(): React.ReactElement {
         setError("");
         setSaveOk("");
         setUserId(item.user_id);
-        setUserName(item.user_name ?? "");
         setUserEmail(item.user_email ?? "");
         setUserFirst(item.user_first_name ?? "");
         setUserLast(item.user_last_name ?? "");
@@ -154,7 +152,6 @@ export default function AdminUsersPage(): React.ReactElement {
         setError("");
         setSaveOk("");
         setUserId(null);
-        setUserName("");
         setUserEmail("");
         setUserFirst("");
         setUserLast("");
@@ -163,21 +160,18 @@ export default function AdminUsersPage(): React.ReactElement {
 
     // ---- client-side string checks ----
     function hasLeadingSpace(s: string): boolean { return s.length > 0 && s[0] === " "; }
-    function hasDoubleSpace(s: string): boolean { return s.includes("  "); }
     function rtrimSpaces(s: string): string { return s.replace(/[ \t]+$/u, ""); }
 
     const isUpdate = userId !== null;
 
     const canAdd =
         !isUpdate &&
-        userName.trim().length > 0 &&
         userEmail.trim().length > 0 &&
         roleNumber.length > 0 &&
         !deleting;
 
     const canUpdate =
         isUpdate &&
-        userName.trim().length > 0 &&
         userEmail.trim().length > 0 &&
         roleNumber.length > 0 &&
         !deleting;
@@ -190,23 +184,18 @@ export default function AdminUsersPage(): React.ReactElement {
         setError("");
         setSaveOk("");
 
-        const nameTrim = rtrimSpaces(userName);
         const emailTrim = rtrimSpaces(userEmail);
         const firstTrim = rtrimSpaces(userFirst);
         const lastTrim = rtrimSpaces(userLast);
 
-        if (nameTrim.length === 0) { setError("Username is required."); return; }
         if (emailTrim.length === 0) { setError("Email is required."); return; }
         if (roleNumber.length === 0) { setError("Role is required."); return; }
 
-        if (hasLeadingSpace(nameTrim)) { setError("Username must not start with a space."); return; }
-        if (hasDoubleSpace(nameTrim)) { setError("Username must not contain double spaces."); return; }
         if (hasLeadingSpace(emailTrim)) { setError("Email must not start with a space."); return; }
 
         try {
             const payload = {
                 [USER_COL.userId]: userId,
-                [USER_COL.userName]: nameTrim,
                 [USER_COL.userEmail]: emailTrim,
                 [USER_COL.userFirstName]: firstTrim,
                 [USER_COL.userLastName]: lastTrim,
@@ -318,7 +307,6 @@ export default function AdminUsersPage(): React.ReactElement {
             {mounted && (
                 <AdminUserEditPanel
                     /* controlled values */
-                    userName={userName}
                     userEmail={userEmail}
                     userFirst={userFirst}
                     userLast={userLast}
@@ -337,7 +325,6 @@ export default function AdminUsersPage(): React.ReactElement {
                     deleting={deleting}
 
                     /* handlers */
-                    onChangeUserName={setUserName}
                     onChangeUserEmail={setUserEmail}
                     onChangeUserFirst={setUserFirst}
                     onChangeUserLast={setUserLast}

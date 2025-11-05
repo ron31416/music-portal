@@ -110,13 +110,6 @@ export default function AdminUserListPanel(props: Props): React.ReactElement {
             }}
           >
             <SortHeaderButton<UserColToken>
-              col={USER_COL.userName}
-              curSort={sort}
-              dir={sortDir}
-              onToggle={onToggleSort}
-              label="User Name"
-            />
-            <SortHeaderButton<UserColToken>
               col={USER_COL.userEmail}
               curSort={sort}
               dir={sortDir}
@@ -189,9 +182,6 @@ export default function AdminUserListPanel(props: Props): React.ReactElement {
                   }}
                   title="Load for edit"
                 >
-                  <div className={panelCss.cellEllipsis}>
-                    {r.user_name || "\u2014"}
-                  </div>
                   <div className={panelCss.cellEllipsis}>
                     {r.user_email || "\u2014"}
                   </div>

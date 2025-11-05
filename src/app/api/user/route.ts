@@ -27,7 +27,6 @@ function err(message: string, status = 400, extra?: { message?: string }): NextR
 // =========================
 const CanonicalSaveSchema = z.object({
     user_id: z.number().int().positive().optional(),
-    user_name: z.string().trim().min(1, "user_name is required"),
     user_email: z.string().trim().min(1, "user_email is required"),
     user_first_name: z.string().trim().optional().default(""),
     user_last_name: z.string().trim().optional().default(""),
@@ -59,7 +58,6 @@ export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrR
                 }
                 return undefined;
             })(),
-            user_name: String(raw[USER_COL.userName] ?? ""),
             user_email: String(raw[USER_COL.userEmail] ?? ""),
             user_first_name: String(raw[USER_COL.userFirstName] ?? ""),
             user_last_name: String(raw[USER_COL.userLastName] ?? ""),
@@ -80,7 +78,6 @@ export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrR
             .schema(DB_SCHEMA)
             .rpc("user_upsert", {
                 p_user_id: input.user_id ?? null,
-                p_user_name: input.user_name,
                 p_user_email: input.user_email,
                 p_user_first_name: input.user_first_name,
                 p_user_last_name: input.user_last_name,
@@ -89,7 +86,7 @@ export async function POST(req: Request): Promise<NextResponse<OkResponse | ErrR
 
         if (error) {
             if (error.code === "23505") {
-                return err("conflict", 409, { message: "A user with the same username or email already exists." });
+                return err("conflict", 409, { message: "A user with the same email already exists." });
             }
             if (error.code === "P0002") {
                 return err("not_found", 404, { message: "user_id not found for update." });

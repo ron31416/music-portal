@@ -5,7 +5,6 @@ import styles from "./AdminUserEditPanel.module.css";
 type Role = { number: number; name: string };
 
 type Props = {
-    userName: string;
     userEmail: string;
     userFirst: string;
     userLast: string;
@@ -20,7 +19,6 @@ type Props = {
     saveLabel: string;
     canDelete: boolean;
     deleting: boolean;
-    onChangeUserName(value: string): void;
     onChangeUserEmail(value: string): void;
     onChangeUserFirst(value: string): void;
     onChangeUserLast(value: string): void;
@@ -33,12 +31,28 @@ type Props = {
 
 export default function AdminUserEditPanel(props: Props): React.ReactElement {
     const {
-        userName, userEmail, userFirst, userLast,
-        roleNumber, roles, rolesLoading, rolesError,
-        errorText, saveOkText, statusTick,
-        canSave, saveLabel, canDelete, deleting,
-        onChangeUserName, onChangeUserEmail, onChangeUserFirst, onChangeUserLast,
-        onChangeRoleNumber, onPick, onSave, onDelete, isDark,
+        userEmail,
+        userFirst,
+        userLast,
+        roleNumber,
+        roles,
+        rolesLoading,
+        rolesError,
+        errorText,
+        saveOkText,
+        statusTick,
+        canSave,
+        saveLabel,
+        canDelete,
+        deleting,
+        onChangeUserEmail,
+        onChangeUserFirst,
+        onChangeUserLast,
+        onChangeRoleNumber,
+        onPick,
+        onSave,
+        onDelete,
+        isDark,
     } = props;
 
     const rolesDisabled = rolesLoading || !!rolesError || roles.length === 0;
@@ -47,19 +61,6 @@ export default function AdminUserEditPanel(props: Props): React.ReactElement {
         <section aria-label="Edit panel" className={styles.panelSection} data-theme={isDark ? "dark" : "light"}>
             <div className={styles.panel}>
                 <div className={styles.grid}>
-                    <label className={styles.label} htmlFor="user-name">Username</label>
-                    <input
-                        id="user-name"
-                        className={styles.input}
-                        type="text"
-                        value={userName}
-                        onChange={(e) => onChangeUserName(e.target.value)}
-                        aria-label="Username"
-                        autoComplete="off"
-                        data-lpignore="true"
-                        data-form-type="other"
-                    />
-
                     <label className={styles.label} htmlFor="user-email">Email</label>
                     <input
                         id="user-email"

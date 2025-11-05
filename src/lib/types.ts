@@ -16,10 +16,9 @@ export type SongListResponse = Readonly<{ items: SongListItem[] }>;
 
 export type UserListItem = Readonly<{
    user_id: number;
-   user_name: string;
    user_email: string;
    user_first_name: string;
-   user_last_name: string;
+   user_last_name?: string;
    user_role_number: number;
    user_role_name: string;
    inserted_datetime: string;
