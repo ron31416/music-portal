@@ -2,12 +2,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { createClient as createAdminClient } from "@supabase/supabase-js";
 
 /**
- * Minimal auth callback (no DB writes):
+ * Auth callback with onboarding routing:
  *  - Validates query params
  *  - Exchanges ?code= for a Supabase session (sets auth cookies)
- *  - Redirects to ?next= (path-only) or "/"
+ *  - If site_user row exists -> redirect to ?next= (path-only) or "/"
+ *  - If missing -> redirect to "/welcome"
  *  - Emits helpful logs for diagnosing failures
  */
 export async function GET(req: NextRequest): Promise<Response> {
@@ -63,25 +65,62 @@ export async function GET(req: NextRequest): Promise<Response> {
     );
 
     // Exchange the single-use code for a session (sets auth cookies)
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    const { error: exchangeErr } = await supabase.auth.exchangeCodeForSession(code);
 
-    if (error) {
+    if (exchangeErr) {
         // Most common messages:
         // - "Invalid or expired refresh token"
         // - "Code verifier mismatch"
         // - "PKCE code invalid" (often host/redirect mismatch or code used twice)
         console.warn("[auth/callback] exchangeCodeForSession error:", {
-            message: error.message,
+            message: exchangeErr.message,
             origin: url.origin,
             next,
         });
 
         return NextResponse.redirect(
-            new URL(`/auth/error?message=${encodeURIComponent(error.message)}`, url.origin)
+            new URL(`/auth/error?message=${encodeURIComponent(exchangeErr.message)}`, url.origin)
         );
     }
 
-    // Success → go where caller asked
-    console.warn("[auth/callback] success, redirecting to:", next);
-    return NextResponse.redirect(new URL(next, url.origin));
+    // Read verified session/email
+    const { data: sessData, error: sessErr } = await supabase.auth.getSession();
+    if (sessErr) {
+        console.warn("[auth/callback] getSession error:", sessErr);
+        return NextResponse.redirect(new URL("/auth/error?message=session_read_failed", url.origin));
+    }
+
+    const email = sessData?.session?.user?.email ?? "";
+    if (!email) {
+        console.warn("[auth/callback] no email on session");
+        return NextResponse.redirect(new URL("/auth/error?message=no_email", url.origin));
+    }
+
+    // Use a server-side admin client to call service-role RPCs
+    const admin = createAdminClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY! // make sure this is set in your env (server-only)
+    );
+
+    // Check if the site_user row exists for this email
+    let hasRow = false;
+    try {
+        const { data, error: getErr } = await admin.rpc("user_get", {
+            p_user_id: null,
+            p_user_email: email,
+        });
+
+        if (getErr) {
+            console.warn("[auth/callback] user_get RPC error:", getErr);
+        } else {
+            hasRow = Array.isArray(data) && data.length > 0;
+        }
+    } catch (e) {
+        console.warn("[auth/callback] user_get exception:", e);
+    }
+
+    // Route: existing user → next/home, first-time → welcome
+    const dest = hasRow ? next : "/welcome";
+    console.warn("[auth/callback] success, redirecting to:", dest);
+    return NextResponse.redirect(new URL(dest, url.origin));
 }

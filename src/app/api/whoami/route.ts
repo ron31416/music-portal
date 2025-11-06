@@ -20,12 +20,27 @@ export async function GET(req: Request) {
         url.hostname === "127.0.0.1" ||
         url.hostname === "::1";
 
+    // Parse the flag explicitly
+    const DEV_FORCE_ADMIN =
+        process.env.DEV_FORCE_ADMIN === "1" ||
+        process.env.DEV_FORCE_ADMIN?.toLowerCase() === "true";
+
     // ---- Local-only force-admin hotkey (for UI testing without login) ----
-    if (isLocalHost && process.env.DEV_FORCE_ADMIN === "1") {
-        const email =
-            process.env.DEV_FORCE_EMAIL?.trim() || "dev-admin@local";
-        const role = process.env.DEV_FORCE_ROLE?.trim() || "admin";
+    // Debug: log what we see before deciding
+    console.warn("[whoami] host:", url.hostname, {
+        isLocalHost,
+        DEV_FORCE_ADMIN_raw: process.env.DEV_FORCE_ADMIN,
+        DEV_FORCE_ADMIN_parsed: DEV_FORCE_ADMIN,
+        DEV_FORCE_EMAIL: process.env.DEV_FORCE_EMAIL,
+        DEV_FORCE_ROLE: process.env.DEV_FORCE_ROLE,
+    });
+
+    if (isLocalHost && DEV_FORCE_ADMIN) {
+        const email = (process.env.DEV_FORCE_EMAIL?.trim() || "dev-adminx@local");
+        const role = (process.env.DEV_FORCE_ROLE?.trim() || "admin");
         const is_admin = role === "admin";
+
+        console.warn("[whoami] DEV_FORCE_ADMIN branch taken → spoofing", { email, role, is_admin });
         return NextResponse.json({ ok: true, email, role, is_admin });
     }
     // ---------------------------------------------------------------------
