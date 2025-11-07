@@ -966,7 +966,7 @@ function drawMeasureBoxes(
     if (tileH <= 0 || expectedBars <= 1) { return []; }
 
     // Staff corridor: ignore ornaments near the system edges
-    const pad = Math.floor(tileH * 0.10);
+    const pad = Math.floor(tileH * 0.10);  // 0.06 caused additional lines to break
     const corTop = y0 + pad;
     const corBot = y1 - pad;
     const corrH = Math.max(1, corBot - corTop);
@@ -974,8 +974,7 @@ function drawMeasureBoxes(
     // Allow a larger centered “hole” (grand-staff gap) but keep halves stringent
     const maxCenteredHoleFrac = 0.35;     // up to 35% if it's the central gap
     const minHalfCoverageFrac = 0.60;     // ≥60% coverage in each half
-    const minOverallCoverageFrac = 0.65;  // or ≥65% overall if no clear central gap
-
+    const minOverallCoverageFrac = 0.65;
     type Span = { t: number; b: number };
 
     // Bucket candidates by integer X and retain their vertical spans
@@ -991,7 +990,7 @@ function drawMeasureBoxes(
     for (const c of BAR_CANDS) {
       // widen width gate to admit thick/double bars rendered as rects
       const w = Math.round(c.bb.width);
-      if (w < 1 || w > 12) { continue; } // 1–12 px in page-local units
+      if (w < 1) { continue; }
 
       // Require candidate to meaningfully live in the corridor
       const cTop = Math.min(c.yTop, c.yBot);
@@ -1183,6 +1182,7 @@ function drawMeasureBoxes(
     const cy = Math.round(m.rect.y + m.rect.h / 2);
     if (cy < pageTop || cy >= pageBottom) { continue; }
 
+
     // 2) Robust tile pick by vertical overlap against seps (within this page)
     const rectTopPL = Math.round(m.rect.y);
     const rectBotPL = Math.round(m.rect.y + Math.max(1, Math.round(m.rect.h)));
@@ -1196,6 +1196,7 @@ function drawMeasureBoxes(
       const y1 = seps[t + 1];
       if (y0 === undefined || y1 === undefined) { continue; }
       const ov = Math.max(0, Math.min(rectBotPL, y1) - Math.max(rectTopPL, y0));
+
       if (ov > bestOv) { bestOv = ov; k = t; }
     }
     if (k < 0 || bestOv === 0) { continue; }
@@ -1211,7 +1212,7 @@ function drawMeasureBoxes(
     const items = buckets.get(k);
     if (!items || items.length === 0) { continue; }
 
-    // Sort by OSMD measure id number (more stable than bbox x when slurs/hairpins skew the box)
+    // Sort by OSMD measure id number (stable)
     items.sort((a, b) => {
       const an = (a.m.id.match(/measure[-_\s]?(\d+)/i)?.[1]);
       const bn = (b.m.id.match(/measure[-_\s]?(\d+)/i)?.[1]);
@@ -1221,34 +1222,62 @@ function drawMeasureBoxes(
       return a.m.rect.x - b.m.rect.x;
     });
 
-    // Y snap for this tile
-    const yTopTile = seps[k]!;
-    const yBotTile = seps[k + 1]!;
-    const y = Math.round(yTopTile) + 0.5;
-    const h = Math.max(1, Math.round(yBotTile - yTopTile) - 1);
+    // ---- Draw window (from seams) -> contiguous full-height boxes
+    const drawTop = seps[k]!;
+    const drawBot = seps[k + 1]!;
+    const y = Math.round(drawTop) + 0.5;
+    const h = Math.max(1, Math.round(drawBot - drawTop) - 1);
 
-    // Build intervals from detected barlines
+    // ---- Detect window (from measures, clamped to seams) -> robust bar detection
+    const mTop = Math.min(...items.map(it => Math.round(it.m.rect.y)));
+    const mBot = Math.max(...items.map(it => Math.round(it.m.rect.y + Math.max(1, Math.round(it.m.rect.h)))));
+    const detectTop = Math.max(drawTop, mTop);
+    const detectBot = Math.min(drawBot, mBot);
+
+    // Build intervals from detected barlines (detection uses detectTop/Bottom)
     const expectedBars = items.length + 1;
-    const tileIntervals = ensureTileIntervals(k, yTopTile, yBotTile, expectedBars);
+    let tileIntervals = ensureTileIntervals(k, detectTop, detectBot, expectedBars);
+
+    // Clamp intervals to the measures' horizontal span,
+    // but don't reject a true first interval just because its left barline
+    // is a few px left of tileMinX. Instead, keep a right-edge guard
+    // and discard only tiny pre-measure slivers by width.
+    const tileMaxX = Math.max(...items.map(it => Math.round(it.m.rect.x + Math.round(it.m.rect.w))));
+    const XTOL = 2;
+    const MIN_MEASURE_W = 8; // px, small but kills connector→bar slivers
+
+    tileIntervals = tileIntervals
+      .filter(iv => iv.right <= tileMaxX + XTOL)                 // keep inside music on the right
+      .filter(iv => (iv.right - iv.left) >= MIN_MEASURE_W);      // drop ultra-thin pre-measure shards
 
     if (DBG_BAR) {
-      const keptXs = getTileBarlineXs(yTopTile, yBotTile, expectedBars);
+      const keptXs = getTileBarlineXs(detectTop, detectBot, expectedBars);
       for (const x of keptXs) {
-        dbgVLine(Math.round(x) + 0.5, yTopTile, yBotTile, "rgba(0,180,0,0.9)", false);
+        // show final barlines across full draw height for readability
+        dbgVLine(Math.round(x) + 0.5, drawTop, drawBot, "rgba(0,180,0,0.9)", false);
       }
+
       const ids = items.map(it => it.m.id);
-      const edges = tileIntervals.map(it => `[${it.left},${it.right}]`);
-      // eslint-disable-next-line no-console
-      console.log(`tile ${k}: measures=${items.length}, bars=${expectedBars}, intervals=${tileIntervals.length}`, { ids, edges });
+      const edges = tileIntervals.map(iv => `[${iv.left},${iv.right}]`);
+
+      // route through existing debug logger
+      logStep(
+        `tile ${k}: measures=${items.length}, bars=${expectedBars}, intervals=${tileIntervals.length} :: ids=${ids.join(",")} :: edges=${edges.join(",")}`
+      );
     }
 
     const N = Math.min(items.length, tileIntervals.length);
-    if (DBG_BAR && (tileIntervals.length !== items.length || tileIntervals.length !== expectedBars - 1)) {
 
-      console.warn(`tile ${k} mismatch: measures=${items.length}, expectedBars=${expectedBars}, intervals=${tileIntervals.length}`);
+    if (DBG_BAR && (tileIntervals.length !== items.length || tileIntervals.length !== expectedBars - 1)) {
+      // also through logStep
+      logStep(
+        `⚠ tile ${k} mismatch: measures=${items.length}, expectedBars=${expectedBars}, intervals=${tileIntervals.length}`
+      );
     }
+
     if (N === 0) { continue; }
 
+    // Draw rectangles using drawTop/drawBot (contiguous)
     for (let i = 0; i < N; i++) {
       const { m } = items[i]!;
       const chosen = tileIntervals[i]!;
@@ -1258,8 +1287,8 @@ function drawMeasureBoxes(
       const w = Math.max(1, Math.round(Math.abs(rEdge - l)) - 1);
 
       if (DBG_BAR) {
-        dbgVLine(l, yTopTile, yBotTile, "rgba(0,80,220,0.9)", false);
-        dbgVLine(rEdge, yTopTile, yBotTile, "rgba(0,80,220,0.9)", false);
+        dbgVLine(l, drawTop, drawBot, "rgba(0,80,220,0.9)", false);
+        dbgVLine(rEdge, drawTop, drawBot, "rgba(0,80,220,0.9)", false);
       }
 
       const r = createSvgEl("rect");
@@ -1275,7 +1304,7 @@ function drawMeasureBoxes(
 
       const numMatch = m.id.match(/measure[-_\s]?(\d+)/i);
       const tx = Math.round(m.rect.x) + 4;
-      const ty = Math.round(yTopTile) + 12;
+      const ty = Math.round(drawTop) + 12; // label anchored to drawTop for consistency
 
       const t = createSvgEl("text");
       t.textContent = (numMatch?.[1] ?? m.id);
