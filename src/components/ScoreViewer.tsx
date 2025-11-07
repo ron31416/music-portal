@@ -868,74 +868,432 @@ function drawMeasureBoxes(
   const g = createSvgEl("g");
   layer.appendChild(g);
 
-  // 4) Draw rects with snapped verticals per tile; keep horizontal x/w as-is
-  for (const m of measures) {
-    // center Y in page-local coords
-    const cy = Math.round(m.rect.y + m.rect.h / 2);
+  // Pre-scan and cache potential barline graphics once per page, in PAGE-LOCAL px.
+  // This avoids mixing SVG user units with overlay CSS pixels.
+  type BarCand = {
+    el: SVGGraphicsElement;
+    bb: { x: number; y: number; width: number; height: number }; // page-local px
+    thin: boolean;
+    yTop: number;  // page-local
+    yBot: number;  // page-local
+    hinted: boolean;
+  };
 
-    // Ignore measures outside this page’s vertical window
-    if (cy < pageTop || cy >= pageBottom) {
-      continue;
+  const allGraphics = Array.from(
+    svgRoot.querySelectorAll<SVGGraphicsElement>("line, rect, path")
+  );
+
+  // Helper to map (x,y) in SVG user units → page-local px (outer’s 0,0)
+  const outerRect = outer.getBoundingClientRect();
+  const svgPoint = svgRoot.createSVGPoint();
+  const toPageLocal = (el: SVGGraphicsElement, x: number, y: number) => {
+    const m = el.getScreenCTM();
+    if (!m) { return { x: 0, y: 0 }; }
+    svgPoint.x = x;
+    svgPoint.y = y;
+    const scr = svgPoint.matrixTransform(m);
+    return { x: scr.x - outerRect.left, y: scr.y - outerRect.top };
+  };
+
+  const BAR_CANDS: BarCand[] = [];
+  for (const el of allGraphics) {
+    let bbSvg: DOMRect | null = null;
+    try { bbSvg = el.getBBox(); } catch { bbSvg = null; }
+    if (!bbSvg) { continue; }
+
+    // Convert bbox corners to page-local px
+    const p1 = toPageLocal(el, bbSvg.x, bbSvg.y);
+    const p2 = toPageLocal(el, bbSvg.x + bbSvg.width, bbSvg.y + bbSvg.height);
+
+    const bb = {
+      x: Math.min(p1.x, p2.x),
+      y: Math.min(p1.y, p2.y),
+      width: Math.abs(p2.x - p1.x),
+      height: Math.abs(p2.y - p1.y),
+    };
+
+    // Class hints (optional)
+    const cls = (el.getAttribute("class") || "").toLowerCase();
+    const parentCls = (el.parentElement?.getAttribute("class") || "").toLowerCase();
+    const hinted = cls.includes("stave") || cls.includes("bar")
+      || parentCls.includes("stave") || parentCls.includes("bar");
+
+    const thin = Math.round(bb.width) <= 4;
+
+    BAR_CANDS.push({
+      el,
+      bb,
+      thin,
+      yTop: bb.y,
+      yBot: bb.y + bb.height,
+      hinted,
+    });
+  }
+
+  // --- Debug toggle for barline detection ---
+  const DBG_BAR = typeof window !== "undefined" && window.location.hash.includes("viewer-barlines");
+
+  const gDbg = DBG_BAR ? createSvgEl("g") : null;
+  if (gDbg) {
+    gDbg.setAttribute("data-viewer-measureboxes-barlog", "1");
+    layer.appendChild(gDbg);
+  }
+
+  function dbgVLine(x: number, y0: number, y1: number, stroke: string, dash = false): void {
+    if (!DBG_BAR || !gDbg) { return; }
+    const ln = createSvgEl("line");
+    ln.setAttribute("x1", String(x));
+    ln.setAttribute("x2", String(x));
+    ln.setAttribute("y1", String(y0));
+    ln.setAttribute("y2", String(y1));
+    ln.setAttribute("stroke", stroke);
+    ln.setAttribute("stroke-width", "1");
+    if (dash) { ln.setAttribute("stroke-dasharray", "3 3"); }
+    ln.setAttribute("vector-effect", "non-scaling-stroke");
+    gDbg.appendChild(ln);
+  }
+  // --- End helper ---
+
+  // --- Per-tile barline extraction & interval cache ---
+  type Interval = { left: number; right: number };
+
+  // Collect inner-edge X positions of vertical barlines that belong to a given tile.
+  // expectedBars = measures_in_tile + 1
+  function getTileBarlineXs(yTop: number, yBot: number, expectedBars: number): number[] {
+    const y0 = Math.min(yTop, yBot);
+    const y1 = Math.max(yTop, yBot);
+    const tileH = Math.max(0, y1 - y0);
+    if (tileH <= 0 || expectedBars <= 1) { return []; }
+
+    // Staff corridor: ignore ornaments near the system edges
+    const pad = Math.floor(tileH * 0.10);
+    const corTop = y0 + pad;
+    const corBot = y1 - pad;
+    const corrH = Math.max(1, corBot - corTop);
+
+    // Allow a larger centered “hole” (grand-staff gap) but keep halves stringent
+    const maxCenteredHoleFrac = 0.35;     // up to 35% if it's the central gap
+    const minHalfCoverageFrac = 0.60;     // ≥60% coverage in each half
+    const minOverallCoverageFrac = 0.65;  // or ≥65% overall if no clear central gap
+
+    type Span = { t: number; b: number };
+
+    // Bucket candidates by integer X and retain their vertical spans
+    const BUCKETS = new Map<number, Span[]>();
+    const put = (x: number, t: number, b: number): void => {
+      const xr = Math.round(x);
+      const arr = BUCKETS.get(xr);
+      const s: Span = { t, b };
+      if (arr) { arr.push(s); } else { BUCKETS.set(xr, [s]); }
+    };
+
+    // Scan graphics → keep verticals inside the corridor with realistic widths
+    for (const c of BAR_CANDS) {
+      // widen width gate to admit thick/double bars rendered as rects
+      const w = Math.round(c.bb.width);
+      if (w < 1 || w > 12) { continue; } // 1–12 px in page-local units
+
+      // Require candidate to meaningfully live in the corridor
+      const cTop = Math.min(c.yTop, c.yBot);
+      const cBot = Math.max(c.yTop, c.yBot);
+      const insideTop = Math.max(corTop, cTop);
+      const insideBot = Math.min(corBot, cBot);
+      const insideH = Math.max(0, insideBot - insideTop);
+      if (insideH < corrH * 0.55) { continue; } // a touch softer than before
+
+      // Start from bbox edges by default
+      let left = c.bb.x;
+      let right = c.bb.x + c.bb.width;
+
+      // If it's a nearly vertical <line>, prefer x1/x2
+      const tag = c.el.tagName.toLowerCase();
+      if (tag === "line") {
+        const x1s = c.el.getAttribute("x1");
+        const x2s = c.el.getAttribute("x2");
+        if (x1s !== null && x2s !== null) {
+          const x1 = Math.round(Number(x1s));
+          const x2 = Math.round(Number(x2s));
+          if (Number.isFinite(x1) && Number.isFinite(x2) && Math.abs(x1 - x2) <= 1) {
+            left = Math.min(x1, x2);
+            right = Math.max(x1, x2);
+          }
+        }
+      }
+
+      put(left, c.yTop, c.yBot);
+      if (right !== left) { put(right, c.yTop, c.yBot); }
     }
 
-    // Find tile index explicitly (avoid defaulting to last tile)
-    const lastIdx = seps.length - 2; // last valid tile index
+    if (BUCKETS.size === 0) { return []; }
+
+    // Merge helper inside corridor
+    const mergeSpans = (spans: Span[]) => {
+      const S = spans
+        .map(s => ({ t: Math.max(corTop, Math.min(s.t, s.b)), b: Math.min(corBot, Math.max(s.t, s.b)) }))
+        .filter(s => s.b > s.t)
+        .sort((a, b) => a.t - b.t);
+
+      const merged: Span[] = [];
+      for (const s of S) {
+        const last = merged.length ? merged[merged.length - 1] : null;
+        if (!last || s.t > last.b) { merged.push({ t: s.t, b: s.b }); }
+        else { last.b = Math.max(last.b, s.b); }
+      }
+      return merged;
+    };
+
+    // Evaluate buckets with grand-staff aware acceptance
+    const xsRaw: number[] = [];
+    for (const [x, spans] of BUCKETS) {
+      const merged = mergeSpans(spans);
+      if (merged.length === 0) { continue; }
+
+      // overall coverage + largest hole
+      let covered = 0;
+      let maxHole = 0;
+      let cursor = corTop;
+      for (const m of merged) {
+        if (m.t > cursor) { maxHole = Math.max(maxHole, m.t - cursor); }
+        covered += (m.b - Math.max(m.t, cursor));
+        cursor = Math.max(cursor, m.b);
+      }
+      if (cursor < corBot) { maxHole = Math.max(maxHole, corBot - cursor); }
+      const overallOK = (covered >= corrH * minOverallCoverageFrac);
+
+      // split by largest gap into halves and test each half's coverage
+      let halvesOK = false;
+      if (merged.length > 1) {
+        // find largest internal gap to define a candidate staff gap
+        let bestGap = -1, splitY = corTop;
+        let lastB = merged[0]!.b;
+        for (let i = 1; i < merged.length; i++) {
+          const gap = merged[i]!.t - lastB;
+          if (gap > bestGap) { bestGap = gap; splitY = (lastB + merged[i]!.t) / 2; }
+          lastB = merged[i]!.b;
+        }
+        const topH = Math.max(1, splitY - corTop);
+        const botH = Math.max(1, corBot - splitY);
+
+        // coverage in each half
+        const covHalf = (t0: number, t1: number) => {
+          let c = 0;
+          for (const m of merged) {
+            const a = Math.max(t0, m.t);
+            const b = Math.min(t1, m.b);
+            if (b > a) { c += (b - a); }
+          }
+          return c;
+        };
+        const topCov = covHalf(corTop, splitY);
+        const botCov = covHalf(splitY, corBot);
+
+        // accept if both halves are reasonably covered,
+        // and allow a larger central hole if that's what created the split
+        const centeredOK = (bestGap >= corrH * 0.10) && (bestGap <= corrH * maxCenteredHoleFrac);
+        halvesOK = centeredOK &&
+          (topCov >= topH * minHalfCoverageFrac) &&
+          (botCov >= botH * minHalfCoverageFrac);
+      }
+
+      if (overallOK || halvesOK) {
+        xsRaw.push(x);
+        if (DBG_BAR) { dbgVLine(x, corTop, corBot, "rgba(0,160,0,0.95)", false); }
+      }
+    }
+
+    if (xsRaw.length === 0) { return []; }
+
+    // Sort and cluster near-duplicates (collapse double/thick bars)
+    xsRaw.sort((a, b) => a - b);
+
+    const CLUSTER_EPS = 3; // px
+    const xsClustered: number[] = [];
+
+    let sum = xsRaw[0]!;
+    let count = 1;
+
+    for (let i = 1; i < xsRaw.length; i++) {
+      const x = xsRaw[i]!;
+      const mean = sum / count;
+      if (Math.abs(x - mean) <= CLUSTER_EPS) {
+        // keep extending current cluster
+        sum += x;
+        count++;
+      } else {
+        // close current cluster and start a new one
+        xsClustered.push(Math.round(mean));
+        sum = x;
+        count = 1;
+      }
+    }
+
+    // push the final cluster centroid
+    xsClustered.push(Math.round(sum / count));
+
+    // If we still have too many, prune conservatively by removing the tightest pair
+    const xs = xsClustered.slice();
+    while (xs.length > expectedBars) {
+      let bestIdx = -1;
+      let bestGap = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < xs.length - 1; i++) {
+        const g = xs[i + 1]! - xs[i]!;
+        if (g < bestGap) { bestGap = g; bestIdx = i; }
+      }
+      // remove the member of the tightest pair that yields larger neighborhood gap after removal
+      if (bestIdx < 0) { break; }
+      const leftPull = bestIdx > 0 ? xs[bestIdx]! - xs[bestIdx - 1]! : Number.POSITIVE_INFINITY;
+      const rightPull = (bestIdx + 2 < xs.length) ? xs[bestIdx + 2]! - xs[bestIdx + 1]! : Number.POSITIVE_INFINITY;
+      if (leftPull <= rightPull) { xs.splice(bestIdx, 1); }
+      else { xs.splice(bestIdx + 1, 1); }
+    }
+
+    return xs;
+  }
+
+  // Cache of intervals per tile index + expected bar count
+  const INTERVALS_BY_TILE = new Map<string, Interval[]>();
+
+  function ensureTileIntervals(tileIndex: number, yTop: number, yBot: number, expectedBars: number): Interval[] {
+    const key = `${tileIndex}:${expectedBars}`;
+    const cached = INTERVALS_BY_TILE.get(key);
+    if (cached) { return cached; }
+
+    const xs = getTileBarlineXs(yTop, yBot, expectedBars);
+    const intervals: Interval[] = [];
+    for (let i = 0; i < xs.length - 1; i++) {
+      const l = xs[i]!;
+      const r = xs[i + 1]!;
+      if (r > l) { intervals.push({ left: l, right: r }); }
+    }
+
+    INTERVALS_BY_TILE.set(key, intervals);
+    return intervals;
+  }
+  // --- End per-tile barline helpers ---
+
+  // 4) Bucket measures by tile (system) and draw in left→right order per tile.
+  //    This guarantees monotonic interval selection and prevents overlap.
+  type BucketItem = { m: typeof measures[number]; k: number };
+
+  // Build buckets keyed by tile index k
+  const buckets = new Map<number, BucketItem[]>();
+
+  for (const m of measures) {
+    // 1) Page filter by vertical center in *page-local* coords (strict)
+    const cy = Math.round(m.rect.y + m.rect.h / 2);
+    if (cy < pageTop || cy >= pageBottom) { continue; }
+
+    // 2) Robust tile pick by vertical overlap against seps (within this page)
+    const rectTopPL = Math.round(m.rect.y);
+    const rectBotPL = Math.round(m.rect.y + Math.max(1, Math.round(m.rect.h)));
+
+    const lastIdx = seps.length - 2; // last valid tile
     let k = -1;
+    let bestOv = 0;
+
     for (let t = 0; t <= lastIdx; t++) {
       const y0 = seps[t];
       const y1 = seps[t + 1];
       if (y0 === undefined || y1 === undefined) { continue; }
-      if (cy >= y0 && cy < y1) { k = t; break; }
+      const ov = Math.max(0, Math.min(rectBotPL, y1) - Math.max(rectTopPL, y0));
+      if (ov > bestOv) { bestOv = ov; k = t; }
     }
-    if (k < 0) { continue; } // safety
+    if (k < 0 || bestOv === 0) { continue; }
 
-    // Snap verticals to this tile’s top/bottom
-    const yTop = seps[k]!;
-    const yBot = seps[k + 1]!;
-    const y = Math.round(yTop) + 0.5;
-    const h = Math.max(0, Math.round(yBot - yTop) - 1);
-
-    // Keep horizontal as-is (align stroke to pixel grid)
-    const x = Math.round(m.rect.x) + 0.5;
-    const w = Math.max(0, Math.round(m.rect.w) - 1);
-
-    const r = createSvgEl("rect");
-    r.setAttribute("x", String(x));
-    r.setAttribute("y", String(y));
-    r.setAttribute("width", String(w));
-    r.setAttribute("height", String(h));
-    r.setAttribute("fill", "none");
-    r.setAttribute("stroke", "rgba(0,0,0,0.55)");
-    r.setAttribute("stroke-width", "1");
-    r.setAttribute("vector-effect", "non-scaling-stroke");
-    g.appendChild(r);
-
-    // Label each measure using its numeric suffix from id like "measure-12"
-    const numMatch = m.id.match(/measure[-_\s]?(\d+)/i);
-
-    // Position label at top-left of the snapped tile (so it aligns per-system)
-    const tx = Math.round(m.rect.x) + 4;
-    const ty = Math.round(yTop) + 12;
-
-    const t = createSvgEl("text");
-    t.textContent = (numMatch?.[1] ?? m.id);
-    t.setAttribute("x", String(tx));
-    t.setAttribute("y", String(ty));
-    t.setAttribute("font-size", "11");
-    t.setAttribute("font-family", "system-ui, sans-serif");
-    t.setAttribute("dominant-baseline", "hanging");
-
-    // Outline for readability over staff lines
-    t.setAttribute("fill", "black");
-    t.setAttribute("paint-order", "stroke");
-    t.setAttribute("stroke", "white");
-    t.setAttribute("stroke-width", "2");
-    t.setAttribute("stroke-linejoin", "round");
-
-    g.appendChild(t);
-
+    const arr = buckets.get(k);
+    const item: BucketItem = { m, k };
+    if (arr) { arr.push(item); } else { buckets.set(k, [item]); }
   }
 
+  // Now iterate tiles in order; within each, sort by x and draw
+  const lastTileIndex = seps.length - 2;
+  for (let k = 0; k <= lastTileIndex; k++) {
+    const items = buckets.get(k);
+    if (!items || items.length === 0) { continue; }
+
+    // Sort by OSMD measure id number (more stable than bbox x when slurs/hairpins skew the box)
+    items.sort((a, b) => {
+      const an = (a.m.id.match(/measure[-_\s]?(\d+)/i)?.[1]);
+      const bn = (b.m.id.match(/measure[-_\s]?(\d+)/i)?.[1]);
+      const ai = an ? Number(an) : Number.POSITIVE_INFINITY;
+      const bi = bn ? Number(bn) : Number.POSITIVE_INFINITY;
+      if (ai !== bi) { return ai - bi; }
+      return a.m.rect.x - b.m.rect.x;
+    });
+
+    // Y snap for this tile
+    const yTopTile = seps[k]!;
+    const yBotTile = seps[k + 1]!;
+    const y = Math.round(yTopTile) + 0.5;
+    const h = Math.max(1, Math.round(yBotTile - yTopTile) - 1);
+
+    // Build intervals from detected barlines
+    const expectedBars = items.length + 1;
+    const tileIntervals = ensureTileIntervals(k, yTopTile, yBotTile, expectedBars);
+
+    if (DBG_BAR) {
+      const keptXs = getTileBarlineXs(yTopTile, yBotTile, expectedBars);
+      for (const x of keptXs) {
+        dbgVLine(Math.round(x) + 0.5, yTopTile, yBotTile, "rgba(0,180,0,0.9)", false);
+      }
+      const ids = items.map(it => it.m.id);
+      const edges = tileIntervals.map(it => `[${it.left},${it.right}]`);
+      // eslint-disable-next-line no-console
+      console.log(`tile ${k}: measures=${items.length}, bars=${expectedBars}, intervals=${tileIntervals.length}`, { ids, edges });
+    }
+
+    const N = Math.min(items.length, tileIntervals.length);
+    if (DBG_BAR && (tileIntervals.length !== items.length || tileIntervals.length !== expectedBars - 1)) {
+
+      console.warn(`tile ${k} mismatch: measures=${items.length}, expectedBars=${expectedBars}, intervals=${tileIntervals.length}`);
+    }
+    if (N === 0) { continue; }
+
+    for (let i = 0; i < N; i++) {
+      const { m } = items[i]!;
+      const chosen = tileIntervals[i]!;
+      const l = Math.round(chosen.left) + 0.5;
+      const rEdge = Math.round(chosen.right) + 0.5;
+      const x = Math.min(l, rEdge);
+      const w = Math.max(1, Math.round(Math.abs(rEdge - l)) - 1);
+
+      if (DBG_BAR) {
+        dbgVLine(l, yTopTile, yBotTile, "rgba(0,80,220,0.9)", false);
+        dbgVLine(rEdge, yTopTile, yBotTile, "rgba(0,80,220,0.9)", false);
+      }
+
+      const r = createSvgEl("rect");
+      r.setAttribute("x", String(x));
+      r.setAttribute("y", String(y));
+      r.setAttribute("width", String(w));
+      r.setAttribute("height", String(h));
+      r.setAttribute("fill", "none");
+      r.setAttribute("stroke", "rgba(0,0,0,0.55)");
+      r.setAttribute("stroke-width", "1");
+      r.setAttribute("vector-effect", "non-scaling-stroke");
+      g.appendChild(r);
+
+      const numMatch = m.id.match(/measure[-_\s]?(\d+)/i);
+      const tx = Math.round(m.rect.x) + 4;
+      const ty = Math.round(yTopTile) + 12;
+
+      const t = createSvgEl("text");
+      t.textContent = (numMatch?.[1] ?? m.id);
+      t.setAttribute("x", String(tx));
+      t.setAttribute("y", String(ty));
+      t.setAttribute("font-size", "11");
+      t.setAttribute("font-family", "system-ui, sans-serif");
+      t.setAttribute("dominant-baseline", "hanging");
+      t.setAttribute("fill", "black");
+      t.setAttribute("paint-order", "stroke");
+      t.setAttribute("stroke", "white");
+      t.setAttribute("stroke-width", "2");
+      t.setAttribute("stroke-linejoin", "round");
+      g.appendChild(t);
+    }
+  }
+
+  // append the overlay once (after all tiles are drawn)
   outer.appendChild(layer);
 }
 
