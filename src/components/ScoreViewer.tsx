@@ -959,7 +959,12 @@ function drawMeasureBoxes(
 
   // Collect inner-edge X positions of vertical barlines that belong to a given tile.
   // expectedBars = measures_in_tile + 1
-  function getTileBarlineXs(yTop: number, yBot: number, expectedBars: number): number[] {
+  function getTileBarlineXs(
+    yTop: number,
+    yBot: number,
+    expectedBars: number,
+    leftBoundPx = -Infinity
+  ): number[] {
     const y0 = Math.min(yTop, yBot);
     const y1 = Math.max(yTop, yBot);
     const tileH = Math.max(0, y1 - y0);
@@ -981,6 +986,7 @@ function drawMeasureBoxes(
     const BUCKETS = new Map<number, Span[]>();
     const put = (x: number, t: number, b: number): void => {
       const xr = Math.round(x);
+      if (xr < leftBoundPx) { return; }       // <<< NEW: ignore anything left of the music
       const arr = BUCKETS.get(xr);
       const s: Span = { t, b };
       if (arr) { arr.push(s); } else { BUCKETS.set(xr, [s]); }
@@ -1152,12 +1158,18 @@ function drawMeasureBoxes(
   // Cache of intervals per tile index + expected bar count
   const INTERVALS_BY_TILE = new Map<string, Interval[]>();
 
-  function ensureTileIntervals(tileIndex: number, yTop: number, yBot: number, expectedBars: number): Interval[] {
-    const key = `${tileIndex}:${expectedBars}`;
+  function ensureTileIntervals(
+    tileIndex: number,
+    yTop: number,
+    yBot: number,
+    expectedBars: number,
+    leftBoundPx = -Infinity
+  ): Interval[] {
+    const key = `${tileIndex}:${expectedBars}:${Math.round(leftBoundPx)}`;
     const cached = INTERVALS_BY_TILE.get(key);
     if (cached) { return cached; }
 
-    const xs = getTileBarlineXs(yTop, yBot, expectedBars);
+    const xs = getTileBarlineXs(yTop, yBot, expectedBars, leftBoundPx);
     const intervals: Interval[] = [];
     for (let i = 0; i < xs.length - 1; i++) {
       const l = xs[i]!;
@@ -1236,7 +1248,13 @@ function drawMeasureBoxes(
 
     // Build intervals from detected barlines (detection uses detectTop/Bottom)
     const expectedBars = items.length + 1;
-    let tileIntervals = ensureTileIntervals(k, detectTop, detectBot, expectedBars);
+
+    // left bound = left edge of the music for this tile (a tiny tolerance is OK)
+    const musicLeft = Math.min(...items.map(it => Math.round(it.m.rect.x)));
+    const LEFT_TOL = 2;
+    const leftBoundPx = musicLeft - LEFT_TOL;
+
+    let tileIntervals = ensureTileIntervals(k, detectTop, detectBot, expectedBars, leftBoundPx);
 
     // Clamp intervals to the measures' horizontal span,
     // but don't reject a true first interval just because its left barline
@@ -1251,9 +1269,8 @@ function drawMeasureBoxes(
       .filter(iv => (iv.right - iv.left) >= MIN_MEASURE_W);      // drop ultra-thin pre-measure shards
 
     if (DBG_BAR) {
-      const keptXs = getTileBarlineXs(detectTop, detectBot, expectedBars);
+      const keptXs = getTileBarlineXs(detectTop, detectBot, expectedBars, leftBoundPx);
       for (const x of keptXs) {
-        // show final barlines across full draw height for readability
         dbgVLine(Math.round(x) + 0.5, drawTop, drawBot, "rgba(0,180,0,0.9)", false);
       }
 
@@ -1267,6 +1284,18 @@ function drawMeasureBoxes(
     }
 
     const N = Math.min(items.length, tileIntervals.length);
+
+    // --- Final brace/connector exclusion ---
+    if (Array.isArray(tileIntervals) && tileIntervals.length > 0 && N > 0) {
+      const t0 = tileIntervals;              // TS now knows t0 is non-empty array
+      const firstLeft = t0[0]!.left;         // the non-null assertion is now legitimate
+      tileIntervals = t0.map(iv => ({
+        left: Math.max(iv.left, firstLeft),
+        right: iv.right
+      }));
+    }
+
+    if (N === 0) { continue; }
 
     if (DBG_BAR && (tileIntervals.length !== items.length || tileIntervals.length !== expectedBars - 1)) {
       // also through logStep
