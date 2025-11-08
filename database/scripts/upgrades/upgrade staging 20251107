@@ -14,8 +14,8 @@ begin
     raise exception 'Guard failed: public.system_environment is empty or missing';
   end if;
 
-  if v_system_environment_name <> 'music-portal-dev' then
-    raise exception 'This script is only for the music-portal-dev database (found %)',
+  if v_system_environment_name <> 'music-portal-staging' then
+    raise exception 'This script is only for the music-portal-staging database (found %)',
       v_system_environment_name;
   end if;
 end
