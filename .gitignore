@@ -44,3 +44,9 @@ next-env.d.ts
 /public/sitemap*.xml
 /public/robots.txt
 
+# Local DB dumps (per-clone)
+database/scripts/db_backups/
+database/db_backups/
+*.dump
+*.sql.gz
+*.pgcustom
