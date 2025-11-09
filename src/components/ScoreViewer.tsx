@@ -647,178 +647,267 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "scanSystemsPx";
 
-  try {
-    // Prefer per-page roots if present; otherwise scan the single root
-    const pageRoots = getPageRoots(svgRoot);
-    const roots: Array<SVGGElement | SVGSVGElement> = pageRoots.length ? pageRoots : [svgRoot];
+  type ElemRect = { top: number; bottom: number; height: number; width: number };
+  type Frame = { top: number; bottom: number };
 
-    const hostTop = outer.getBoundingClientRect().top;
+  const diagOn = typeof isPagDiagOn === "function" && isPagDiagOn();
+  const THRESH = dynamicBandGapPx();
 
-    // Element accept thresholds (kept conservative)
-    const MIN_H = 2;           // drop true hairline specks
-    const MIN_W = 6;           // normal min width (notes/text/slurs/hairpins)
-    const STEM_MIN_W = 1.5;    // stems/slur tails are very thin
-    const TALL_NARROW_H = 22;  // stems/tails typically exceed this height
+  // Element accept thresholds (your proven set)
+  const MIN_H = 2;
+  const MIN_W = 6;
+  const STEM_MIN_W = 1.5;
+  const TALL_NARROW_H = 22;
 
-    // Histogram smoothing parameters (deterministic)
-    const FILL_GAP = 8;        // fill internal holes up to 8 px
-    const ABS_MIN_RUN = 64;    // never keep a run shorter than this
-    const REL_MIN_RUN = 0.30;  // also require >= 30% of median run height
+  // Title/header guard (used only if we detect systems on a page)
+  const HEADER_GUARD_PX = 12;
 
-    const allBands: Band[] = [];
+  // Gap-filler guardrails
+  const GAP_MAX = 80;
+  const FILL_MIN_H = 18;
+  const EXTEND_CAP = 40; // px
 
-    for (const root of roots) {
-      // 1) Collect glyph rects for THIS PAGE ONLY
-      const SELECTORS = "path,rect,line,polyline,polygon,text,use,circle,ellipse";
-      const graphics = Array.from(root.querySelectorAll<SVGGraphicsElement>(SELECTORS));
+  const hostTop = outer.getBoundingClientRect().top;
 
-      type R = { top: number; bottom: number; height: number; width: number };
-      const rects: R[] = [];
+  // 1) Collect ALL acceptable element rects (document-wide, page-relative Y)
+  const ALL_SELECTORS = "path,rect,line,polyline,polygon,text,use,circle,ellipse";
+  const graphics = Array.from(svgRoot.querySelectorAll<SVGGraphicsElement>(ALL_SELECTORS));
 
-      for (const el of graphics) {
-        try {
-          const r = el.getBoundingClientRect();
-          if (!Number.isFinite(r.top) || !Number.isFinite(r.height) || !Number.isFinite(r.width)) {
-            continue;
-          }
+  const allRects: ElemRect[] = [];
+  for (const el of graphics) {
+    try {
+      const r = el.getBoundingClientRect();
+      if (!Number.isFinite(r.top) || !Number.isFinite(r.height) || !Number.isFinite(r.width)) { continue; }
+      if (r.height < MIN_H) { continue; }
 
-          if (r.height < MIN_H) { continue; }
-          const acceptsNormal = (r.width >= MIN_W);
-          const acceptsTallNarrow = (r.height >= TALL_NARROW_H && r.width >= STEM_MIN_W);
-          if (!(acceptsNormal || acceptsTallNarrow)) { continue; }
+      const okNormal = r.width >= MIN_W;
+      const okTallThin = r.height >= TALL_NARROW_H && r.width >= STEM_MIN_W;
+      if (!(okNormal || okTallThin)) { continue; }
 
-          // Coords relative to our host
-          const top = r.top - hostTop;
-          const bottom = r.bottom - hostTop;
-          rects.push({ top, bottom, height: r.height, width: r.width });
-        } catch { /* ignore */ }
+      const top = r.top - hostTop;
+      const bottom = r.bottom - hostTop;
+      allRects.push({ top, bottom, height: r.height, width: r.width });
+    } catch { /* ignore */ }
+  }
+  if (!allRects.length) { return []; }
+
+  // 2) Try to get page frames from OSMD; if absent, infer frames from gutters.
+  const frames: Frame[] = (() => {
+    // A) OSMD page wrappers (most robust when present)
+    const pageGroups = Array.from(
+      svgRoot.querySelectorAll<SVGGElement>("g[id^='page' i], g[class*='page' i], g.osmd-page, svg[data-page]")
+    );
+    if (pageGroups.length) {
+      const list: Frame[] = [];
+      for (const g of pageGroups) {
+        const r = g.getBoundingClientRect();
+        if (!Number.isFinite(r.top) || !Number.isFinite(r.bottom)) { continue; }
+        list.push({ top: Math.round(r.top - hostTop), bottom: Math.round(r.bottom - hostTop) });
       }
+      // Ensure order and non-empty
+      list.sort((a, b) => a.top - b.top);
+      return list.filter(f => f.bottom > f.top + 10);
+    }
 
-      if (rects.length === 0) { continue; }
+    // B) Fallback: infer by vertical occupancy histogram to find large empty gutters
+    const docTop = Math.floor(Math.min(...allRects.map(r => r.top)));
+    const docBot = Math.ceil(Math.max(...allRects.map(r => r.bottom)));
+    const STEP = 2;                 // histogram row size in px
+    const MIN_GUTTER = 120;         // empty span (px) to qualify as a page break
+    const PAD = 6;                  // soften edges a little
 
-      // 2) Build a 1-px vertical occupancy histogram for this page
-      const pageBox = root.getBoundingClientRect();
-      const pageTopRel = Math.max(0, Math.floor(pageBox.top - hostTop));
-      const pageBotRel = Math.ceil(pageBox.bottom - hostTop);
-      const H = Math.max(0, pageBotRel - pageTopRel);
+    const rows = Math.max(1, Math.ceil((docBot - docTop) / STEP));
+    const occ: boolean[] = new Array(rows).fill(false);
 
-      if (H <= 0) { continue; }
+    for (const r of allRects) {
+      const y0 = Math.max(0, Math.floor((r.top - docTop) / STEP));
+      const y1 = Math.min(rows - 1, Math.ceil((r.bottom - docTop) / STEP));
+      for (let y = y0; y <= y1; y++) { occ[y] = true; }
+    }
 
-      const occ = new Uint8Array(H); // 0/1 per row
+    // Find long zero-occupied runs = gutters
+    const gutters: Array<{ y0: number; y1: number }> = [];
+    let runStart = -1;
+    for (let y = 0; y < rows; y++) {
+      if (!occ[y]) {
+        if (runStart < 0) { runStart = y; }
+      } else if (runStart >= 0) {
+        const y0 = runStart * STEP + docTop;
+        const y1 = y * STEP + docTop;
+        if (y1 - y0 >= MIN_GUTTER) { gutters.push({ y0, y1 }); }
+        runStart = -1;
+      }
+    }
+    if (runStart >= 0) {
+      const y0 = runStart * STEP + docTop;
+      const y1 = rows * STEP + docTop;
+      if (y1 - y0 >= MIN_GUTTER) { gutters.push({ y0, y1 }); }
+    }
+
+    // Convert gutters into frames between them
+    const bounds: number[] = [
+      docTop,
+      ...gutters.map(g => Math.round((g.y0 + g.y1) / 2)),
+      docBot,
+    ].filter(n => Number.isFinite(n));
+
+    if (bounds.length < 2) {
+      // single frame fallback
+      return [{ top: docTop + PAD, bottom: docBot - PAD }];
+    }
+
+    const list: Frame[] = [];
+    for (let i = 0; i + 1 < bounds.length; i++) {
+      const top = bounds[i]! + PAD;
+      const bottom = bounds[i + 1]! - PAD;
+      if (bottom > top + 10) { list.push({ top, bottom }); }
+    }
+    return list;
+  })();
+
+  // 3) (Optional) Per-frame system-top guard to avoid dropping titles too aggressively
+  //    We’ll compute pageContentTop per frame from system groups if available.
+  const systemGroups = Array.from(svgRoot.querySelectorAll<SVGGElement>("g[id*='system' i], g[class*='system' i]"))
+    .map(g => g.getBoundingClientRect())
+    .map(r => ({ top: r.top - hostTop, bottom: r.bottom - hostTop }))
+    .filter(r => Number.isFinite(r.top) && Number.isFinite(r.bottom) && r.bottom > r.top);
+
+  const allBands: Band[] = [];
+
+  // Helper: run the band pipeline on a single frame
+  const buildBandsForFrame = (frame: Frame): Band[] => {
+    // Collect page-clamped rects for this frame only
+    const rects: ElemRect[] = [];
+    let pageContentTop: number | null = null;
+    if (systemGroups.length) {
+      const minSysTopInFrame = Math.min(
+        ...systemGroups.filter(s => s.bottom > frame.top && s.top < frame.bottom).map(s => s.top)
+      );
+      if (Number.isFinite(minSysTopInFrame)) { pageContentTop = Math.floor(minSysTopInFrame) - HEADER_GUARD_PX; }
+    }
+
+    for (const r of allRects) {
+      if (r.bottom <= frame.top || r.top >= frame.bottom) { continue; } // not in this frame
+      const cTop = Math.max(r.top, frame.top);
+      const cBot = Math.min(r.bottom, frame.bottom);
+      if (cBot <= cTop) { continue; }
+      if (pageContentTop !== null && cBot < pageContentTop) { continue; } // drop header-only items
+      rects.push({ top: cTop, bottom: cBot, height: cBot - cTop, width: r.width });
+    }
+    if (!rects.length) { return []; }
+
+    // Sort to boxes and merge with THRESH
+    rects.sort((a, b) => a.top - b.top);
+    const bands: Band[] = [];
+    for (const b of rects) {
+      const last = bands[bands.length - 1];
+      if (!last) {
+        bands.push({ top: b.top, bottom: b.bottom, height: b.height });
+        continue;
+      }
+      const gapPx = Math.floor(b.top) - Math.ceil(last.bottom);
+      if (gapPx > THRESH) {
+        bands.push({ top: b.top, bottom: b.bottom, height: b.height });
+      } else {
+        last.top = Math.min(last.top, b.top);
+        last.bottom = Math.max(last.bottom, b.bottom);
+        last.height = last.bottom - last.top;
+      }
+    }
+
+    // Gap-filler (same logic that fixed bottoms before), bounded to the frame
+    for (let i = 0; i < bands.length - 1; i++) {
+      const A = bands[i]!, B = bands[i + 1]!;
+      const gap = Math.max(0, Math.floor(B.top) - Math.ceil(A.bottom));
+      if (gap === 0 || gap > GAP_MAX) { continue; }
+
+      let fillerMaxBot = -Infinity;
+      let maxStraddleBot = -Infinity;
       for (const r of rects) {
-        const y0 = Math.max(0, Math.floor(r.top) - pageTopRel);
-        const y1 = Math.min(H, Math.ceil(r.bottom) - pageTopRel);
-        for (let y = y0; y < y1; y++) { occ[y] = 1; }
-      }
+        const tall = r.height >= FILL_MIN_H;
+        if (!tall) { continue; }
 
-      // 3) Deterministic smoothing
-      // 3a) Fill tiny internal gaps (morphological close with size FILL_GAP)
-      if (FILL_GAP > 0) {
-        let y = 0;
-        while (y < H) {
-          // skip zeros to a 1-run
-          while (y < H && occ[y] === 0) { y++; }
-          // walk the 1-run
-          let runEnd = y;
-          while (runEnd < H && occ[runEnd] === 1) { runEnd++; }
+        const inside = r.top >= A.bottom && r.bottom <= B.top;
+        const straddle = r.top < B.top && r.bottom > A.bottom;
 
-          // look ahead to a subsequent 1-run separated by a small zero gap
-          const gap0 = runEnd;
-          let gapEnd = gap0;
-          while (gapEnd < H && occ[gapEnd] === 0) { gapEnd++; }
-          const nextRunStart = gapEnd;
-
-          const gapLen = nextRunStart - gap0;
-          if (gapLen > 0 && gapLen <= FILL_GAP && nextRunStart < H && occ[nextRunStart] === 1) {
-            // fill the gap
-            for (let g = gap0; g < gapEnd; g++) { occ[g] = 1; }
-            // continue walking from the start of the next run (merges)
-            y = runEnd; // resume; the next loop iteration will extend the run
-          } else {
-            y = nextRunStart;
-          }
+        if (inside) {
+          if (r.bottom > fillerMaxBot) { fillerMaxBot = r.bottom; }
+        } else if (straddle) {
+          if (r.bottom > maxStraddleBot) { maxStraddleBot = r.bottom; }
         }
       }
 
-      // 3b) Delete short 1-runs (micro bands)
-      //     Compute median run height first (before deletions) to set a relative floor.
-      const runHeights: number[] = [];
-      {
-        let y = 0;
-        while (y < H) {
-          // skip zeros
-          while (y < H && occ[y] === 0) { y++; }
-          const start = y;
-          while (y < H && occ[y] === 1) { y++; }
-          const h = y - start;
-          if (h > 0) { runHeights.push(h); }
-        }
-      }
-      let median = 0;
-      if (runHeights.length) {
-        const sorted = runHeights.slice().sort((a, b) => a - b);
-        const n = sorted.length;
-        const mid = Math.floor(n / 2);
-        median = (n % 2)
-          ? sorted[mid]!
-          : 0.5 * (sorted[mid - 1]! + sorted[mid]!);
-      }
-      const MIN_RUN = Math.max(ABS_MIN_RUN, Math.floor(median * REL_MIN_RUN));
+      const target = Number.isFinite(fillerMaxBot)
+        ? fillerMaxBot
+        : Number.isFinite(maxStraddleBot) ? maxStraddleBot : -Infinity;
 
-      {
-        let y = 0;
-        while (y < H) {
-          while (y < H && occ[y] === 0) { y++; }
-          const start = y;
-          while (y < H && occ[y] === 1) { y++; }
-          const end = y;
-          const h = end - start;
-          if (h > 0 && h < MIN_RUN) {
-            for (let k = start; k < end; k++) { occ[k] = 0; } // delete micro-run
-          }
+      if (Number.isFinite(target) && target > A.bottom) {
+        const capped = Math.min(target, B.top - 1, A.bottom + EXTEND_CAP, frame.bottom - 1);
+        if (capped > A.bottom) {
+          A.bottom = capped;
+          A.height = A.bottom - A.top;
         }
-      }
-
-      // 4) Extract remaining runs as bands
-      {
-        let y = 0;
-        while (y < H) {
-          while (y < H && occ[y] === 0) { y++; }
-          const start = y;
-          while (y < H && occ[y] === 1) { y++; }
-          const end = y;
-          const h = end - start;
-          if (h > 0) {
-            const top = pageTopRel + start;
-            const bottom = pageTopRel + end;
-            allBands.push({ top, bottom, height: bottom - top });
-          }
-        }
-      }
-
-      // Diagnostics, if you want them
-      if (isPagDiagOn()) {
-        const keptHeights = allBands.slice(-runHeights.length).map(b => Math.round(b.height));
-        logStep(
-          `[histBands] pageH=${H} runs=${runHeights.length} median=${Math.round(median)} ` +
-          `MIN_RUN=${MIN_RUN} keptHeights=[${keptHeights.join(",")}]`,
-          { outer }
-        );
       }
     }
 
-    // Final tidy: ensure monotone bands and normalize heights
-    allBands.sort((a, b) => a.top - b.top);
-    for (const b of allBands) { b.height = b.bottom - b.top; }
+    // Micro-band filter + rejoin (conservative)
+    const heights = bands.map(b => b.height).filter(h => h > 0).sort((a, b) => a - b);
+    let median = 0;
+    if (heights.length > 0) {
+      const n = heights.length, mid = Math.floor(n / 2);
+      median = n % 2 ? heights[mid]! : 0.5 * (heights[mid - 1]! + heights[mid]!);
+    }
+    const REL_MIN = 0.35;
+    const ABS_MIN = 72;
+    const MIN_KEEP = Math.max(ABS_MIN, Math.floor(median * REL_MIN));
 
-    if (isPagDiagOn()) {
-      for (let i = 0; i < allBands.length; i++) {
-        const b = allBands[i]!;
-        logStep(`band[${i}] top=${Math.round(b.top)} bot=${Math.round(b.bottom)} h=${Math.round(b.height)}`, { outer });
+    const kept: Band[] = [];
+    for (const b of bands) {
+      if (b.height >= MIN_KEEP) { kept.push({ top: b.top, bottom: b.bottom, height: b.height }); }
+    }
+
+    kept.sort((a, b) => a.top - b.top);
+    const normalized: Band[] = [];
+    for (const b of kept) {
+      const last = normalized[normalized.length - 1];
+      if (!last) {
+        normalized.push({ top: b.top, bottom: b.bottom, height: b.height });
+        continue;
+      }
+      const gapPx = Math.floor(b.top) - Math.ceil(last.bottom);
+      if (gapPx <= THRESH) {
+        last.top = Math.min(last.top, b.top);
+        last.bottom = Math.max(last.bottom, b.bottom);
+        last.height = last.bottom - last.top;
+      } else {
+        normalized.push({ top: b.top, bottom: b.bottom, height: b.height });
       }
     }
 
-    void logStep(`bands: ${allBands.length}`, { outer });
+    // Final clamp to the frame with a 1px safety to avoid touching the next frame
+    for (const band of normalized) {
+      band.top = Math.max(band.top, frame.top);
+      band.bottom = Math.min(band.bottom, frame.bottom - 1);
+      band.height = band.bottom - band.top;
+    }
+
+    return normalized.filter(b => b.height > 0);
+  };
+
+  try {
+    for (let i = 0; i < frames.length; i++) {
+      const pageBands = buildBandsForFrame(frames[i]!);
+      allBands.push(...pageBands);
+
+      if (diagOn) {
+        for (let j = 0; j < pageBands.length; j++) {
+          const b = pageBands[j]!;
+          logStep(`band[p${i}][${j}] top=${Math.round(b.top)} bot=${Math.round(b.bottom)} h=${Math.round(b.height)}`, { outer });
+        }
+      }
+    }
+
+    if (diagOn) { logStep(`bands (total): ${allBands.length}`, { outer }); }
     return allBands;
   } finally {
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { /* ignore */ }
