@@ -24,6 +24,43 @@ interface Band { top: number; bottom: number; height: number }
 // Viewer-space rectangle (left/top/width/height in px, relative to wrapper host)
 interface Rect { x: number; y: number; w: number; h: number }
 
+type BBox = { left: number; right: number; top: number; bottom: number; kind?: string };
+
+export function snapToClearRowY(
+  candidateY: number,
+  boxes: BBox[],
+  left: number,
+  right: number,
+  opts?: {
+    padX?: number;
+    padY?: number;
+    search?: number;
+    logTag?: string;
+  }
+): number {
+  const padX = opts?.padX ?? 2;
+  const padY = opts?.padY ?? 2;
+  const search = opts?.search ?? 3;
+
+  function hasInkAtY(y: number): boolean {
+    for (const b of boxes) {
+      if (b.right < left - padX) { continue; }
+      if (b.left > right + padX) { continue; }
+      if (y >= b.top - padY && y <= b.bottom + padY) { return true; }
+    }
+    return false;
+  }
+
+  if (!hasInkAtY(candidateY)) { return candidateY; }
+
+  for (let d = 1; d <= search; d++) {
+    if (!hasInkAtY(candidateY - d)) { return candidateY - d; }
+    if (!hasInkAtY(candidateY + d)) { return candidateY + d; }
+  }
+
+  return candidateY;
+}
+
 // Type: function stored in a ref
 type ReflowCallback = () => Promise<void>;
 
@@ -610,6 +647,7 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "scanSystemsPx";
   try {
+    // Use per-page roots if OSMD emitted them, otherwise scan the single root.
     const pageRoots = getPageRoots(svgRoot);
     const roots: Array<SVGGElement | SVGSVGElement> = pageRoots.length ? pageRoots : [svgRoot];
 
@@ -618,17 +656,21 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
     interface Box { top: number; bottom: number; height: number; width: number }
     const boxes: Box[] = [];
 
-    // Exclude micro glyphs (e.g., staccato / fermata dots) from band building.
-    const MIN_H = 2;  // bump from 1 → 2 to drop 1px specks
-    const MIN_W = 6;  // bump from 2 → 6 so tiny dots can't bridge systems
+    // Keep ALL accepted rects so we can reason about gaps later.
+    type ElemRect = { top: number; bottom: number; height: number; width: number };
+    const acceptedRects: ElemRect[] = [];
+
+    // Element accept thresholds
+    const MIN_H = 2;           // drop true hairline specks
+    const MIN_W = 6;           // normal min width (notes/text/slurs/hairpins)
+    const STEM_MIN_W = 1.5;    // stems/slur tails are very thin
+    const TALL_NARROW_H = 22;  // stems/tails typically exceed this height
 
     for (const root of roots) {
-      // Groups + primitive graphics → dynamics/pedals/slurs count
       const SELECTORS = "path,rect,line,polyline,polygon,text,use,circle,ellipse";
       const graphics = Array.from(root.querySelectorAll<SVGGraphicsElement>(SELECTORS));
 
-      // Detect the top of the first real system on this page, if the DOM exposes system groups.
-      // We’ll drop any elements fully above that line (i.e., titles/credits).
+      // If system groups are present, compute page content top so we can drop titles.
       const SYS_SEL = "g[id*='system' i], g[class*='system' i]";
       let pageContentTop = Number.NEGATIVE_INFINITY;
       try {
@@ -639,35 +681,51 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
 
         if (sysRects.length) {
           const minSysTop = Math.min(...sysRects.map(r => r.top));
-          const HEADER_GUARD_PX = 12; // allow hairpins/dynamics just above the staff
+          const HEADER_GUARD_PX = 12; // dynamics/hairpins just above staff
           pageContentTop = Math.floor(minSysTop - hostTop) - HEADER_GUARD_PX;
         }
-      } catch { }
+      } catch { /* non-fatal */ }
 
       for (const el of graphics) {
         try {
           const r = el.getBoundingClientRect();
-          if (!Number.isFinite(r.top) || !Number.isFinite(r.height) || !Number.isFinite(r.width)) { continue; }
+          if (!Number.isFinite(r.top) || !Number.isFinite(r.height) || !Number.isFinite(r.width)) {
+            continue;
+          }
+
+          // Basic speck filter
           if (r.height < MIN_H) { continue; }
-          if (r.width < MIN_W) { continue; }
+
+          // Accept if:
+          //  A) normal-sized glyph (passes both mins), OR
+          //  B) tall-but-narrow (stems/slur tails, fingerings that are tall)
+          const acceptsNormal = (r.width >= MIN_W);
+          const acceptsTallNarrow = (r.height >= TALL_NARROW_H && r.width >= STEM_MIN_W);
+          if (!(acceptsNormal || acceptsTallNarrow)) { continue; }
 
           const top = r.top - hostTop;
           const bottom = r.bottom - hostTop;
 
-          // If we detected a system top, ignore pure title/credit elements above it
+          // Drop header-only items if we detected a system top.
           if (Number.isFinite(pageContentTop) && bottom < pageContentTop) { continue; }
 
           boxes.push({ top, bottom, height: r.height, width: r.width });
-        } catch { }
+          acceptedRects.push({ top, bottom, height: r.height, width: r.width });
+
+          if (typeof isPagDiagOn === "function" && isPagDiagOn() && acceptsTallNarrow) {
+            logStep(
+              `stem accepted w=${r.width.toFixed(1)} h=${r.height.toFixed(1)} top=${Math.round(top)} bot=${Math.round(bottom)}`,
+              { outer }
+            );
+          }
+        } catch { /* ignore element read errors */ }
       }
     }
 
+    // Sort by top before merging into vertical bands.
     boxes.sort((a, b) => a.top - b.top);
 
-    // IMPORTANT: merge threshold is derived from the *packing* gap,
-    // minus DPR jitter and a 1px strictness margin (done inside dynamicBandGapPx).
-    const THRESH = dynamicBandGapPx();
-
+    const THRESH = dynamicBandGapPx(); // packing gap-derived threshold
     const bands: Band[] = [];
     for (const b of boxes) {
       const last = bands.length ? bands[bands.length - 1] : undefined;
@@ -675,10 +733,8 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
         bands.push({ top: b.top, bottom: b.bottom, height: b.height });
         continue;
       }
-
-      // Integerize to kill sub-px wobbles, then make the test inclusive.
       const gapPx = Math.floor(b.top) - Math.ceil(last.bottom);
-      if (gapPx > THRESH) {            // NOTE: strict ">" pairs with packGap-1 above
+      if (gapPx > THRESH) {
         bands.push({ top: b.top, bottom: b.bottom, height: b.height });
       } else {
         last.top = Math.min(last.top, b.top);
@@ -687,17 +743,86 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
       }
     }
 
-    // Don't inflate band bottoms; masking already protects page edges.
+    // ---------- NEW: gap-filler pass ----------
+    // If there are tall-narrow rects *inside the gap* between adjacent bands
+    // (i.e., below A.bottom but still above B.top), extend A.bottom to cover them.
+    {
+      const GAP_MAX = 80;        // we only consider "nearby" gaps (px)
+      const FILL_MIN_H = 18;     // ignore tiny marks; we want stems/tails/fingerings
+      for (let i = 0; i < bands.length - 1; i++) {
+        const A = bands[i]!;
+        const B = bands[i + 1]!;
+        const gap = Math.max(0, Math.floor(B.top) - Math.ceil(A.bottom));
+        if (gap === 0 || gap > GAP_MAX) { continue; }
+
+        let fillerMaxBot = -Infinity;
+        for (const r of acceptedRects) {
+          // strictly inside the gap region
+          const inGap = r.top >= A.bottom && r.bottom <= B.top;
+          if (!inGap) { continue; }
+          if (r.height >= FILL_MIN_H) {
+            fillerMaxBot = Math.max(fillerMaxBot, r.bottom);
+          }
+        }
+
+        if (Number.isFinite(fillerMaxBot) && fillerMaxBot > A.bottom) {
+          A.bottom = Math.min(fillerMaxBot, B.top - 1); // never cross into B
+          A.height = A.bottom - A.top;
+        }
+      }
+    }
+    // ---------- end gap-filler ----------
+
+    // Diagnostics: show bridge stats after any extension.
+    {
+      const diagOn = typeof isPagDiagOn === "function" && isPagDiagOn();
+      if (diagOn && bands.length > 1) {
+        for (let i = 0; i < bands.length - 1; i++) {
+          const A = bands[i]!;
+          const B = bands[i + 1]!;
+
+          let inA = 0, inB = 0, bridge = 0;
+          let loA = +Infinity, hiA = -Infinity, loB = +Infinity, hiB = -Infinity;
+
+          for (const r of acceptedRects) {
+            const hitsA = !(r.bottom <= A.top || r.top >= A.bottom);
+            const hitsB = !(r.bottom <= B.top || r.top >= B.bottom);
+
+            if (hitsA) { inA++; loA = Math.min(loA, r.top); hiA = Math.max(hiA, r.bottom); }
+            if (hitsB) { inB++; loB = Math.min(loB, r.top); hiB = Math.max(hiB, r.bottom); }
+            if (hitsA && hitsB) { bridge++; }
+          }
+
+          const gap = Math.max(0, Math.floor(B.top) - Math.ceil(A.bottom));
+          logStep(
+            `bridgeCheck bands[${i}]↔[${i + 1}]: ` +
+            `A(top=${Math.round(A.top)} bot=${Math.round(A.bottom)} h=${Math.round(A.height)} elems=${inA}) ` +
+            `B(top=${Math.round(B.top)} bot=${Math.round(B.bottom)} h=${Math.round(B.height)} elems=${inB}) ` +
+            `bridgeElems=${bridge} gap=${gap}`,
+            { outer }
+          );
+        }
+      }
+    }
+
+    // No inflation; masking protects page edges.
     const HAIRLINE_PAD = 0;
     for (const band of bands) {
-      band.bottom += HAIRLINE_PAD; // no-op by design
+      band.bottom += HAIRLINE_PAD; // no-op
       band.height = band.bottom - band.top;
+    }
+
+    if (typeof isPagDiagOn === "function" && isPagDiagOn()) {
+      for (let i = 0; i < bands.length; i++) {
+        const b = bands[i]!;
+        logStep(`band[${i}] top=${Math.round(b.top)} bot=${Math.round(b.bottom)} h=${Math.round(b.height)}`, { outer });
+      }
     }
 
     void logStep(`bands: ${bands.length}`, { outer });
     return bands;
   } finally {
-    try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
+    try { outer.dataset.viewerFunc = prevFuncTag; } catch { /* ignore */ }
   }
 }
 
@@ -720,6 +845,9 @@ function createSvgEl<K extends keyof SVGElementTagNameMap>(
 function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ id: string; rect: Rect }> {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "scanMeasuresPx";
+
+  const t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+
   try {
     const hostTop = outer.getBoundingClientRect().top;
     const hostLeft = outer.getBoundingClientRect().left;
@@ -727,6 +855,10 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
     // Collect any group that looks like a measure; OSMD commonly emits ids with "measure"
     const MEASURE_SEL = "g[id*='measure' i], g[class*='measure' i]";
     const groups = Array.from(svgRoot.querySelectorAll<SVGGElement>(MEASURE_SEL));
+
+    if (isPagDiagOn()) {
+      logStep(`raw measure-like groups: ${groups.length}`, { outer });
+    }
 
     // Map string id-key -> union rect
     const map = new Map<string, Rect>();
@@ -769,158 +901,29 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
       .map(([id, rect]) => ({ id, rect }))
       .sort((a, b) => (a.rect.y - b.rect.y) || (a.rect.x - b.rect.x));
 
+    if (isPagDiagOn()) {
+      const t1 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+      const dur = Math.round((t1 as number) - (t0 as number));
+      logStep(`merged measures: ${rows.length} in ${dur}ms`, { outer });
+
+      // Log a small, non-spammy sample: first 3 and last 3
+      const sample = rows.length <= 6
+        ? rows
+        : [...rows.slice(0, 3), ...rows.slice(-3)];
+
+      for (const { id, rect } of sample) {
+        logStep(
+          `id: ${id} @ x${Math.round(rect.x)} y${Math.round(rect.y)} w${Math.round(rect.w)} h${Math.round(rect.h)}`,
+          { outer }
+        );
+      }
+    }
+
     return rows;
   } finally {
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
   }
 }
-
-// ---- BEGIN: per-measure annotation extent computation (no fallbacks) ----
-/**
- * Build a one-time graphics index (page-local px) and write per-measure
- * annotation top/bottom onto the existing measure records.
- *
- * NO FALLBACKS:
- *  - If a given measure gets no overlapping graphics, we DO NOT set annotTopPx/BotPx.
- *  - We log a diagnostic via logStep(...) and drawMeasureBoxes will skip that measure.
- */
-function computeAnnotExtents(
-  outer: HTMLDivElement,
-  svgRoot: SVGSVGElement,
-  measures: Array<{ id: string; rect: { x: number; y: number; w: number; h: number } }>,
-  padPx: number
-): void {
-  const prevFuncTag = outer.dataset.viewerFunc ?? "";
-  outer.dataset.viewerFunc = "computeAnnotExtents";
-
-  if (!outer || !svgRoot || measures.length === 0) {
-    try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
-    return;
-  }
-
-  // Clear any stale values up front so draw step can safely "skip when missing".
-  for (const m of measures) {
-    (m as unknown as { annotTopPx?: number }).annotTopPx = undefined;
-    (m as unknown as { annotBotPx?: number }).annotBotPx = undefined;
-  }
-
-  const outerRect = outer.getBoundingClientRect();
-  const pageH = Math.max(outer.clientHeight, outerRect.height);
-
-  // Scan primitives once (avoid <g> bboxes, which are often single-staff/system-wide).
-  const PRIMS = "path,rect,line,polyline,polygon,text,use,circle,ellipse";
-  const allEls = Array.from(svgRoot.querySelectorAll<SVGGraphicsElement>(PRIMS));
-
-  type PBBox = { x: number; y: number; w: number; h: number };
-  const toPageBBox = (el: SVGGraphicsElement): PBBox | null => {
-    let bb: DOMRect;
-    try { bb = el.getBBox(); } catch { return null; }
-    if (!(bb.width > 0 && bb.height > 0)) { return null; }
-
-    const mtx = el.getScreenCTM();
-    if (!mtx) { return null; }
-
-    const pt = svgRoot.createSVGPoint();
-
-    pt.x = bb.x; pt.y = bb.y;
-    const p1 = pt.matrixTransform(mtx);
-
-    pt.x = bb.x + bb.width; pt.y = bb.y + bb.height;
-    const p2 = pt.matrixTransform(mtx);
-
-    const x1 = Math.min(p1.x, p2.x) - outerRect.left;
-    const y1 = Math.min(p1.y, p2.y) - outerRect.top;
-    const x2 = Math.max(p1.x, p2.x) - outerRect.left;
-    const y2 = Math.max(p1.y, p2.y) - outerRect.top;
-
-    const w = Math.max(0, x2 - x1);
-    const h = Math.max(0, y2 - y1);
-
-    // Hard filter for nonsense (prevents 0/1300 style blow-ups).
-    if (!Number.isFinite(y1) || !Number.isFinite(y2)) { return null; }
-    if (h < 1 || w < 1) { return null; }
-    if (y2 < -100 || y1 > pageH + 100) { return null; }
-
-    return { x: x1, y: y1, w, h };
-  };
-
-  // Union Y across primitives that H-overlap each measure.
-  for (const m of measures) {
-    const mx = Math.round(m.rect.x);
-    const mw = Math.max(1, Math.round(m.rect.w));
-    const mLeft = mx;
-    const mRight = mx + mw;
-
-    // A loose band “fence” around this measure’s row to keep unions local.
-    const fenceTop = Math.floor(m.rect.y - m.rect.h * 0.75);
-    const fenceBot = Math.ceil(m.rect.y + m.rect.h * 2.25);
-
-    let top = Number.POSITIVE_INFINITY;
-    let bot = Number.NEGATIVE_INFINITY;
-    let hit = false;
-
-    // Prefer non-staff ink (avoid hairline/long horizontals).
-    let strongTop = Number.POSITIVE_INFINITY;
-    let strongBot = Number.NEGATIVE_INFINITY;
-    let strongHit = false;
-
-    for (const el of allEls) {
-      const bb = toPageBBox(el);
-      if (!bb) { continue; }
-
-      const gLeft = Math.round(bb.x);
-      const gRight = Math.round(bb.x + bb.w);
-      const gTop = Math.round(bb.y);
-      const gBot = Math.round(bb.y + bb.h);
-
-      // Only H-overlap with this measure.
-      const hOverlap = Math.min(mRight, gRight) - Math.max(mLeft, gLeft);
-      if (hOverlap < 1) { continue; }
-
-      // Keep within the measure’s row fence (lets bottom staff through, avoids 1300s).
-      if (gBot < fenceTop || gTop > fenceBot) { continue; }
-
-      // Overall union.
-      top = Math.min(top, gTop);
-      bot = Math.max(bot, gBot);
-      hit = true;
-
-      // De-prioritize staff lines (very thin & long in X relative to the measure).
-      const gH = Math.max(1, gBot - gTop);
-      const gW = Math.max(1, gRight - gLeft);
-      const looksLikeStaffLine = (gH <= 2) && (gW >= Math.floor(mw * 0.75));
-      if (!looksLikeStaffLine) {
-        strongTop = Math.min(strongTop, gTop);
-        strongBot = Math.max(strongBot, gBot);
-        strongHit = true;
-      }
-    }
-
-    if (!hit) {
-      try { logStep(`annot-miss: ${m.id}`, { outer }); } catch { }
-      continue; // leave undefined so draw step will skip
-    }
-
-    // Pick preferred band; clamp to fence and pad.
-    const chosenTop = strongHit ? strongTop : top;
-    const chosenBot = strongHit ? strongBot : bot;
-
-    const at = Math.max(fenceTop, Math.min(fenceBot, chosenTop)) - padPx;
-    const ab = Math.max(fenceTop, Math.min(fenceBot, chosenBot)) + padPx;
-
-    if (!(Number.isFinite(at) && Number.isFinite(ab) && ab > at)) {
-      continue; // don’t write junk
-    }
-
-    (m as unknown as { annotTopPx: number }).annotTopPx = at;
-    (m as unknown as { annotBotPx: number }).annotBotPx = ab;
-  }
-
-  logStep(`extents: ${measures.length}`, { outer });
-  try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
-}
-// ---- END: per-measure annotation extent computation ----
-
 
 /** Draw/refresh a lightweight SVG overlay of measure rectangles (stroke-only),
  * snapping vertical bounds to per-system page separators so boxes tile cleanly.
@@ -958,11 +961,6 @@ function drawMeasureBoxes(
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
     return;
   }
-
-  // Compute per-measure vertical annotation extents (NO FALLBACKS)
-  // If a given measure has no overlapping glyphs, annotTopPx/BotPx will be undefined;
-  // we will skip drawing that measure and log a miss.
-  computeAnnotExtents(outer, svgRoot, measures, /*padPx=*/8);
 
   // 2) Build page-local system separators: sep[0..N]
   const seps: number[] = [];
@@ -1323,6 +1321,9 @@ function drawMeasureBoxes(
   // Cache of intervals per tile index + expected bar count
   const INTERVALS_BY_TILE = new Map<string, Interval[]>();
 
+  type AnnotExtents = { top: number; bottom: number };
+  const ANNOT_CACHE = new Map<string, AnnotExtents>();
+
   function ensureTileIntervals(
     tileIndex: number,
     yTop: number,
@@ -1583,19 +1584,83 @@ function drawMeasureBoxes(
       }
     }
 
-    // ---- DEBUG (AFTER recompute): snapshot of measure windows and annot extents for this tile
-    try {
-      const snap = items.slice(0, Math.min(items.length, 12)).map(({ m }) => {
-        const mt = (m as { annotTopPx?: number }).annotTopPx;
-        const mb = (m as { annotBotPx?: number }).annotBotPx;
-        return `${m.id}@x${Math.round(m.rect.x)}w${Math.round(m.rect.w)}:`
-          + ` t${Number.isFinite(mt) ? Math.round(mt!) : "–"}`
-          + `/b${Number.isFinite(mb) ? Math.round(mb!) : "–"}`;
-      }).join(" | ");
-      logStep(`tile ${k} :: ${snap}`, { outer });
-    } catch { /* noop */ }
-
     // Draw rectangles using per-measure verticals (clamped to tile seams)
+    const PAD_PX = 4;              // inside-band padding for each rectangle
+    const STROKE_BLEED_PX = 3;     // accounts for SVG stroke outside getBBox()
+
+    // --- DEBUG (viewer-pag): draw this tile's band edges so we can verify the seam
+    if (isPagDiagOn()) {
+      const bandTop = seps[k]!;
+      const bandBot = seps[k + 1]!;
+
+      // Tile span: from first measure's left to last measure's right
+      const leftX = Math.round(tileIntervals[0]!.left) + 0.5;
+      const rightX = Math.round(tileIntervals[tileIntervals.length - 1]!.right) + 0.5;
+
+      const lineTop = createSvgEl("line");
+      lineTop.setAttribute("x1", String(leftX));
+      lineTop.setAttribute("y1", String(bandTop + 0.5));
+      lineTop.setAttribute("x2", String(rightX));
+      lineTop.setAttribute("y2", String(bandTop + 0.5));
+      lineTop.setAttribute("stroke", "rgba(0,128,255,0.45)"); // blue = top seam
+      lineTop.setAttribute("stroke-width", "1");
+      lineTop.setAttribute("vector-effect", "non-scaling-stroke");
+      g.appendChild(lineTop);
+
+      const lineBot = createSvgEl("line");
+      lineBot.setAttribute("x1", String(leftX));
+      lineBot.setAttribute("y1", String(bandBot + 0.5));
+      lineBot.setAttribute("x2", String(rightX));
+      lineBot.setAttribute("y2", String(bandBot + 0.5));
+      lineBot.setAttribute("stroke", "rgba(255,0,0,0.45)"); // red = bottom seam
+      lineBot.setAttribute("stroke-width", "1");
+      lineBot.setAttribute("vector-effect", "non-scaling-stroke");
+      g.appendChild(lineBot);
+
+      // Log once per tile to correlate screenshot with numbers
+      logStep(
+        `tile ${k}: bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} left=${Math.round(leftX)} right=${Math.round(rightX)}`,
+        { outer }
+      );
+    }
+
+    // --- DEBUG: draw the current tile's band edges so we can verify the seam
+    {
+      // we already have `seps`, `k`, `g`, and `tileIntervals` in scope here
+      const bandTop = seps[k]!;
+      const bandBot = seps[k + 1]!;
+
+      // span this tile horizontally (from its first measure's left to its last measure's right)
+      const leftX = Math.round(tileIntervals[0]!.left) + 0.5;
+      const rightX = Math.round(tileIntervals[tileIntervals.length - 1]!.right) + 0.5;
+
+      const lineTop = createSvgEl("line");
+      lineTop.setAttribute("x1", String(leftX));
+      lineTop.setAttribute("y1", String(bandTop + 0.5));
+      lineTop.setAttribute("x2", String(rightX));
+      lineTop.setAttribute("y2", String(bandTop + 0.5));
+      lineTop.setAttribute("stroke", "rgba(0,128,255,0.45)"); // blue = top seam
+      lineTop.setAttribute("stroke-width", "1");
+      lineTop.setAttribute("vector-effect", "non-scaling-stroke");
+      g.appendChild(lineTop);
+
+      const lineBot = createSvgEl("line");
+      lineBot.setAttribute("x1", String(leftX));
+      lineBot.setAttribute("y1", String(bandBot + 0.5));
+      lineBot.setAttribute("x2", String(rightX));
+      lineBot.setAttribute("y2", String(bandBot + 0.5));
+      lineBot.setAttribute("stroke", "rgba(255,0,0,0.45)");    // red = bottom seam
+      lineBot.setAttribute("stroke-width", "1");
+      lineBot.setAttribute("vector-effect", "non-scaling-stroke");
+      g.appendChild(lineBot);
+
+      // log once per tile to correlate screenshots with numbers
+      logStep(
+        `tile ${k}: bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} left=${Math.round(leftX)} right=${Math.round(rightX)}`,
+        { outer }
+      );
+    }
+
     for (let i = 0; i < N; i++) {
       const { m } = items[i]!;
       const chosen = tileIntervals[i]!;
@@ -1606,27 +1671,85 @@ function drawMeasureBoxes(
       const x = Math.min(l, rEdge);
       const w = Math.max(1, Math.round(Math.abs(rEdge - l)) - 1);
 
-      // Vertical (per-measure; skip if invalid)
-      const mt = (m as { annotTopPx?: number }).annotTopPx;
-      const mb = (m as { annotBotPx?: number }).annotBotPx;
+      // Clamp band for this tile
+      const bandTop = seps[k]!;
+      const bandBot = seps[k + 1]!;
 
+      // Try pre-existing measure fields first
+      let mt: number | undefined = (m as { annotTopPx?: number }).annotTopPx;
+      let mb: number | undefined = (m as { annotBotPx?: number }).annotBotPx;
+
+      // Fallback to cache / compute-once if missing or invalid
       if (!Number.isFinite(mt) || !Number.isFinite(mb) || (mb as number) <= (mt as number)) {
-        logStep(`annot-skip: ${m.id} (missing/invalid annotTop/Bot)`, { outer });
+        const key = (m as { id: string }).id;
+        let cached = ANNOT_CACHE.get(key);
+
+        if (!cached) {
+          // Compute once, then cache (INCLUDES thin horizontal hairlines like pedal lines)
+          const ivLeft = Math.min(l, rEdge);
+          const ivRight = Math.max(l, rEdge);
+          const MIN_X_OVERLAP = 2; // px
+
+          let tMin = Number.POSITIVE_INFINITY;
+          let bMax = Number.NEGATIVE_INFINITY;
+
+          for (const el of allGraphics) {
+            let bbSvg: DOMRect | null = null;
+            try { bbSvg = el.getBBox(); } catch { bbSvg = null; }
+            if (!bbSvg) { continue; }
+
+            const p1 = toPageLocal(el, bbSvg.x, bbSvg.y);
+            const p2 = toPageLocal(el, bbSvg.x + bbSvg.width, bbSvg.y + bbSvg.height);
+
+            const bbx = Math.min(p1.x, p2.x);
+            const bby = Math.min(p1.y, p2.y);
+            const bbw = Math.abs(p2.x - p1.x);
+            const bbh = Math.abs(p2.y - p1.y);
+
+            // Horizontal gate by overlap with this measure interval
+            const ovX = Math.min(bbx + bbw, ivRight) - Math.max(bbx, ivLeft);
+            if (ovX < MIN_X_OVERLAP) { continue; }
+
+            // Include ALL glyphs (no hairline filter) so pedal lines count
+            const top = bby;
+            const bot = bby + bbh;
+
+            if (top < tMin) { tMin = top; }
+            if (bot > bMax) { bMax = bot; }
+          }
+
+          if (Number.isFinite(tMin) && Number.isFinite(bMax) && bMax > tMin) {
+            mt = Math.max(bandTop, Math.round(tMin));
+            mb = Math.min(bandBot, Math.round(bMax));
+            cached = { top: mt, bottom: mb };
+            ANNOT_CACHE.set(key, cached);
+          }
+        } else {
+          mt = cached.top;
+          mb = cached.bottom;
+        }
+      } else {
+        // Persist the good values so page flips / redraws reuse them
+        ANNOT_CACHE.set((m as { id: string }).id, { top: mt as number, bottom: mb as number });
+      }
+
+      // Guard invalid/missing extents
+      if (!Number.isFinite(mt) || !Number.isFinite(mb) || (mb as number) <= (mt as number)) {
+        logStep(`annot-skip: ${m.id} (missing/invalid union)`, { outer });
         continue;
       }
 
-      // Clamp to this tile’s staff band
-      const bandTop = seps[k]!;
-      const bandBot = seps[k + 1]!;
-      const clampedTop = Math.max(bandTop, mt as number);
-      const clampedBot = Math.min(bandBot, mb as number);
+      // Apply inner padding but keep rectangle inside the band
+      let top = (mt as number) - PAD_PX - STROKE_BLEED_PX;
+      let bot = (mb as number) + PAD_PX + STROKE_BLEED_PX; top = Math.max(bandTop, top);
+      bot = Math.min(bandBot, bot);
 
       // Pixel-perfect y/h
-      const y = Math.round(Math.min(clampedTop, clampedBot)) + 0.5;
-      const h = Math.max(1, Math.round(Math.abs(clampedBot - clampedTop)) - 1);
+      const y = Math.round(Math.min(top, bot)) + 0.5;
+      const h = Math.max(1, Math.round(Math.abs(bot - top)) - 1);
 
-      // ---- DEBUG: log once per tile
-      if (i === 0) {
+      // ---- DEBUG: log once per tile (pag diag only)
+      if (isPagDiagOn() && i === 0) {
         logStep(
           `m=${m.id} mt=${Math.round(mt as number)} mb=${Math.round(mb as number)} ` +
           `bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} ` +
@@ -1648,6 +1771,30 @@ function drawMeasureBoxes(
       g.appendChild(r);
 
       drawnCount++;
+
+      // --- DEBUG: short red tick when this measure’s bottom was clamped to the band seam
+      if (isPagDiagOn()) {
+        const seamBot = seps[k + 1];
+        const wasClampedToBot =
+          Number.isFinite(seamBot) &&
+          (
+            Math.abs((mb as number) + PAD_PX - (seamBot as number)) < 1.0 ||
+            Math.abs(bot - (seamBot as number)) < 1.0
+          );
+
+        if (wasClampedToBot) {
+          const tick = createSvgEl("line");
+          const yTick = (seamBot as number) + 0.5;
+          tick.setAttribute("x1", String(x));
+          tick.setAttribute("y1", String(yTick));
+          tick.setAttribute("x2", String(x + Math.max(8, Math.min(24, w))));
+          tick.setAttribute("y2", String(yTick));
+          tick.setAttribute("stroke", "rgba(255,0,0,0.6)");
+          tick.setAttribute("stroke-width", "1");
+          tick.setAttribute("vector-effect", "non-scaling-stroke");
+          g.appendChild(tick);
+        }
+      }
     }
   }
 
@@ -2360,7 +2507,7 @@ export default function ScoreViewer({
       if (!outer) { return; }
 
       const prevFuncTag = outer.dataset.viewerFunc ?? "";
-      outer.dataset.viewerFunc = "applyPage:stable";
+      outer.dataset.viewerFunc = "applyPage";
 
       try {
         const svg = getSvg(outer);
@@ -2453,6 +2600,10 @@ export default function ScoreViewer({
             `ySnap: ${ySnap} PAGE_H: ${PAGE_H} maskTopWithinMusicPx: ${maskTopWithinMusicPx} needsMask: ${needsMask}`,
             { outer }
           );
+          const first = startIndex;
+          const last = lastForLog;     // use the same name you already use above
+          const list = Array.from({ length: last - first + 1 }, (_, j) => first + j).join(",");
+          logStep(`pageBands: [${list}]`, { outer });
         }
 
         if (!bottomCutter) {
