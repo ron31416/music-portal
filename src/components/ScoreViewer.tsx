@@ -646,45 +646,34 @@ function dynamicBandGapPx(): number {
 function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "scanSystemsPx";
+
   try {
-    // Use per-page roots if OSMD emitted them, otherwise scan the single root.
+    // Prefer per-page roots if present; otherwise scan the single root
     const pageRoots = getPageRoots(svgRoot);
     const roots: Array<SVGGElement | SVGSVGElement> = pageRoots.length ? pageRoots : [svgRoot];
 
     const hostTop = outer.getBoundingClientRect().top;
 
-    interface Box { top: number; bottom: number; height: number; width: number }
-    const boxes: Box[] = [];
-
-    // Keep ALL accepted rects so we can reason about gaps later.
-    type ElemRect = { top: number; bottom: number; height: number; width: number };
-    const acceptedRects: ElemRect[] = [];
-
-    // Element accept thresholds
+    // Element accept thresholds (kept conservative)
     const MIN_H = 2;           // drop true hairline specks
     const MIN_W = 6;           // normal min width (notes/text/slurs/hairpins)
     const STEM_MIN_W = 1.5;    // stems/slur tails are very thin
     const TALL_NARROW_H = 22;  // stems/tails typically exceed this height
 
+    // Histogram smoothing parameters (deterministic)
+    const FILL_GAP = 8;        // fill internal holes up to 8 px
+    const ABS_MIN_RUN = 64;    // never keep a run shorter than this
+    const REL_MIN_RUN = 0.30;  // also require >= 30% of median run height
+
+    const allBands: Band[] = [];
+
     for (const root of roots) {
+      // 1) Collect glyph rects for THIS PAGE ONLY
       const SELECTORS = "path,rect,line,polyline,polygon,text,use,circle,ellipse";
       const graphics = Array.from(root.querySelectorAll<SVGGraphicsElement>(SELECTORS));
 
-      // If system groups are present, compute page content top so we can drop titles.
-      const SYS_SEL = "g[id*='system' i], g[class*='system' i]";
-      let pageContentTop = Number.NEGATIVE_INFINITY;
-      try {
-        const sysRects = Array
-          .from(root.querySelectorAll<SVGGElement>(SYS_SEL))
-          .map(g => g.getBoundingClientRect())
-          .filter(r => Number.isFinite(r.top) && Number.isFinite(r.height) && r.height > 0);
-
-        if (sysRects.length) {
-          const minSysTop = Math.min(...sysRects.map(r => r.top));
-          const HEADER_GUARD_PX = 12; // dynamics/hairpins just above staff
-          pageContentTop = Math.floor(minSysTop - hostTop) - HEADER_GUARD_PX;
-        }
-      } catch { /* non-fatal */ }
+      type R = { top: number; bottom: number; height: number; width: number };
+      const rects: R[] = [];
 
       for (const el of graphics) {
         try {
@@ -693,218 +682,144 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
             continue;
           }
 
-          // Basic speck filter
           if (r.height < MIN_H) { continue; }
-
-          // Accept if:
-          //  A) normal-sized glyph (passes both mins), OR
-          //  B) tall-but-narrow (stems/slur tails, fingerings that are tall)
           const acceptsNormal = (r.width >= MIN_W);
           const acceptsTallNarrow = (r.height >= TALL_NARROW_H && r.width >= STEM_MIN_W);
           if (!(acceptsNormal || acceptsTallNarrow)) { continue; }
 
+          // Coords relative to our host
           const top = r.top - hostTop;
           const bottom = r.bottom - hostTop;
-
-          // Drop header-only items if we detected a system top.
-          if (Number.isFinite(pageContentTop) && bottom < pageContentTop) { continue; }
-
-          boxes.push({ top, bottom, height: r.height, width: r.width });
-          acceptedRects.push({ top, bottom, height: r.height, width: r.width });
-
-          if (typeof isPagDiagOn === "function" && isPagDiagOn() && acceptsTallNarrow) {
-            logStep(
-              `stem accepted w=${r.width.toFixed(1)} h=${r.height.toFixed(1)} top=${Math.round(top)} bot=${Math.round(bottom)}`,
-              { outer }
-            );
-          }
-        } catch { /* ignore element read errors */ }
+          rects.push({ top, bottom, height: r.height, width: r.width });
+        } catch { /* ignore */ }
       }
-    }
 
-    // Sort by top before merging into vertical bands.
-    boxes.sort((a, b) => a.top - b.top);
+      if (rects.length === 0) { continue; }
 
-    const THRESH = dynamicBandGapPx(); // packing gap-derived threshold
-    const bands: Band[] = [];
-    for (const b of boxes) {
-      const last = bands.length ? bands[bands.length - 1] : undefined;
-      if (!last) {
-        bands.push({ top: b.top, bottom: b.bottom, height: b.height });
-        continue;
+      // 2) Build a 1-px vertical occupancy histogram for this page
+      const pageBox = root.getBoundingClientRect();
+      const pageTopRel = Math.max(0, Math.floor(pageBox.top - hostTop));
+      const pageBotRel = Math.ceil(pageBox.bottom - hostTop);
+      const H = Math.max(0, pageBotRel - pageTopRel);
+
+      if (H <= 0) { continue; }
+
+      const occ = new Uint8Array(H); // 0/1 per row
+      for (const r of rects) {
+        const y0 = Math.max(0, Math.floor(r.top) - pageTopRel);
+        const y1 = Math.min(H, Math.ceil(r.bottom) - pageTopRel);
+        for (let y = y0; y < y1; y++) { occ[y] = 1; }
       }
-      const gapPx = Math.floor(b.top) - Math.ceil(last.bottom);
-      if (gapPx > THRESH) {
-        // --- A) seamDecision diagnostics (no behavior change) ---
-        if (typeof isPagDiagOn === "function" && isPagDiagOn() && last) {
-          const A = last;
-          const B_top = b.top;
-          const seamY = Math.ceil(A.bottom);
-          const gap = Math.max(0, Math.floor(B_top) - seamY);
 
-          // Any element whose bbox crosses the candidate seam region?
-          let crossing = 0;
-          let occRows = 0;
-          const ROW_RADIUS = 3; // sample ±3 px around seam
+      // 3) Deterministic smoothing
+      // 3a) Fill tiny internal gaps (morphological close with size FILL_GAP)
+      if (FILL_GAP > 0) {
+        let y = 0;
+        while (y < H) {
+          // skip zeros to a 1-run
+          while (y < H && occ[y] === 0) { y++; }
+          // walk the 1-run
+          let runEnd = y;
+          while (runEnd < H && occ[runEnd] === 1) { runEnd++; }
 
-          for (const r of acceptedRects) {
-            const crossesGap = (r.top < B_top) && (r.bottom > A.bottom);
-            if (crossesGap) { crossing++; }
-          }
-          for (let y = seamY - ROW_RADIUS; y <= seamY + ROW_RADIUS; y++) {
-            // row "occupied" if any rect overlaps [y, y+1)
-            const rowOcc = acceptedRects.some(r => !(r.bottom <= y || r.top >= y + 1));
-            if (rowOcc) { occRows++; }
-          }
+          // look ahead to a subsequent 1-run separated by a small zero gap
+          const gap0 = runEnd;
+          let gapEnd = gap0;
+          while (gapEnd < H && occ[gapEnd] === 0) { gapEnd++; }
+          const nextRunStart = gapEnd;
 
-          logStep(
-            `[seamDecision] A.bot=${Math.round(A.bottom)} ` +
-            `B.top=${Math.round(B_top)} gap=${gap} THRESH=${THRESH} ` +
-            `crossing=${crossing} rows±${ROW_RADIUS}=${occRows}`,
-            { outer }
-          );
-        }
-        // --- end seamDecision diagnostics ---
-
-        bands.push({ top: b.top, bottom: b.bottom, height: b.height });
-      } else {
-        last.top = Math.min(last.top, b.top);
-        last.bottom = Math.max(last.bottom, b.bottom);
-        last.height = last.bottom - last.top;
-      }
-    }
-
-    // ---------- NEW: gap-filler pass ----------
-    // If there are tall-narrow rects *inside the gap* between adjacent bands
-    // (i.e., below A.bottom but still above B.top), extend A.bottom to cover them.
-    {
-      const GAP_MAX = 80;        // we only consider "nearby" gaps (px)
-      const FILL_MIN_H = 18;     // ignore tiny marks; we want stems/tails/fingerings
-      for (let i = 0; i < bands.length - 1; i++) {
-        const A = bands[i]!;
-        const B = bands[i + 1]!;
-        const gap = Math.max(0, Math.floor(B.top) - Math.ceil(A.bottom));
-        if (gap === 0 || gap > GAP_MAX) { continue; }
-
-        let fillerMaxBot = -Infinity;
-        // --- B) gapFiller diagnostics prep (no behavior change) ---
-        let insideTall = 0;
-        let straddleTall = 0;
-        let maxStraddleBot = -Infinity;
-        // --- end gapFiller diagnostics prep ---
-
-        for (const r of acceptedRects) {
-          // strictly inside the gap region
-          const inGap = r.top >= A.bottom && r.bottom <= B.top;
-          if (inGap) {
-            if (r.height >= FILL_MIN_H) {
-              fillerMaxBot = Math.max(fillerMaxBot, r.bottom);
-              // --- B) diagnostics: count inside-gap tall rects
-              insideTall++;
-              // --- end diagnostics
-            }
+          const gapLen = nextRunStart - gap0;
+          if (gapLen > 0 && gapLen <= FILL_GAP && nextRunStart < H && occ[nextRunStart] === 1) {
+            // fill the gap
+            for (let g = gap0; g < gapEnd; g++) { occ[g] = 1; }
+            // continue walking from the start of the next run (merges)
+            y = runEnd; // resume; the next loop iteration will extend the run
           } else {
-            // --- B) diagnostics: count tall rects that STRADDLE the seam
-            const straddles = (r.top < B.top) && (r.bottom > A.bottom);
-            if (straddles && r.height >= FILL_MIN_H) {
-              straddleTall++;
-              if (r.bottom > maxStraddleBot) { maxStraddleBot = r.bottom; }
-            }
-            // --- end diagnostics
+            y = nextRunStart;
           }
         }
-        // --- B) gapFiller diagnostics log (no behavior change) ---
-        if (typeof isPagDiagOn === "function" && isPagDiagOn()) {
-          logStep(
-            `[gapFiller] i=${i} gap=${gap} ` +
-            `insideTall=${insideTall} straddleTall=${straddleTall} ` +
-            `maxStraddleBot=${Number.isFinite(maxStraddleBot) ? Math.round(maxStraddleBot) : "n/a"} ` +
-            `A.bot=${Math.round(A.bottom)} B.top=${Math.round(B.top)}`,
-            { outer }
-          );
-        }
-        // --- end gapFiller diagnostics log ---
+      }
 
-        if (Number.isFinite(fillerMaxBot) && fillerMaxBot > A.bottom) {
-          A.bottom = Math.min(fillerMaxBot, B.top - 1); // never cross into B
-          A.height = A.bottom - A.top;
+      // 3b) Delete short 1-runs (micro bands)
+      //     Compute median run height first (before deletions) to set a relative floor.
+      const runHeights: number[] = [];
+      {
+        let y = 0;
+        while (y < H) {
+          // skip zeros
+          while (y < H && occ[y] === 0) { y++; }
+          const start = y;
+          while (y < H && occ[y] === 1) { y++; }
+          const h = y - start;
+          if (h > 0) { runHeights.push(h); }
         }
       }
-    }
-    // ---------- end gap-filler ----------
+      let median = 0;
+      if (runHeights.length) {
+        const sorted = runHeights.slice().sort((a, b) => a - b);
+        const n = sorted.length;
+        const mid = Math.floor(n / 2);
+        median = (n % 2)
+          ? sorted[mid]!
+          : 0.5 * (sorted[mid - 1]! + sorted[mid]!);
+      }
+      const MIN_RUN = Math.max(ABS_MIN_RUN, Math.floor(median * REL_MIN_RUN));
 
-    // Diagnostics: show bridge stats after any extension.
-    {
-      const diagOn = typeof isPagDiagOn === "function" && isPagDiagOn();
-      if (diagOn && bands.length > 1) {
-        for (let i = 0; i < bands.length - 1; i++) {
-          const A = bands[i]!;
-          const B = bands[i + 1]!;
-
-          let inA = 0, inB = 0, bridge = 0;
-          let loA = +Infinity, hiA = -Infinity, loB = +Infinity, hiB = -Infinity;
-
-          for (const r of acceptedRects) {
-            const hitsA = !(r.bottom <= A.top || r.top >= A.bottom);
-            const hitsB = !(r.bottom <= B.top || r.top >= B.bottom);
-
-            if (hitsA) { inA++; loA = Math.min(loA, r.top); hiA = Math.max(hiA, r.bottom); }
-            if (hitsB) { inB++; loB = Math.min(loB, r.top); hiB = Math.max(hiB, r.bottom); }
-            if (hitsA && hitsB) { bridge++; }
+      {
+        let y = 0;
+        while (y < H) {
+          while (y < H && occ[y] === 0) { y++; }
+          const start = y;
+          while (y < H && occ[y] === 1) { y++; }
+          const end = y;
+          const h = end - start;
+          if (h > 0 && h < MIN_RUN) {
+            for (let k = start; k < end; k++) { occ[k] = 0; } // delete micro-run
           }
-
-          const gap = Math.max(0, Math.floor(B.top) - Math.ceil(A.bottom));
-          logStep(
-            `bridgeCheck bands[${i}]↔[${i + 1}]: ` +
-            `A(top=${Math.round(A.top)} bot=${Math.round(A.bottom)} h=${Math.round(A.height)} elems=${inA}) ` +
-            `B(top=${Math.round(B.top)} bot=${Math.round(B.bottom)} h=${Math.round(B.height)} elems=${inB}) ` +
-            `bridgeElems=${bridge} gap=${gap}`,
-            { outer }
-          );
         }
       }
-    }
 
-    // No inflation; masking protects page edges.
-    const HAIRLINE_PAD = 0;
-    for (const band of bands) {
-      band.bottom += HAIRLINE_PAD; // no-op
-      band.height = band.bottom - band.top;
-    }
-
-    if (typeof isPagDiagOn()) {
-      for (let i = 0; i < bands.length; i++) {
-        const b = bands[i]!;
-        logStep(`band[${i}] top=${Math.round(b.top)} bot=${Math.round(b.bottom)} h=${Math.round(b.height)}`, { outer });
-      }
-    }
-    // --- C) seamAudit: sample occupancy across each seam (no behavior change) ---
-    if (typeof isPagDiagOn() && bands.length > 1) {
-      const ROW_PAD = 2; // extend a couple of rows on each side
-      for (let i = 0; i < bands.length - 1; i++) {
-        const A = bands[i]!;
-        const B = bands[i + 1]!;
-        const y0 = Math.ceil(A.bottom) - ROW_PAD;
-        const y1 = Math.floor(B.top) + ROW_PAD;
-        const rows: string[] = [];
-        let occCnt = 0;
-
-        for (let y = y0; y <= y1; y++) {
-          const occ = acceptedRects.some(r => !(r.bottom <= y || r.top >= y + 1));
-          rows.push(occ ? "#" : ".");
-          if (occ) { occCnt++; }
+      // 4) Extract remaining runs as bands
+      {
+        let y = 0;
+        while (y < H) {
+          while (y < H && occ[y] === 0) { y++; }
+          const start = y;
+          while (y < H && occ[y] === 1) { y++; }
+          const end = y;
+          const h = end - start;
+          if (h > 0) {
+            const top = pageTopRel + start;
+            const bottom = pageTopRel + end;
+            allBands.push({ top, bottom, height: bottom - top });
+          }
         }
+      }
+
+      // Diagnostics, if you want them
+      if (isPagDiagOn()) {
+        const keptHeights = allBands.slice(-runHeights.length).map(b => Math.round(b.height));
         logStep(
-          `[seamAudit] i=${i} span=${Math.round(A.bottom)}..${Math.round(B.top)} ` +
-          `rows="${rows.join("")}" occCnt=${occCnt}`,
+          `[histBands] pageH=${H} runs=${runHeights.length} median=${Math.round(median)} ` +
+          `MIN_RUN=${MIN_RUN} keptHeights=[${keptHeights.join(",")}]`,
           { outer }
         );
       }
     }
-    // --- end seamAudit ---
 
-    void logStep(`bands: ${bands.length}`, { outer });
-    return bands;
+    // Final tidy: ensure monotone bands and normalize heights
+    allBands.sort((a, b) => a.top - b.top);
+    for (const b of allBands) { b.height = b.bottom - b.top; }
+
+    if (isPagDiagOn()) {
+      for (let i = 0; i < allBands.length; i++) {
+        const b = allBands[i]!;
+        logStep(`band[${i}] top=${Math.round(b.top)} bot=${Math.round(b.bottom)} h=${Math.round(b.height)}`, { outer });
+      }
+    }
+
+    void logStep(`bands: ${allBands.length}`, { outer });
+    return allBands;
   } finally {
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { /* ignore */ }
   }
