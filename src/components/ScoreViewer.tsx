@@ -735,6 +735,37 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
       }
       const gapPx = Math.floor(b.top) - Math.ceil(last.bottom);
       if (gapPx > THRESH) {
+        // --- A) seamDecision diagnostics (no behavior change) ---
+        if (typeof isPagDiagOn === "function" && isPagDiagOn() && last) {
+          const A = last;
+          const B_top = b.top;
+          const seamY = Math.ceil(A.bottom);
+          const gap = Math.max(0, Math.floor(B_top) - seamY);
+
+          // Any element whose bbox crosses the candidate seam region?
+          let crossing = 0;
+          let occRows = 0;
+          const ROW_RADIUS = 3; // sample ±3 px around seam
+
+          for (const r of acceptedRects) {
+            const crossesGap = (r.top < B_top) && (r.bottom > A.bottom);
+            if (crossesGap) { crossing++; }
+          }
+          for (let y = seamY - ROW_RADIUS; y <= seamY + ROW_RADIUS; y++) {
+            // row "occupied" if any rect overlaps [y, y+1)
+            const rowOcc = acceptedRects.some(r => !(r.bottom <= y || r.top >= y + 1));
+            if (rowOcc) { occRows++; }
+          }
+
+          logStep(
+            `[seamDecision] A.bot=${Math.round(A.bottom)} ` +
+            `B.top=${Math.round(B_top)} gap=${gap} THRESH=${THRESH} ` +
+            `crossing=${crossing} rows±${ROW_RADIUS}=${occRows}`,
+            { outer }
+          );
+        }
+        // --- end seamDecision diagnostics ---
+
         bands.push({ top: b.top, bottom: b.bottom, height: b.height });
       } else {
         last.top = Math.min(last.top, b.top);
@@ -756,14 +787,43 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
         if (gap === 0 || gap > GAP_MAX) { continue; }
 
         let fillerMaxBot = -Infinity;
+        // --- B) gapFiller diagnostics prep (no behavior change) ---
+        let insideTall = 0;
+        let straddleTall = 0;
+        let maxStraddleBot = -Infinity;
+        // --- end gapFiller diagnostics prep ---
+
         for (const r of acceptedRects) {
           // strictly inside the gap region
           const inGap = r.top >= A.bottom && r.bottom <= B.top;
-          if (!inGap) { continue; }
-          if (r.height >= FILL_MIN_H) {
-            fillerMaxBot = Math.max(fillerMaxBot, r.bottom);
+          if (inGap) {
+            if (r.height >= FILL_MIN_H) {
+              fillerMaxBot = Math.max(fillerMaxBot, r.bottom);
+              // --- B) diagnostics: count inside-gap tall rects
+              insideTall++;
+              // --- end diagnostics
+            }
+          } else {
+            // --- B) diagnostics: count tall rects that STRADDLE the seam
+            const straddles = (r.top < B.top) && (r.bottom > A.bottom);
+            if (straddles && r.height >= FILL_MIN_H) {
+              straddleTall++;
+              if (r.bottom > maxStraddleBot) { maxStraddleBot = r.bottom; }
+            }
+            // --- end diagnostics
           }
         }
+        // --- B) gapFiller diagnostics log (no behavior change) ---
+        if (typeof isPagDiagOn === "function" && isPagDiagOn()) {
+          logStep(
+            `[gapFiller] i=${i} gap=${gap} ` +
+            `insideTall=${insideTall} straddleTall=${straddleTall} ` +
+            `maxStraddleBot=${Number.isFinite(maxStraddleBot) ? Math.round(maxStraddleBot) : "n/a"} ` +
+            `A.bot=${Math.round(A.bottom)} B.top=${Math.round(B.top)}`,
+            { outer }
+          );
+        }
+        // --- end gapFiller diagnostics log ---
 
         if (Number.isFinite(fillerMaxBot) && fillerMaxBot > A.bottom) {
           A.bottom = Math.min(fillerMaxBot, B.top - 1); // never cross into B
@@ -812,12 +872,36 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
       band.height = band.bottom - band.top;
     }
 
-    if (typeof isPagDiagOn === "function" && isPagDiagOn()) {
+    if (typeof isPagDiagOn()) {
       for (let i = 0; i < bands.length; i++) {
         const b = bands[i]!;
         logStep(`band[${i}] top=${Math.round(b.top)} bot=${Math.round(b.bottom)} h=${Math.round(b.height)}`, { outer });
       }
     }
+    // --- C) seamAudit: sample occupancy across each seam (no behavior change) ---
+    if (typeof isPagDiagOn() && bands.length > 1) {
+      const ROW_PAD = 2; // extend a couple of rows on each side
+      for (let i = 0; i < bands.length - 1; i++) {
+        const A = bands[i]!;
+        const B = bands[i + 1]!;
+        const y0 = Math.ceil(A.bottom) - ROW_PAD;
+        const y1 = Math.floor(B.top) + ROW_PAD;
+        const rows: string[] = [];
+        let occCnt = 0;
+
+        for (let y = y0; y <= y1; y++) {
+          const occ = acceptedRects.some(r => !(r.bottom <= y || r.top >= y + 1));
+          rows.push(occ ? "#" : ".");
+          if (occ) { occCnt++; }
+        }
+        logStep(
+          `[seamAudit] i=${i} span=${Math.round(A.bottom)}..${Math.round(B.top)} ` +
+          `rows="${rows.join("")}" occCnt=${occCnt}`,
+          { outer }
+        );
+      }
+    }
+    // --- end seamAudit ---
 
     void logStep(`bands: ${bands.length}`, { outer });
     return bands;
