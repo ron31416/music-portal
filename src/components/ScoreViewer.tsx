@@ -653,19 +653,19 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   const diagOn = typeof isPagDiagOn === "function" && isPagDiagOn();
   const THRESH = dynamicBandGapPx();
 
-  // Element accept thresholds (your proven set)
+  // Element accept thresholds (conservative; proven set)
   const MIN_H = 2;
   const MIN_W = 6;
   const STEM_MIN_W = 1.5;
   const TALL_NARROW_H = 22;
 
-  // Title/header guard (used only if we detect systems on a page)
+  // Optional: if systems are detectable, allow a small header guard
   const HEADER_GUARD_PX = 12;
 
-  // Gap-filler guardrails
+  // Gap fill guardrails (modest, helps stitch ledger lines/lyrics)
   const GAP_MAX = 80;
   const FILL_MIN_H = 18;
-  const EXTEND_CAP = 40; // px
+  const EXTEND_CAP = 40; // px, do not extend too far
 
   const hostTop = outer.getBoundingClientRect().top;
 
@@ -691,9 +691,9 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   }
   if (!allRects.length) { return []; }
 
-  // 2) Try to get page frames from OSMD; if absent, infer frames from gutters.
+  // 2) Try to get page frames from OSMD; if absent, infer frames from density troughs.
   const frames: Frame[] = (() => {
-    // A) OSMD page wrappers (most robust when present)
+    // A) OSMD page wrappers
     const pageGroups = Array.from(
       svgRoot.querySelectorAll<SVGGElement>("g[id^='page' i], g[class*='page' i], g.osmd-page, svg[data-page]")
     );
@@ -704,57 +704,48 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
         if (!Number.isFinite(r.top) || !Number.isFinite(r.bottom)) { continue; }
         list.push({ top: Math.round(r.top - hostTop), bottom: Math.round(r.bottom - hostTop) });
       }
-      // Ensure order and non-empty
       list.sort((a, b) => a.top - b.top);
       return list.filter(f => f.bottom > f.top + 10);
     }
 
-    // B) Fallback: infer by vertical occupancy histogram to find large empty gutters
+    // B) Density-based fallback (soft troughs)
     const docTop = Math.floor(Math.min(...allRects.map(r => r.top)));
     const docBot = Math.ceil(Math.max(...allRects.map(r => r.bottom)));
-    const STEP = 2;                 // histogram row size in px
-    const MIN_GUTTER = 120;         // empty span (px) to qualify as a page break
-    const PAD = 6;                  // soften edges a little
+    const STEP = 2;
+    const PAD = 6;
 
     const rows = Math.max(1, Math.ceil((docBot - docTop) / STEP));
-    const occ: boolean[] = new Array(rows).fill(false);
+    const count: number[] = new Array(rows).fill(0);
 
     for (const r of allRects) {
       const y0 = Math.max(0, Math.floor((r.top - docTop) / STEP));
       const y1 = Math.min(rows - 1, Math.ceil((r.bottom - docTop) / STEP));
-      for (let y = y0; y <= y1; y++) { occ[y] = true; }
+      for (let y = y0; y <= y1; y++) { count[y] = (count[y] ?? 0) + 1; }
     }
 
-    // Find long zero-occupied runs = gutters
-    const gutters: Array<{ y0: number; y1: number }> = [];
+    const SPARSE_COUNT = 2;
+    const MIN_GUTTER_SOFT = 80;
+    const troughs: Array<{ y0: number; y1: number }> = [];
     let runStart = -1;
+
     for (let y = 0; y < rows; y++) {
-      if (!occ[y]) {
+      if ((count[y] ?? 0) <= SPARSE_COUNT) {
         if (runStart < 0) { runStart = y; }
       } else if (runStart >= 0) {
         const y0 = runStart * STEP + docTop;
         const y1 = y * STEP + docTop;
-        if (y1 - y0 >= MIN_GUTTER) { gutters.push({ y0, y1 }); }
+        if (y1 - y0 >= MIN_GUTTER_SOFT) { troughs.push({ y0, y1 }); }
         runStart = -1;
       }
     }
     if (runStart >= 0) {
       const y0 = runStart * STEP + docTop;
       const y1 = rows * STEP + docTop;
-      if (y1 - y0 >= MIN_GUTTER) { gutters.push({ y0, y1 }); }
+      if (y1 - y0 >= MIN_GUTTER_SOFT) { troughs.push({ y0, y1 }); }
     }
 
-    // Convert gutters into frames between them
-    const bounds: number[] = [
-      docTop,
-      ...gutters.map(g => Math.round((g.y0 + g.y1) / 2)),
-      docBot,
-    ].filter(n => Number.isFinite(n));
-
-    if (bounds.length < 2) {
-      // single frame fallback
-      return [{ top: docTop + PAD, bottom: docBot - PAD }];
-    }
+    const bounds: number[] = [docTop, ...troughs.map(t => Math.round((t.y0 + t.y1) / 2)), docBot].filter(Number.isFinite);
+    if (bounds.length < 2) { return [{ top: docTop + PAD, bottom: docBot - PAD }]; }
 
     const list: Frame[] = [];
     for (let i = 0; i + 1 < bounds.length; i++) {
@@ -765,84 +756,77 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
     return list;
   })();
 
-  // 3) (Optional) Per-frame system-top guard to avoid dropping titles too aggressively
-  //    We’ll compute pageContentTop per frame from system groups if available.
-  const systemGroups = Array.from(svgRoot.querySelectorAll<SVGGElement>("g[id*='system' i], g[class*='system' i]"))
+  // 3) (Optional) System groups (if present) to estimate content start per page
+  const systemGroups = Array.from(
+    svgRoot.querySelectorAll<SVGGElement>("g[id*='system' i], g[class*='system' i], g.osmd-system")
+  )
     .map(g => g.getBoundingClientRect())
     .map(r => ({ top: r.top - hostTop, bottom: r.bottom - hostTop }))
     .filter(r => Number.isFinite(r.top) && Number.isFinite(r.bottom) && r.bottom > r.top);
+  if (diagOn) { logStep(`DBG systems.count=${systemGroups.length}`, { outer }); }
 
   const allBands: Band[] = [];
 
   // Helper: run the band pipeline on a single frame
   const buildBandsForFrame = (frame: Frame): Band[] => {
-    // Collect page-clamped rects for this frame only
+    // Collect rects owned by this frame (midpoint ownership), then clip to frame
     const rects: ElemRect[] = [];
     let pageContentTop: number | null = null;
+
     if (systemGroups.length) {
-      const minSysTopInFrame = Math.min(
-        ...systemGroups.filter(s => s.bottom > frame.top && s.top < frame.bottom).map(s => s.top)
-      );
-      if (Number.isFinite(minSysTopInFrame)) { pageContentTop = Math.floor(minSysTopInFrame) - HEADER_GUARD_PX; }
+      const candidates = systemGroups.filter(s => s.bottom > frame.top && s.top < frame.bottom);
+      if (candidates.length) {
+        const minSysTopInFrame = Math.min(...candidates.map(s => s.top));
+        if (Number.isFinite(minSysTopInFrame)) { pageContentTop = Math.floor(minSysTopInFrame) - HEADER_GUARD_PX; }
+      }
     }
 
     for (const r of allRects) {
-      if (r.bottom <= frame.top || r.top >= frame.bottom) { continue; } // not in this frame
+      const mid = (r.top + r.bottom) / 2;
+      if (mid < frame.top || mid >= frame.bottom) { continue; }
       const cTop = Math.max(r.top, frame.top);
       const cBot = Math.min(r.bottom, frame.bottom);
       if (cBot <= cTop) { continue; }
-      if (pageContentTop !== null && cBot < pageContentTop) { continue; } // drop header-only items
+      if (pageContentTop !== null && cBot < pageContentTop) { continue; }
       rects.push({ top: cTop, bottom: cBot, height: cBot - cTop, width: r.width });
     }
     if (!rects.length) { return []; }
 
-    // Sort to boxes and merge with THRESH
+    // Sort → merge (THRESH)
     rects.sort((a, b) => a.top - b.top);
-    const bands: Band[] = [];
-    for (const b of rects) {
-      const last = bands[bands.length - 1];
+    const merged: Band[] = [];
+    for (const r of rects) {
+      const last = merged[merged.length - 1];
       if (!last) {
-        bands.push({ top: b.top, bottom: b.bottom, height: b.height });
+        merged.push({ top: r.top, bottom: r.bottom, height: r.bottom - r.top });
         continue;
       }
-      const gapPx = Math.floor(b.top) - Math.ceil(last.bottom);
+      const gapPx = Math.floor(r.top) - Math.ceil(last.bottom);
       if (gapPx > THRESH) {
-        bands.push({ top: b.top, bottom: b.bottom, height: b.height });
+        merged.push({ top: r.top, bottom: r.bottom, height: r.bottom - r.top });
       } else {
-        last.top = Math.min(last.top, b.top);
-        last.bottom = Math.max(last.bottom, b.bottom);
+        last.top = Math.min(last.top, r.top);
+        last.bottom = Math.max(last.bottom, r.bottom);
         last.height = last.bottom - last.top;
       }
     }
 
-    // Gap-filler (same logic that fixed bottoms before), bounded to the frame
-    for (let i = 0; i < bands.length - 1; i++) {
-      const A = bands[i]!, B = bands[i + 1]!;
+    // Modest gap-filler (stitch a little if tall glyphs indicate continuity)
+    for (let i = 0; i < merged.length - 1; i++) {
+      const A = merged[i]!, B = merged[i + 1]!;
       const gap = Math.max(0, Math.floor(B.top) - Math.ceil(A.bottom));
       if (gap === 0 || gap > GAP_MAX) { continue; }
 
-      let fillerMaxBot = -Infinity;
-      let maxStraddleBot = -Infinity;
+      let best = -Infinity;
       for (const r of rects) {
-        const tall = r.height >= FILL_MIN_H;
-        if (!tall) { continue; }
-
+        if (r.height < FILL_MIN_H) { continue; }
         const inside = r.top >= A.bottom && r.bottom <= B.top;
         const straddle = r.top < B.top && r.bottom > A.bottom;
-
-        if (inside) {
-          if (r.bottom > fillerMaxBot) { fillerMaxBot = r.bottom; }
-        } else if (straddle) {
-          if (r.bottom > maxStraddleBot) { maxStraddleBot = r.bottom; }
-        }
+        if (inside || straddle) { best = Math.max(best, r.bottom); }
       }
 
-      const target = Number.isFinite(fillerMaxBot)
-        ? fillerMaxBot
-        : Number.isFinite(maxStraddleBot) ? maxStraddleBot : -Infinity;
-
-      if (Number.isFinite(target) && target > A.bottom) {
-        const capped = Math.min(target, B.top - 1, A.bottom + EXTEND_CAP, frame.bottom - 1);
+      if (Number.isFinite(best) && best > A.bottom) {
+        const capped = Math.min(best, B.top - 1, A.bottom + EXTEND_CAP, frame.bottom - 1);
         if (capped > A.bottom) {
           A.bottom = capped;
           A.height = A.bottom - A.top;
@@ -850,55 +834,101 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
       }
     }
 
-    // Micro-band filter + rejoin (conservative)
-    const heights = bands.map(b => b.height).filter(h => h > 0).sort((a, b) => a - b);
+    // Micro-band filter (keep reasonably tall bands), then rejoin with THRESH
+    const heights = merged.map(b => b.height).filter(h => h > 0).sort((a, b) => a - b);
     let median = 0;
-    if (heights.length > 0) {
-      const n = heights.length, mid = Math.floor(n / 2);
-      median = n % 2 ? heights[mid]! : 0.5 * (heights[mid - 1]! + heights[mid]!);
+    if (heights.length) {
+      const n = heights.length, m = Math.floor(n / 2);
+      median = n % 2 ? heights[m]! : 0.5 * (heights[m - 1]! + heights[m]!);
     }
     const REL_MIN = 0.35;
     const ABS_MIN = 72;
     const MIN_KEEP = Math.max(ABS_MIN, Math.floor(median * REL_MIN));
 
-    const kept: Band[] = [];
-    for (const b of bands) {
-      if (b.height >= MIN_KEEP) { kept.push({ top: b.top, bottom: b.bottom, height: b.height }); }
-    }
-
+    const kept = merged.filter(b => b.height >= MIN_KEEP).map(b => ({ ...b }));
     kept.sort((a, b) => a.top - b.top);
+
     const normalized: Band[] = [];
     for (const b of kept) {
       const last = normalized[normalized.length - 1];
-      if (!last) {
-        normalized.push({ top: b.top, bottom: b.bottom, height: b.height });
-        continue;
-      }
+      if (!last) { normalized.push({ ...b }); continue; }
       const gapPx = Math.floor(b.top) - Math.ceil(last.bottom);
       if (gapPx <= THRESH) {
         last.top = Math.min(last.top, b.top);
         last.bottom = Math.max(last.bottom, b.bottom);
         last.height = last.bottom - last.top;
       } else {
-        normalized.push({ top: b.top, bottom: b.bottom, height: b.height });
+        normalized.push({ ...b });
       }
     }
 
-    // Final clamp to the frame with a 1px safety to avoid touching the next frame
-    for (const band of normalized) {
-      band.top = Math.max(band.top, frame.top);
-      band.bottom = Math.min(band.bottom, frame.bottom - 1);
-      band.height = band.bottom - band.top;
+    // --- Local inter-system valley clamp (per-frame, between adjacent bands) ---
+    // Prevents the last band from grabbing the first pixels of the next system.
+    {
+      const PAD = 2;       // don't touch the next system
+      const STEP = 1;      // sampling step for occupancy
+      const EMPTY_RUN = 6; // consecutive empty rows to count as a trough
+
+      const rowsH = Math.max(0, frame.bottom - frame.top + 1);
+      const occ = new Array(rowsH).fill(false);
+      for (const r of rects) {
+        const y0 = Math.max(frame.top, Math.floor(r.top));
+        const y1 = Math.min(frame.bottom, Math.ceil(r.bottom));
+        for (let y = y0; y < y1; y += STEP) { occ[y - frame.top] = true; }
+      }
+
+      normalized.sort((a, b) => a.top - b.top);
+
+      for (let i = 0; i + 1 < normalized.length; i++) {
+        const A = normalized[i]!;
+        const B = normalized[i + 1]!;
+
+        const scanStart = Math.max(0, Math.floor(A.bottom) - frame.top);
+        const scanEnd = Math.min(rowsH - 1, Math.ceil(B.top) - frame.top);
+
+        let bestLen = 0, bestEnd = -1, runLen = 0;
+        for (let y = scanStart; y <= scanEnd; y++) {
+          if (!occ[y]) { runLen++; if (runLen > bestLen) { bestLen = runLen; bestEnd = y; } }
+          else { runLen = 0; }
+        }
+
+        if (bestLen >= EMPTY_RUN) {
+          const troughY = bestEnd + frame.top;
+          const limit = Math.min(troughY, B.top) - 1;
+          if (A.bottom > limit) {
+            const old = A.bottom;
+            A.bottom = Math.max(A.top, limit);
+            A.height = A.bottom - A.top;
+            if (diagOn) { logStep(`midClamp(trough) A@${Math.round(A.top)} oldBot=${old} newBot=${A.bottom} B.top=${Math.round(B.top)} len=${bestLen}`, { outer }); }
+          }
+        } else {
+          const limit = Math.min(B.top, frame.bottom) - PAD;
+          if (A.bottom > limit) {
+            const old = A.bottom;
+            A.bottom = Math.max(A.top, limit);
+            A.height = A.bottom - A.top;
+            if (diagOn) { logStep(`midClamp(none)   A@${Math.round(A.top)} oldBot=${old} newBot=${A.bottom} B.top=${Math.round(B.top)}`, { outer }); }
+          }
+        }
+      }
+    }
+    // ---------------------------------------------------------------------------
+
+    // Final clamp into frame (1px safety from frame bottom)
+    for (const b of normalized) {
+      b.top = Math.max(b.top, frame.top);
+      b.bottom = Math.min(b.bottom, frame.bottom - 1);
+      b.height = b.bottom - b.top;
     }
 
     return normalized.filter(b => b.height > 0);
   };
 
   try {
+    // Build bands per detected frame (may be multiple)
     for (let i = 0; i < frames.length; i++) {
       const pageBands = buildBandsForFrame(frames[i]!);
-      allBands.push(...pageBands);
-
+      for (const b of pageBands) { allBands.push(b); }
       if (diagOn) {
         for (let j = 0; j < pageBands.length; j++) {
           const b = pageBands[j]!;
@@ -907,7 +937,13 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
       }
     }
 
-    if (diagOn) { logStep(`bands (total): ${allBands.length}`, { outer }); }
+    // No global adjacency clamp or virtual frames here — per-frame processing above
+    // already resolves ownership and prevents cross-page/system peeking.
+
+    if (diagOn) {
+      logStep(`bands (total): ${allBands.length}`, { outer });
+    }
+
     return allBands;
   } finally {
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { /* ignore */ }
