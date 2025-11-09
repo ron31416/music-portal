@@ -1586,7 +1586,6 @@ function drawMeasureBoxes(
 
     // Draw rectangles using per-measure verticals (clamped to tile seams)
     const PAD_PX = 4;              // inside-band padding for each rectangle
-    const STROKE_BLEED_PX = 3;     // accounts for SVG stroke outside getBBox()
 
     // --- DEBUG (viewer-pag): draw this tile's band edges so we can verify the seam
     if (isPagDiagOn()) {
@@ -1740,8 +1739,10 @@ function drawMeasureBoxes(
       }
 
       // Apply inner padding but keep rectangle inside the band
-      let top = (mt as number) - PAD_PX - STROKE_BLEED_PX;
-      let bot = (mb as number) + PAD_PX + STROKE_BLEED_PX; top = Math.max(bandTop, top);
+      let top = (mt as number) - PAD_PX;
+      let bot = (mb as number) + PAD_PX;
+
+      top = Math.max(bandTop, top);
       bot = Math.min(bandBot, bot);
 
       // Pixel-perfect y/h
