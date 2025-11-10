@@ -1006,36 +1006,12 @@ function drawMeasureBoxes(
     });
   }
 
-  // --- Debug toggle for barline detection ---
-  const DBG_BAR = typeof window !== "undefined" && window.location.hash.includes("viewer-barlines");
-
-  const gDbg = DBG_BAR ? createSvgEl("g") : null;
-  if (gDbg) {
-    gDbg.setAttribute("data-viewer-measureboxes-barlog", "1");
-    layer.appendChild(gDbg);
-  }
-
-  function dbgVLine(x: number, y0: number, y1: number, stroke: string, dash = false): void {
-    if (!DBG_BAR || !gDbg) { return; }
-    const ln = createSvgEl("line");
-    ln.setAttribute("x1", String(x));
-    ln.setAttribute("x2", String(x));
-    ln.setAttribute("y1", String(y0));
-    ln.setAttribute("y2", String(y1));
-    ln.setAttribute("stroke", stroke);
-    ln.setAttribute("stroke-width", "1");
-    if (dash) { ln.setAttribute("stroke-dasharray", "3 3"); }
-    ln.setAttribute("vector-effect", "non-scaling-stroke");
-    gDbg.appendChild(ln);
-  }
-  // --- End helper ---
-
   // --- Per-tile barline extraction & interval cache ---
   type Interval = { left: number; right: number };
 
   // Collect inner-edge X positions of vertical barlines that belong to a given tile.
   // expectedBars = measures_in_tile + 1
-  function getTileBarlineXs(
+  function computeBandMeasureIntervals(
     yTop: number,
     yBot: number,
     expectedBars: number,
@@ -1178,7 +1154,6 @@ function drawMeasureBoxes(
 
       if (overallOK || halvesOK) {
         xsRaw.push(x);
-        if (DBG_BAR) { dbgVLine(x, corTop, corBot, "rgba(0,160,0,0.95)", false); }
       }
     }
 
@@ -1232,12 +1207,12 @@ function drawMeasureBoxes(
   }
 
   // Cache of intervals per tile index + expected bar count
-  const INTERVALS_BY_TILE = new Map<string, Interval[]>();
+  const BAND_INTERVAL_CACHE = new Map<string, Interval[]>();
 
   type AnnotExtents = { top: number; bottom: number };
   const ANNOT_CACHE = new Map<string, AnnotExtents>();
 
-  function ensureTileIntervals(
+  function getBandMeasureIntervalsCached(
     tileIndex: number,
     yTop: number,
     yBot: number,
@@ -1245,10 +1220,10 @@ function drawMeasureBoxes(
     leftBoundPx = -Infinity
   ): Interval[] {
     const key = `${tileIndex}:${expectedBars}:${Math.round(leftBoundPx)}`;
-    const cached = INTERVALS_BY_TILE.get(key);
+    const cached = BAND_INTERVAL_CACHE.get(key);
     if (cached) { return cached; }
 
-    const xs = getTileBarlineXs(yTop, yBot, expectedBars, leftBoundPx);
+    const xs = computeBandMeasureIntervals(yTop, yBot, expectedBars, leftBoundPx);
     const intervals: Interval[] = [];
     for (let i = 0; i < xs.length - 1; i++) {
       const l = xs[i]!;
@@ -1256,7 +1231,7 @@ function drawMeasureBoxes(
       if (r > l) { intervals.push({ left: l, right: r }); }
     }
 
-    INTERVALS_BY_TILE.set(key, intervals);
+    BAND_INTERVAL_CACHE.set(key, intervals);
     return intervals;
   }
   // --- End per-tile barline helpers ---
@@ -1274,7 +1249,7 @@ function drawMeasureBoxes(
    *  - Prefer "features" (anything not an almost-horizontal hairline) whenever present.
    *  - Clip Y to the system band to keep page-header/footer/brace junk out.
    */
-  function recomputeAnnotExtentsForMeasureInterval(
+  function computeMeasureVerticalExtents(
     svgRoot: SVGSVGElement,
     intervalLeft: number,
     intervalRight: number,
@@ -1346,11 +1321,75 @@ function drawMeasureBoxes(
 
     if (globalTop === null || globalBot === null) { return null; }
 
+    /*
     // Prefer feature extremes whenever present; otherwise fall back to all-shapes extremes.
     if (featureTop !== null && featureBot !== null) {
       return { top: featureTop, bottom: featureBot };
     }
     return { top: globalTop, bottom: globalBot };
+    */
+    /*
+    // Prefer feature extremes whenever present; otherwise fall back to all-shapes extremes.
+    if (featureTop !== null && featureBot !== null) {
+      // Let thin horizontals (e.g., pedal lines) extend the box when they sit beyond features.
+      const bandH = y1Band - y0Band;
+      const EXTEND_THRESH = 0;                 // px: ignore micro-noise
+      const MAX_EXTEND_PCT = 0.25;             // cap extension to 25% of the band
+      const MAX_EXTEND = Math.max(6, Math.round(bandH * MAX_EXTEND_PCT));
+
+      let top = featureTop;
+      let bottom = featureBot;
+
+      // If the global bottom (incl. hairlines) is meaningfully lower, extend downward.
+      if (globalBot - bottom >= EXTEND_THRESH) {
+        bottom = Math.min(y1Band, Math.min(bottom + MAX_EXTEND, globalBot));
+      }
+      // Symmetric for top (rare, but catches ottava/8va/8vb hairlines above staff).
+      if (top - globalTop >= EXTEND_THRESH) {
+        top = Math.max(y0Band, Math.max(top - MAX_EXTEND, globalTop));
+      }
+      return { top, bottom };
+    }
+    return { top: globalTop, bottom: globalBot };
+    */
+
+    // Prefer feature extremes whenever present; otherwise fall back to all-shapes extremes.
+    if (featureTop !== null && featureBot !== null) {
+      const bandTopClamped = Math.max(y0Band, Math.min(y1Band, globalTop ?? featureTop));
+      const bandBotClamped = Math.max(y0Band, Math.min(y1Band, globalBot ?? featureBot));
+
+      // Cap how far we can extend beyond the feature box so staff lines can't blow it up.
+      const bandH = y1Band - y0Band;
+      const MAX_EXTEND_PCT = 0.25;                 // up to 25% of the band
+      const MAX_EXTEND = Math.max(6, Math.round(bandH * MAX_EXTEND_PCT));
+
+      let top = featureTop;
+      let bottom = featureBot;
+
+      // Extend DOWN: toward global bottom, but no further than featureBot + MAX_EXTEND and not past band bottom
+      if (globalBot !== null) {
+        const target = Math.min(y1Band, Math.max(y0Band, bandBotClamped));
+        const capped = Math.min(target, featureBot + MAX_EXTEND);
+        bottom = Math.max(featureBot, capped);
+      }
+
+      // Extend UP: toward global top, but no further than featureTop - MAX_EXTEND and not above band top
+      if (globalTop !== null) {
+        const target = Math.max(y0Band, Math.min(y1Band, bandTopClamped));
+        const capped = Math.max(target, featureTop - MAX_EXTEND);
+        top = Math.min(featureTop, capped);
+      }
+
+      return { top, bottom };
+    }
+
+    // No reliable feature box → use all-shapes union (includes hairlines like pedal lines).
+    // (These should be non-null if we reached this branch; guard defensively.)
+    return {
+      top: globalTop ?? y0Band,
+      bottom: globalBot ?? y1Band,
+    };
+
   }
   // --- End interval-gated recompute helper ---
 
@@ -1423,7 +1462,7 @@ function drawMeasureBoxes(
     const LEFT_TOL = 2;
     const leftBoundPx = musicLeft - LEFT_TOL;
 
-    let tileIntervals = ensureTileIntervals(k, detectTop, detectBot, expectedBars, leftBoundPx);
+    let tileIntervals = getBandMeasureIntervalsCached(k, detectTop, detectBot, expectedBars, leftBoundPx);
 
     // Clamp intervals to the measures' horizontal span,
     // but don't reject a true first interval just because its left barline
@@ -1437,23 +1476,6 @@ function drawMeasureBoxes(
       .filter(iv => iv.right <= tileMaxX + XTOL)                 // keep inside music on the right
       .filter(iv => (iv.right - iv.left) >= MIN_MEASURE_W);      // drop ultra-thin pre-measure shards
 
-    if (DBG_BAR) {
-      const keptXs = getTileBarlineXs(detectTop, detectBot, expectedBars, leftBoundPx);
-      for (const x of keptXs) {
-        dbgVLine(Math.round(x) + 0.5, drawTop, drawBot, "rgba(0,180,0,0.9)", false);
-      }
-
-      const ids = items.map(it => it.m.id);
-      const edges = tileIntervals.map(iv => `[${iv.left},${iv.right}]`);
-
-      if (isPagDiagOn()) {
-        // route through existing debug logger
-        logStep(
-          `tile ${k}: measures=${items.length}, bars=${expectedBars}, intervals=${tileIntervals.length} :: ids=${ids.join(",")} :: edges=${edges.join(",")}`
-        );
-      }
-    }
-
     const N = Math.min(items.length, tileIntervals.length);
 
     // --- Final brace/connector exclusion ---
@@ -1465,15 +1487,6 @@ function drawMeasureBoxes(
         right: iv.right
       }));
     }
-
-    if (N === 0) { continue; }
-
-    if (DBG_BAR && (tileIntervals.length !== items.length || tileIntervals.length !== expectedBars - 1)) {
-      logStep(
-        `⚠ tile ${k} mismatch: measures=${items.length}, expectedBars=${expectedBars}, intervals=${tileIntervals.length}`
-      );
-    }
-
     if (N === 0) { continue; }
 
     // --- NEW: interval-gated recompute for each measure BEFORE drawing ---
@@ -1485,7 +1498,7 @@ function drawMeasureBoxes(
     for (let i = 0; i < N; i++) {
       const { m } = items[i]!;
       const chosen = tileIntervals[i]!;
-      const mm = recomputeAnnotExtentsForMeasureInterval(
+      const mm = computeMeasureVerticalExtents(
         svgRoot,
         chosen.left,
         chosen.right,
@@ -3485,7 +3498,7 @@ export default function ScoreViewer({
 
   /** Paging helpers */
 
-  // --- Stuck-page guard: ensure forward/back actually lands on the next/prev start ---
+  // Core page-turn handler (goNext/goPrev). On rare layout shifts, retries next frame.
   const turnPage = useCallback(
     (dir: 1 | -1) => {
       if (busyRef.current) { return; }
