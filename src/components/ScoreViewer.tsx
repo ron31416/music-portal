@@ -1477,6 +1477,7 @@ function drawMeasureBoxes(
     if (N === 0) { continue; }
 
     // --- NEW: interval-gated recompute for each measure BEFORE drawing ---
+    // This is where the boxes are computed to fit the actual contents of the measure top to bottom
     const EPS = 6; // px, slightly larger to capture diagonals near barlines
     const bandTop = seps[k]!;
     const bandBot = seps[k + 1]!;
@@ -2426,6 +2427,7 @@ export default function ScoreViewer({
 
       const prevFuncTag = outer.dataset.viewerFunc ?? "";
       outer.dataset.viewerFunc = "applyPage";
+      logStep("called by: " + prevFuncTag, { outer });
 
       try {
         const svg = getSvg(outer);
@@ -2865,6 +2867,7 @@ export default function ScoreViewer({
 
     const prevFuncTag = outer.dataset.viewerFunc ?? "";
     outer.dataset.viewerFunc = "paginateViewer";
+    logStep("called by: " + prevFuncTag, { outer });
 
     try {
       outer.dataset.viewerRecompute = String(Date.now());
@@ -3483,7 +3486,7 @@ export default function ScoreViewer({
   /** Paging helpers */
 
   // --- Stuck-page guard: ensure forward/back actually lands on the next/prev start ---
-  const tryAdvance = useCallback(
+  const turnPage = useCallback(
     (dir: 1 | -1) => {
       if (busyRef.current) { return; }
 
@@ -3510,7 +3513,15 @@ export default function ScoreViewer({
       // The start index we want to land on after any recompute
       const desiredStart = starts[targetPage] ?? starts[beforePage] ?? 0;
 
-      applyPage(targetPage);
+      const outer = wrapRef.current;
+      const prevTag = outer?.dataset.viewerFunc ?? "";
+      if (outer) { outer.dataset.viewerFunc = "turnPage"; }
+      try {
+        applyPage(targetPage);
+      } finally {
+        if (outer) { outer.dataset.viewerFunc = prevTag; }
+      }
+
 
       // If we didn't actually move, rebuild page starts and retry *toward* desiredStart.
       window.requestAnimationFrame(() => {
@@ -3535,14 +3546,23 @@ export default function ScoreViewer({
           idx = Math.max(0, firstGreater - 1);
         }
 
-        if (idx !== beforePage) { applyPage(idx); }
+        //if (idx !== beforePage) { applyPage(idx); }
+        if (idx !== beforePage) {
+          const prevTag = outer.dataset.viewerFunc ?? "";
+          outer.dataset.viewerFunc = "turnPage/raf";
+          try {
+            applyPage(idx);
+          } finally {
+            outer.dataset.viewerFunc = prevTag;
+          }
+        }
       });
     },
     [applyPage, paginationHeight]
   );
 
-  const goNext = useCallback(() => tryAdvance(1), [tryAdvance]);
-  const goPrev = useCallback(() => tryAdvance(-1), [tryAdvance]);
+  const goNext = useCallback(() => turnPage(1), [turnPage]);
+  const goPrev = useCallback(() => turnPage(-1), [turnPage]);
 
   // Wheel & keyboard paging (disabled while busy)
   useEffect(() => {
