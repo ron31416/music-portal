@@ -655,9 +655,7 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
 
   // Element accept thresholds (conservative; proven set)
   const MIN_H = 2;
-  const MIN_W = 6;
-  const STEM_MIN_W = 1.5;
-  const TALL_NARROW_H = 22;
+  const MIN_W = 0.0; // was 6
 
   // Optional: if systems are detectable, allow a small header guard
   const HEADER_GUARD_PX = 12;
@@ -680,15 +678,16 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
       if (!Number.isFinite(r.top) || !Number.isFinite(r.height) || !Number.isFinite(r.width)) { continue; }
       if (r.height < MIN_H) { continue; }
 
-      const okNormal = r.width >= MIN_W;
-      const okTallThin = r.height >= TALL_NARROW_H && r.width >= STEM_MIN_W;
-      if (!(okNormal || okTallThin)) { continue; }
+      if (r.height < MIN_H) { continue; }
+      if (r.width < MIN_W) { continue; }
 
       const top = r.top - hostTop;
       const bottom = r.bottom - hostTop;
       allRects.push({ top, bottom, height: r.height, width: r.width });
     } catch { /* ignore */ }
   }
+  if (diagOn) { logStep(`DIAG accept: allRects=${allRects.length} (MIN_W=${MIN_W})`, { outer }); }
+
   if (!allRects.length) { return []; }
 
   // 2) Try to get page frames from OSMD; if absent, infer frames from density troughs.
@@ -755,6 +754,16 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
     }
     return list;
   })();
+
+  // --- DIAG: page frame provenance -------------------------------------------
+  if (diagOn) {
+    const pageGroupsForLog = svgRoot.querySelectorAll(
+      "g[id^='page' i], g[class*='page' i], g.osmd-page, svg[data-page]"
+    ).length;
+    const frameSource = pageGroupsForLog > 0 ? "OSMD" : "inferred";
+    logStep(`DIAG frames.count=${frames.length} source=${frameSource}`, { outer });
+  }
+  // ---------------------------------------------------------------------------
 
   // 3) (Optional) System groups (if present) to estimate content start per page
   const systemGroups = Array.from(
@@ -836,6 +845,16 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
 
     // Micro-band filter (keep reasonably tall bands), then rejoin with THRESH
     const heights = merged.map(b => b.height).filter(h => h > 0).sort((a, b) => a - b);
+
+    // --- DIAG: pre-normalize bottom gap (merged stacks) -------------------------
+    let preNormLastGap = null as number | null;
+    if (merged.length >= 2) {
+      const mA = merged[merged.length - 2]!;
+      const mB = merged[merged.length - 1]!;
+      preNormLastGap = Math.floor(mB.top) - Math.ceil(mA.bottom);
+    }
+    // ---------------------------------------------------------------------------
+
     let median = 0;
     if (heights.length) {
       const n = heights.length, m = Math.floor(n / 2);
@@ -914,6 +933,259 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
     }
     // ---------------------------------------------------------------------------
 
+    // --- DIAG: normalized tail + preNormLastGap ---------------------------------
+    if (diagOn) {
+      const tail = normalized.slice(-2);
+      if (tail.length === 2) {
+        const A = tail[0]!, B = tail[1]!;
+        logStep(
+          `DIAG tail before frameClamp: A[top=${Math.round(A.top)} bot=${Math.round(A.bottom)}] ` +
+          `B[top=${Math.round(B.top)} bot=${Math.round(B.bottom)}] ` +
+          `preNormLastGap=${preNormLastGap} THRESH=${THRESH}`,
+          { outer }
+        );
+      } else if (tail.length === 1) {
+        const L = tail[0]!;
+        logStep(
+          `DIAG single last band before frameClamp: top=${Math.round(L.top)} bot=${Math.round(L.bottom)} ` +
+          `preNormLastGap=${preNormLastGap} THRESH=${THRESH}`,
+          { outer }
+        );
+      }
+    }
+    // ---------------------------------------------------------------------------
+
+    // --- DIAG: bottom corridor near frame.bottom --------------------------------
+    {
+      const LAST_SCAN = 120; // px window above frame.bottom
+      const yEnd = frame.bottom;
+      const yStart = Math.max(frame.top, yEnd - LAST_SCAN);
+      const rowsH = Math.max(0, yEnd - yStart + 1);
+
+      // occupancy (geometry only; DO NOT change behavior)
+      let occTrue = 0;
+      const occ = new Array(rowsH).fill(false);
+      for (const r of rects) {
+        const mid = (r.top + r.bottom) / 2;
+        // only rects that "belong" to this frame by midpoint, same as main pipeline
+        if (mid < frame.top || mid >= frame.bottom) { continue; }
+
+        const y0 = Math.max(yStart, Math.floor(r.top));
+        const y1 = Math.min(yEnd, Math.ceil(r.bottom));
+        for (let y = y0; y < y1; y++) {
+          const idx = y - yStart;
+          if (!occ[idx]) { occ[idx] = true; occTrue++; }
+        }
+      }
+
+      // consecutive empty run & percent empty
+      let maxEmpty = 0, run = 0;
+      for (let i = 0; i < rowsH; i++) {
+        if (!occ[i]) { run++; if (run > maxEmpty) { maxEmpty = run; } }
+        else { run = 0; }
+      }
+      const pctEmpty = rowsH ? Math.round(((rowsH - occTrue) / rowsH) * 100) : 0;
+
+      // simple extremum: lowest rect bottom within the frame
+      let maxRectBottomInFrame = -Infinity;
+      for (const r of rects) {
+        const mid = (r.top + r.bottom) / 2;
+        if (mid < frame.top || mid >= frame.bottom) { continue; }
+        if (r.bottom > maxRectBottomInFrame) { maxRectBottomInFrame = r.bottom; }
+      }
+
+      if (diagOn) {
+        logStep(
+          `DIAG bottomWindow: yStart=${Math.round(yStart)} yEnd=${Math.round(yEnd)} ` +
+          `rows=${rowsH} maxEmpty=${maxEmpty} pctEmpty=${pctEmpty}% ` +
+          `frame.minus.maxRect=${Math.round(frame.bottom - maxRectBottomInFrame)}`,
+          { outer }
+        );
+      }
+    }
+    // ---------------------------------------------------------------------------
+
+    // --- Last-band bottom gutter reclaim (stable last seam; geometry-only) ------
+    {
+      if (normalized.length) {
+        const PAD = 2;           // do not touch the next system
+        const LAST_SCAN = 140;   // px window above frame.bottom to inspect
+        const STEP = 1;          // 1px sampling
+        const MIN_EMPTY = 8;     // consecutive empty rows to accept as a real gutter
+
+        const yEnd = frame.bottom;
+        const yStart = Math.max(frame.top, yEnd - LAST_SCAN);
+        const rowsH = Math.max(0, yEnd - yStart + 1);
+        if (rowsH > 0) {
+          // Build occupancy in the bottom window using the same rect ownership rule (midpoint in frame).
+          const occ = new Array(rowsH).fill(false);
+
+          for (const r of rects) {
+            // geometry-only "thin-wide rail" filter so pedals/hairpins don't pollute the corridor
+            const isThinWide = (r.height <= 12 && r.width >= 120);
+            if (isThinWide) { continue; }
+
+            const mid = (r.top + r.bottom) / 2;
+            if (mid < frame.top || mid >= frame.bottom) { continue; }
+
+            const y0 = Math.max(yStart, Math.floor(r.top));
+            const y1 = Math.min(yEnd, Math.ceil(r.bottom));
+            for (let y = y0; y < y1; y += STEP) {
+              const idx = y - yStart;
+              if (!occ[idx]) { occ[idx] = true; }
+            }
+          }
+
+          // Deepest empty run (closest to frame.bottom).
+          let bestLen = 0, bestEnd = -1, runLen = 0;
+          for (let i = rowsH - 1; i >= 0; i--) {
+            if (!occ[i]) { runLen++; if (runLen >= bestLen) { bestLen = runLen; bestEnd = i; } }
+            else { runLen = 0; }
+          }
+
+          const last = normalized[normalized.length - 1]!;
+          if (bestLen >= MIN_EMPTY) {
+            // First row (Y) of that deepest empty run
+            const gutterTop = yStart + (bestEnd - bestLen + 1);
+            const limit = Math.max(frame.top, gutterTop) - PAD;
+            if (last.bottom > limit) {
+              const old = last.bottom;
+              last.bottom = Math.max(last.top, limit);
+              last.height = last.bottom - last.top;
+              if (diagOn) {
+                logStep(`lastBand gutterClamp old=${Math.round(old)} new=${Math.round(last.bottom)} gutterTop=${Math.round(gutterTop)} len=${bestLen}`, { outer });
+              }
+            }
+          } else {
+            // No clean gutter: use a tiny deterministic offset from frame edge to avoid slicing.
+            const limit = frame.bottom - 4; // stronger than the global -1 clamp
+            if (last.bottom > limit) {
+              const old = last.bottom;
+              last.bottom = Math.max(last.top, limit);
+              last.height = last.bottom - last.top;
+              if (diagOn) {
+                logStep(`lastBand hardCap old=${Math.round(old)} new=${Math.round(last.bottom)}`, { outer });
+              }
+            }
+          }
+        }
+      }
+    }
+    // ----------------------------------------------------------------------------
+
+    // --- SAFE last-band stabilizers (gutter reclaim + local first-content clamp) -
+    try {
+      if (normalized.length > 0) {
+        const last = normalized[normalized.length - 1]!;
+        // Quick sanity: last must be inside frame
+        if (!(Number.isFinite(last.top) && Number.isFinite(last.bottom) && last.bottom > last.top)) {
+          if (diagOn) { logStep("SAFE lastBand: invalid last band; skipping", { outer }); }
+        } else {
+          // ---------------- Bottom gutter reclaim (overlap-based, safe) ----------------
+          const PAD = 2;
+          const LAST_SCAN = 140;
+          const STEP = 1;
+
+          const yEndRaw = frame.bottom;
+          const yStartRaw = Math.max(frame.top, yEndRaw - LAST_SCAN);
+
+          // Coerce to integers and ensure a valid window
+          const yEnd = Math.floor(yEndRaw);
+          const yStart = Math.floor(yStartRaw);
+          const rowsH = Math.max(0, yEnd - yStart);
+          if (rowsH > 0 && STEP > 0) {
+            const occ = new Array(rowsH).fill(false);
+
+            for (const r of rects) {
+              // basic rect sanity
+              if (!(Number.isFinite(r.top) && Number.isFinite(r.bottom)) || r.bottom <= r.top) { continue; }
+
+              // ignore thin-wide rails (geometry-only)
+              const isThinWide = (r.height <= 12 && r.width >= 120);
+              if (isThinWide) { continue; }
+
+              // mark overlap with bottom window (no midpoint rule here)
+              const overlapTop = Math.max(yStart, Math.floor(r.top));
+              const overlapBot = Math.min(yEnd, Math.ceil(r.bottom));
+              if (overlapBot > overlapTop) {
+                const a = Math.max(0, overlapTop - yStart);
+                const b = Math.min(rowsH, overlapBot - yStart);
+                for (let i = a; i < b; i += STEP) { occ[i] = true; }
+              }
+            }
+
+            // deepest empty run from the bottom
+            const MIN_EMPTY = 8;
+            let bestLen = 0, bestEnd = -1, runLen = 0;
+            for (let i = rowsH - 1; i >= 0; i--) {
+              if (!occ[i]) { runLen++; if (runLen >= bestLen) { bestLen = runLen; bestEnd = i; } }
+              else { runLen = 0; }
+            }
+
+            if (bestLen >= MIN_EMPTY) {
+              const gutterTop = yStart + (bestEnd - bestLen + 1);
+              const limit = Math.min(last.bottom, Math.max(frame.top, gutterTop) - PAD);
+              if (limit < last.bottom) {
+                const old = last.bottom;
+                last.bottom = Math.max(last.top, limit);
+                last.height = last.bottom - last.top;
+                if (diagOn) { logStep(`SAFE lastBand gutterClamp old=${Math.round(old)} new=${Math.round(last.bottom)} gutterTop=${Math.round(gutterTop)} len=${bestLen}`, { outer }); }
+              }
+            } else {
+              // hard cap a few px above frame edge to avoid slicing
+              const limit = Math.min(last.bottom, frame.bottom - 4);
+              if (limit < last.bottom) {
+                const old = last.bottom;
+                last.bottom = Math.max(last.top, limit);
+                last.height = last.bottom - last.top;
+                if (diagOn) { logStep(`SAFE lastBand hardCap old=${Math.round(old)} new=${Math.round(last.bottom)}`, { outer }); }
+              }
+            }
+          }
+
+          // ---------------- Local first-content clamp just below last.bottom ----------
+          {
+            const PAD2 = 2;
+            let minTopBelow = Infinity;
+
+            // compute once after gutterClamp adjusted last
+            const btm = Math.floor(last.bottom);
+
+            for (const r of rects) {
+              if (!(Number.isFinite(r.top) && Number.isFinite(r.bottom)) || r.bottom <= r.top) { continue; }
+
+              // ignore thin-wide rails
+              const isThinWide = (r.height <= 12 && r.width >= 120);
+              if (isThinWide) { continue; }
+
+              // Only consider rects that BEGIN strictly below the band's bottom
+              // and still reside within this frame window (overlap-based bounds).
+              const topY = Math.floor(r.top);
+              // tolerate ties & 1px rounding: treat topY >= btm - 1 as "below" the band
+              if (topY >= btm - 1 && topY < frame.bottom) {
+                if (topY < minTopBelow) { minTopBelow = topY; }
+              }
+            }
+
+            if (Number.isFinite(minTopBelow)) {
+              const limit2 = Math.min(Math.floor(minTopBelow) - PAD2, frame.bottom - 1);
+              if (limit2 < last.bottom) {
+                const old2 = last.bottom;
+                last.bottom = Math.max(last.top, limit2);
+                last.height = last.bottom - last.top;
+                if (diagOn) { logStep(`SAFE lastBand localBotGuard old=${Math.round(old2)} new=${Math.round(last.bottom)} nextTop=${Math.round(minTopBelow)}`, { outer }); }
+              }
+            }
+          }
+          // ---------------------------------------------------------------------------
+        }
+      }
+    } catch (err) {
+      // Never allow diagnostics to break rendering
+      if (diagOn) { logStep(`SAFE lastBand ERROR: ${(err as Error)?.message ?? String(err)}`, { outer }); }
+    }
+    // ----------------------------------------------------------------------------
+
     // Final clamp into frame (1px safety from frame bottom)
     for (const b of normalized) {
       b.top = Math.max(b.top, frame.top);
@@ -943,6 +1215,20 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
     if (diagOn) {
       logStep(`bands (total): ${allBands.length}`, { outer });
     }
+
+    // --- DIAG: page summary ------------------------------------------------------
+    if (diagOn) {
+      const last = allBands.length ? allBands[allBands.length - 1]! : null;
+      if (last) {
+        logStep(
+          `DIAG page summary: bands.total=${allBands.length} last[top=${Math.round(last.top)} bot=${Math.round(last.bottom)}]`,
+          { outer }
+        );
+      } else {
+        logStep(`DIAG page summary: bands.total=0`, { outer });
+      }
+    }
+    // ---------------------------------------------------------------------------
 
     return allBands;
   } finally {
