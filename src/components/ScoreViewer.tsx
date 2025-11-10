@@ -654,11 +654,8 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   const THRESH = dynamicBandGapPx();
 
   // Element accept thresholds (conservative; proven set)
-  const MIN_H = 2;
+  const MIN_H = 0;   // was 2
   const MIN_W = 0.0; // was 6
-
-  // Optional: if systems are detectable, allow a small header guard
-  const HEADER_GUARD_PX = 12;
 
   // Gap fill guardrails (modest, helps stitch ledger lines/lyrics)
   const GAP_MAX = 80;
@@ -780,15 +777,6 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   const buildBandsForFrame = (frame: Frame): Band[] => {
     // Collect rects owned by this frame (midpoint ownership), then clip to frame
     const rects: ElemRect[] = [];
-    let pageContentTop: number | null = null;
-
-    if (systemGroups.length) {
-      const candidates = systemGroups.filter(s => s.bottom > frame.top && s.top < frame.bottom);
-      if (candidates.length) {
-        const minSysTopInFrame = Math.min(...candidates.map(s => s.top));
-        if (Number.isFinite(minSysTopInFrame)) { pageContentTop = Math.floor(minSysTopInFrame) - HEADER_GUARD_PX; }
-      }
-    }
 
     for (const r of allRects) {
       const mid = (r.top + r.bottom) / 2;
@@ -796,7 +784,7 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
       const cTop = Math.max(r.top, frame.top);
       const cBot = Math.min(r.bottom, frame.bottom);
       if (cBot <= cTop) { continue; }
-      if (pageContentTop !== null && cBot < pageContentTop) { continue; }
+
       rects.push({ top: cTop, bottom: cBot, height: cBot - cTop, width: r.width });
     }
     if (!rects.length) { return []; }
@@ -1193,7 +1181,39 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
       b.height = b.bottom - b.top;
     }
 
-    return normalized.filter(b => b.height > 0);
+    // --- Geometry-only header synthesis (no systemGroups required) --------------
+    (() => {
+      if (!normalized.length) { return; } // no bands => nothing to split
+
+      const firstBody = normalized[0]!;
+      const PAD = 2;       // small gap between header and first system
+      const MIN_HH = 8;    // avoid trivial header slivers
+
+      // rects entirely above the first body band's top (with small tolerance)
+      const headerRects = rects.filter(r => Math.ceil(r.bottom) <= Math.floor(firstBody.top) - PAD);
+      if (!headerRects.length) { return; }
+
+      const hTop = Math.floor(Math.min(...headerRects.map(r => r.top)));
+      const hBot = Math.ceil(Math.max(...headerRects.map(r => r.bottom)));
+
+      const topClamped = Math.max(frame.top, hTop);
+      const botClamped = Math.min(firstBody.top - PAD, hBot);
+
+      if (botClamped > topClamped + MIN_HH) {
+        const headerBand: Band = { top: topClamped, bottom: botClamped, height: botClamped - topClamped };
+        normalized.unshift(headerBand);
+        if (diagOn) {
+          logStep(
+            `DIAG headerBand top=${Math.round(headerBand.top)} bot=${Math.round(headerBand.bottom)} h=${Math.round(headerBand.height)} (geom)`,
+            { outer }
+          );
+        }
+      }
+    })();
+    // ----------------------------------------------------------------------------
+
+    const out = normalized.filter(b => b.height > 0);
+    return out;
   };
 
   try {
