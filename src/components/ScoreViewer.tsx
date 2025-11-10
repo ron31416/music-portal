@@ -693,7 +693,7 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
     const pageGroups = Array.from(
       svgRoot.querySelectorAll<SVGGElement>("g[id^='page' i], g[class*='page' i], g.osmd-page, svg[data-page]")
     );
-    if (pageGroups.length) {
+    if (false && pageGroups.length) { //if (pageGroups.length) {
       const list: Frame[] = [];
       for (const g of pageGroups) {
         const r = g.getBoundingClientRect();
@@ -701,6 +701,7 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
         list.push({ top: Math.round(r.top - hostTop), bottom: Math.round(r.bottom - hostTop) });
       }
       list.sort((a, b) => a.top - b.top);
+
       return list.filter(f => f.bottom > f.top + 10);
     }
 
