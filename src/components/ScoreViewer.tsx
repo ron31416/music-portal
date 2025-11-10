@@ -2577,21 +2577,6 @@ export default function ScoreViewer({
         }
 
         // --- Measure rectangles smoke-test overlay ---
-        try {
-          clearMeasureBoxes(outer);
-          drawMeasureBoxes(
-            outer,
-            svgNN,
-            bandsNN,
-            startIndex,
-            nextStartIndex,
-            ySnap,
-            Math.max(0, topGutterPx),
-            maskTopWithinMusicPx
-          );
-        } catch { /* overlay render is best-effort; ignore failures */ }
-
-        // --- Measure rectangles smoke-test overlay ---
         // Always redraw after pagination transform so outlines match what you see.
         try {
           clearMeasureBoxes(outer);
