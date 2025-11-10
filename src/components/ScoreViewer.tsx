@@ -3499,10 +3499,8 @@ export default function ScoreViewer({
       let targetPage: number;
       if (dir === 1 && beforePage === pages - 1) {
         targetPage = 0;
-        void logStep("wrap: last→first");
       } else if (dir === -1 && beforePage === 0) {
         targetPage = pages - 1;
-        void logStep("wrap: first→last");
       } else {
         targetPage = Math.max(0, Math.min(beforePage + dir, pages - 1));
       }
