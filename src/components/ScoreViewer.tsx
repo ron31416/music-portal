@@ -813,11 +813,12 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
       .map(([id, rect]) => ({ id, rect }))
       .sort((a, b) => (a.rect.y - b.rect.y) || (a.rect.x - b.rect.x));
 
-    if (isPagDiagOn()) {
+    if (isLogOn()) {
       const t1 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
       const dur = Math.round((t1 as number) - (t0 as number));
       logStep(`merged measures: ${rows.length} in ${dur}ms`, { outer });
-
+    }
+    if (isPagDiagOn()) {
       // Log a small, non-spammy sample: first 3 and last 3
       const sample = rows.length <= 6
         ? rows
@@ -1445,10 +1446,12 @@ function drawMeasureBoxes(
       const ids = items.map(it => it.m.id);
       const edges = tileIntervals.map(iv => `[${iv.left},${iv.right}]`);
 
-      // route through existing debug logger
-      logStep(
-        `tile ${k}: measures=${items.length}, bars=${expectedBars}, intervals=${tileIntervals.length} :: ids=${ids.join(",")} :: edges=${edges.join(",")}`
-      );
+      if (isPagDiagOn()) {
+        // route through existing debug logger
+        logStep(
+          `tile ${k}: measures=${items.length}, bars=${expectedBars}, intervals=${tileIntervals.length} :: ids=${ids.join(",")} :: edges=${edges.join(",")}`
+        );
+      }
     }
 
     const N = Math.min(items.length, tileIntervals.length);
@@ -1565,11 +1568,13 @@ function drawMeasureBoxes(
       lineBot.setAttribute("vector-effect", "non-scaling-stroke");
       g.appendChild(lineBot);
 
-      // log once per tile to correlate screenshots with numbers
-      logStep(
-        `tile ${k}: bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} left=${Math.round(leftX)} right=${Math.round(rightX)}`,
-        { outer }
-      );
+      if (isPagDiagOn()) {
+        // log once per tile to correlate screenshots with numbers
+        logStep(
+          `tile ${k}: bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} left=${Math.round(leftX)} right=${Math.round(rightX)}`,
+          { outer }
+        );
+      }
     }
 
     for (let i = 0; i < N; i++) {
