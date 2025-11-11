@@ -13,8 +13,9 @@ interface Props {
   height?: number;
   className?: string;
   style?: React.CSSProperties;
-  topGutterPx?: number; // default: 3 (small white space at very top)
-  debugShowAllMeasureNumbers?: boolean; // default: false (dev aid)
+  topGutterPx?: number;
+  bottomGutterPx?: number;
+  debugShowAllMeasureNumbers?: boolean;
 }
 
 interface Band { top: number; bottom: number; height: number }
@@ -280,7 +281,7 @@ export async function logStep(
 }
 
 
-function drawPageBandGuidesSVG(
+function drawPageBandGuides(
   svg: SVGSVGElement,
   bands: Band[],
   startIndex: number,
@@ -1636,7 +1637,9 @@ function packSystemsWithinPages(
 function computePageStarts(
   outer: HTMLDivElement,
   bands: Band[],
-  viewportH: number
+  viewportH: number,
+  topGutterPx: number,
+  bottomGutterPx: number
 ): number[] {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "computePageStarts";
@@ -1646,9 +1649,25 @@ function computePageStarts(
       return [0];
     }
 
-    // Same height the mask uses
+    // --- Same “usable height” model as applyPage ---
+    // 1) DPR tolerance (you already had this)
     const TOL = (window.devicePixelRatio || 1) >= 2 ? 2 : 1;
-    const pageHeightPx = Math.max(1, Math.floor(viewportH) - TOL);
+
+    // 2) Bottom peek pad matches REFLOW guards used elsewhere
+    const bottomPeekPad =
+      (window.devicePixelRatio || 1) >= 2
+        ? REFLOW.BOTTOM_PEEK_PAD_HI_DPR
+        : REFLOW.BOTTOM_PEEK_PAD_LO_DPR;
+
+    // 3) Top gutter comes from the viewer’s prop/state in this closure
+    const topPad = Math.max(0, topGutterPx);
+
+    // 4) Final usable page height for packing
+    const botPad = Math.max(0, bottomGutterPx);
+    const pageHeightUsable = Math.max(
+      1,
+      Math.floor(viewportH - topPad - botPad - bottomPeekPad) - TOL
+    );
 
     const starts: number[] = [];
     let i = 0;
@@ -1664,14 +1683,17 @@ function computePageStarts(
       let j = i;
       while (
         j + 1 < bands.length &&
-        (bands[j + 1]!.bottom - ySnap) <= pageHeightPx
+        (bands[j + 1]!.bottom - ySnap) <= pageHeightUsable
       ) {
         j += 1;
       }
       i = j + 1;
     }
 
-    void logStep(`starts: ${starts.length} pageHeightPx: ${pageHeightPx}`, { outer });
+    // Breadcrumbs to verify in DevTools
+    outer.dataset.viewerUsableH = String(pageHeightUsable);
+
+    void logStep(`starts: ${starts.length} pageHeightUsable: ${pageHeightUsable}`, { outer });
     return starts.length ? starts : [0];
   } finally {
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { /* no-op */ }
@@ -1755,7 +1777,8 @@ export default function ScoreViewer({
   height = 600,
   className = "",
   style,
-  topGutterPx = 3,
+  topGutterPx = 12,
+  bottomGutterPx = topGutterPx,
   debugShowAllMeasureNumbers = false,
 }: Props) {
 
@@ -2039,6 +2062,25 @@ export default function ScoreViewer({
       const outer = wrapRef.current;
       if (!outer) { return; }
 
+      function bottomPeekPadPx(): number {
+        return window.devicePixelRatio >= 2
+          ? REFLOW.BOTTOM_PEEK_PAD_HI_DPR
+          : REFLOW.BOTTOM_PEEK_PAD_LO_DPR;
+      }
+
+      /** Visible height that the music can actually occupy on a page, after gutters/peek pad. */
+      function usablePageHeight(
+        outer: HTMLDivElement,
+        topPad: number,
+        bottomPad: number
+      ): number {
+        const hVisible = visiblePageHeight(outer);
+        const botPeek = bottomPeekPadPx();
+        const usable =
+          hVisible - Math.max(0, topPad) - Math.max(0, bottomPad) - botPeek;
+        return Math.max(0, usable);
+      }
+
       const prevFuncTag = outer.dataset.viewerFunc ?? "";
       outer.dataset.viewerFunc = "applyPage";
       logStep("called by: " + prevFuncTag, { outer });
@@ -2073,26 +2115,29 @@ export default function ScoreViewer({
         svg.style.transformOrigin = "top left";
         svg.style.willChange = "transform";
 
-        drawPageBandGuidesSVG(svg, bands, startIndex, nextStartIndex);
+        drawPageBandGuides(svg, bands, startIndex, nextStartIndex);
 
-        // Height available to show content
-        const hVisible = visiblePageHeight(outer);
-        const PAGE_H = hVisible;
+        // Visible height (raw) and usable height inside gutters/peek pad
+        const PAGE_H_USABLE = usablePageHeight(
+          outer,
+          Math.max(0, topGutterPx),
+          Math.max(0, bottomGutterPx)
+        );
 
         // Last band we want to *show* on this page (based only on starts[])
         const lastIdxThisPage = nextStartIndex >= 0 ? nextStartIndex - 1 : (bands.length - 1);
 
         // --- MASK: cut exactly at the next system’s top, or just past the last on final page
-        let maskTopWithinMusicPx = PAGE_H;
+        let maskTopWithinMusicPx = PAGE_H_USABLE;
         if (nextStartIndex >= 0) {
           // Non-last page: stop just above the next system so nothing peeks
           const nextTopRel = bands[nextStartIndex]!.top - ySnap;
-          maskTopWithinMusicPx = Math.min(PAGE_H, Math.max(0, Math.floor(nextTopRel) - 1));
+          maskTopWithinMusicPx = Math.min(PAGE_H_USABLE, Math.max(0, Math.floor(nextTopRel) - 1));
         } else {
           // Last page: allow a safety pad to avoid shaving hairpins/slurs
           const lastRel = bands[lastIdxThisPage]!.bottom - ySnap;
           maskTopWithinMusicPx = Math.min(
-            PAGE_H,
+            PAGE_H_USABLE,
             Math.max(0, Math.ceil(lastRel) + REFLOW.MASK_BOTTOM_SAFETY_PX)
           );
         }
@@ -2100,10 +2145,13 @@ export default function ScoreViewer({
         // Breadcrumbs for debugging
         outer.dataset.viewerPage = String(p);
         outer.dataset.viewerPages = String(pages);
-        outer.dataset.viewerH = String(hVisible);
+        outer.dataset.viewerH = String(PAGE_H_USABLE);
         outer.dataset.viewerMaskTop = String(maskTopWithinMusicPx);
         outer.dataset.viewerTy = String(-ySnap + Math.max(0, topGutterPx));
         outer.dataset.viewerStarts = starts.slice(0, 12).join(',');
+        outer.dataset.viewerTopGutter = String(Math.max(0, topGutterPx));
+        outer.dataset.viewerBotGutter = String(Math.max(0, bottomGutterPx));  // if you added bottomGutterPx
+
 
         // Create/update mask & cutters
         let mask = outer.querySelector<HTMLDivElement>("[data-viewer-mask='1']");
@@ -2125,14 +2173,14 @@ export default function ScoreViewer({
         mask.style.top = `${Math.max(0, topGutterPx) + maskTopWithinMusicPx}px`;
 
         let bottomCutter = outer.querySelector<HTMLDivElement>("[data-viewer-bottomcutter='1']");
-        const needsMask = maskTopWithinMusicPx < hVisible;
+        const needsMask = maskTopWithinMusicPx < PAGE_H_USABLE;
 
         if (isPagDiagOn()) {
           const lastForLog = nextStartIndex >= 0 ? (nextStartIndex - 1) : (bands.length - 1);
           void logStep(
             `pages: ${p + 1}/${pages} startIndex: ${startIndex} lastForLog: ${lastForLog} ` +
             `nextStartIndex: ${nextStartIndex >= 0 ? `${nextStartIndex}` : "end"} ` +
-            `ySnap: ${ySnap} PAGE_H: ${PAGE_H} maskTopWithinMusicPx: ${maskTopWithinMusicPx} needsMask: ${needsMask}`,
+            `ySnap: ${ySnap} PAGE_H_USABLE: ${PAGE_H_USABLE} maskTopWithinMusicPx: ${maskTopWithinMusicPx} needsMask: ${needsMask}`,
             { outer }
           );
           const first = startIndex;
@@ -2155,8 +2203,9 @@ export default function ScoreViewer({
           } as CSSStyleDeclaration);
           outer.appendChild(bottomCutter);
         }
-        bottomCutter.style.height = needsMask ? "1px" : "0px";
-        bottomCutter.style.display = needsMask ? "block" : "none";
+        // Always render the bottom gutter visually
+        bottomCutter.style.height = `${Math.max(0, bottomGutterPx)}px`;
+        bottomCutter.style.display = "block";
 
         let topCutter = outer.querySelector<HTMLDivElement>("[data-viewer-topcutter='1']");
         if (!topCutter) {
@@ -2197,7 +2246,7 @@ export default function ScoreViewer({
         try { outer.dataset.viewerFunc = prevFuncTag; } catch { /* no-op */ }
       }
     },
-    [visiblePageHeight, topGutterPx]
+    [visiblePageHeight, topGutterPx, bottomGutterPx]
   );
 
   // Hide the SVG host while we do heavy work, then restore previous styles.
@@ -2317,8 +2366,11 @@ export default function ScoreViewer({
       const visH = visiblePageHeight(outer);
       const starts = perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
-        () => computePageStarts(outer, bands, visH),
-        (ms) => { void logStep(`computePageStarts() runtime: ${ms}ms visH: ${visH}`, { outer }); }
+        () => computePageStarts(outer, bands, visH, Math.max(0, topGutterPx), Math.max(0, bottomGutterPx)),
+        (ms) => {
+          void logStep(`computePageStarts() runtime: ${ms}ms visH: ${visH} topGutterPx: ${topGutterPx} bottomGutterPx: ${bottomGutterPx}`, { outer }
+          );
+        }
       );
 
       try {
@@ -2391,7 +2443,7 @@ export default function ScoreViewer({
     } finally {
       try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
     }
-  }, [nextPerfUID, renderViewer, withHostHidden, paginationHeight, applyPage, visiblePageHeight]);
+  }, [nextPerfUID, renderViewer, withHostHidden, paginationHeight, applyPage, visiblePageHeight, topGutterPx, bottomGutterPx]);
 
 
   // --- HEIGHT-ONLY REPAGINATION (no OSMD re-init) ---
@@ -2426,8 +2478,11 @@ export default function ScoreViewer({
 
       const starts = perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
-        () => computePageStarts(outer, bands, visH),
-        (ms) => { void logStep(`computePageStarts runtime: ${ms}ms visibleH=${visH}`, { outer }); }
+        () => computePageStarts(outer, bands, visH, Math.max(0, topGutterPx), Math.max(0, bottomGutterPx)),
+        (ms) => {
+          void logStep(`computePageStarts() runtime: ${ms}ms visH: ${visH} topGutterPx: ${topGutterPx} bottomGutterPx: ${bottomGutterPx}`, { outer }
+          );
+        }
       );
 
       pageStartIdxsRef.current = starts;
@@ -2481,7 +2536,7 @@ export default function ScoreViewer({
       repaginationRunningRef.current = false;
       outer.dataset.viewerFunc = prevFuncTag;
     }
-  }, [applyPage, visiblePageHeight, nextPerfUID]);
+  }, [applyPage, visiblePageHeight, nextPerfUID, topGutterPx, bottomGutterPx]);
 
 
   // keep ref pointing to latest repagination callback
@@ -3071,7 +3126,13 @@ export default function ScoreViewer({
         const outer = wrapRef.current;
         if (!outer) { return; }
 
-        const fresh = computePageStarts(outer, systemBandsRef.current, paginationHeight(outer));
+        const fresh = computePageStarts(
+          outer,
+          systemBandsRef.current,
+          paginationHeight(outer),
+          Math.max(0, topGutterPx),
+          Math.max(0, bottomGutterPx)
+        );
         if (!fresh.length) { return; }
 
         pageStartIdxsRef.current = fresh;
@@ -3099,7 +3160,7 @@ export default function ScoreViewer({
         }
       });
     },
-    [applyPage, paginationHeight]
+    [applyPage, paginationHeight, topGutterPx, bottomGutterPx]
   );
 
   const goNext = useCallback(() => turnPage(1), [turnPage]);
