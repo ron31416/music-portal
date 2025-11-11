@@ -451,6 +451,70 @@ function debugDrawBands(
   if (Number.isFinite(opts.maskAbsY!)) { addHGuide(opts.maskAbsY!, "maskTop", "#e53935"); }
 }
 
+function drawPageBandGuidesSVG(
+  svg: SVGSVGElement,
+  bands: Band[],
+  startIndex: number,
+  nextStartIndex: number
+): void {
+  // ---- config
+  const STROKE_W = 2; // even width -> draw on integer pixels
+  const COLOR_TOP = "rgba(0,128,255,0.85)"; // blue
+  const COLOR_BOT = "rgba(255,0,0,0.85)";   // red
+
+  // remove old guides
+  const olds = svg.querySelectorAll("[data-band-guides='1']");
+  olds.forEach((n) => n.remove());
+
+  if (!svg || bands.length === 0) { return; }
+
+  // width in SVG coords
+  const vb = svg.viewBox?.baseVal ?? null;
+  const x1 = 0;
+  const x2 = vb ? vb.width : (svg.width.baseVal?.value ?? 2000);
+
+  // snap helper: odd stroke -> +0.5, even stroke -> +0
+  const snapY = (y: number): number =>
+    Math.round(y) + (STROKE_W % 2 === 1 ? 0.5 : 0);
+
+  // container group
+  const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  g.setAttribute("data-band-guides", "1");
+  svg.appendChild(g);
+
+  const first = Math.max(0, startIndex);
+  const lastExclusive = nextStartIndex >= 0 ? nextStartIndex : bands.length;
+
+  for (let i = first; i < lastExclusive; i++) {
+    const b = bands[i];
+    if (!b || typeof b.top !== "number" || typeof b.bottom !== "number") { continue; }
+
+    // TOP (blue, solid) — snapped with stroke-aware rule
+    const topY = snapY(b.top);
+    const lt = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    lt.setAttribute("x1", String(x1));
+    lt.setAttribute("y1", String(topY));
+    lt.setAttribute("x2", String(x2));
+    lt.setAttribute("y2", String(topY));
+    lt.setAttribute("stroke", COLOR_TOP);
+    lt.setAttribute("stroke-width", String(STROKE_W));
+    lt.setAttribute("vector-effect", "non-scaling-stroke");
+    g.appendChild(lt);
+
+    // BOTTOM (red, solid) — same snapping
+    const botY = snapY(b.bottom);
+    const lb = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    lb.setAttribute("x1", String(x1));
+    lb.setAttribute("y1", String(botY));
+    lb.setAttribute("x2", String(x2));
+    lb.setAttribute("y2", String(botY));
+    lb.setAttribute("stroke", COLOR_BOT);
+    lb.setAttribute("stroke-width", String(STROKE_W));
+    lb.setAttribute("vector-effect", "non-scaling-stroke");
+    g.appendChild(lb);
+  }
+}
+
 
 // === HUD & edge-lines (helpers)
 type HudSnapshot = {
@@ -1515,81 +1579,82 @@ function drawMeasureBoxes(
 
     // Draw rectangles using per-measure verticals (clamped to tile seams)
     const PAD_PX = 4;              // inside-band padding for each rectangle
-
-    // --- DEBUG (viewer-pag): draw this tile's band edges so we can verify the seam
-    if (isPagDiagOn()) {
-      const bandTop = seps[k]!;
-      const bandBot = seps[k + 1]!;
-
-      // Tile span: from first measure's left to last measure's right
-      const leftX = Math.round(tileIntervals[0]!.left) + 0.5;
-      const rightX = Math.round(tileIntervals[tileIntervals.length - 1]!.right) + 0.5;
-
-      const lineTop = createSvgEl("line");
-      lineTop.setAttribute("x1", String(leftX));
-      lineTop.setAttribute("y1", String(bandTop + 0.5));
-      lineTop.setAttribute("x2", String(rightX));
-      lineTop.setAttribute("y2", String(bandTop + 0.5));
-      lineTop.setAttribute("stroke", "rgba(0,128,255,0.45)"); // blue = top seam
-      lineTop.setAttribute("stroke-width", "1");
-      lineTop.setAttribute("vector-effect", "non-scaling-stroke");
-      g.appendChild(lineTop);
-
-      const lineBot = createSvgEl("line");
-      lineBot.setAttribute("x1", String(leftX));
-      lineBot.setAttribute("y1", String(bandBot + 0.5));
-      lineBot.setAttribute("x2", String(rightX));
-      lineBot.setAttribute("y2", String(bandBot + 0.5));
-      lineBot.setAttribute("stroke", "rgba(255,0,0,0.45)"); // red = bottom seam
-      lineBot.setAttribute("stroke-width", "1");
-      lineBot.setAttribute("vector-effect", "non-scaling-stroke");
-      g.appendChild(lineBot);
-
-      // Log once per tile to correlate screenshot with numbers
-      logStep(
-        `tile ${k}: bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} left=${Math.round(leftX)} right=${Math.round(rightX)}`,
-        { outer }
-      );
-    }
-
-    // --- DEBUG: draw the current tile's band edges so we can verify the seam
-    {
-      // we already have `seps`, `k`, `g`, and `tileIntervals` in scope here
-      const bandTop = seps[k]!;
-      const bandBot = seps[k + 1]!;
-
-      // span this tile horizontally (from its first measure's left to its last measure's right)
-      const leftX = Math.round(tileIntervals[0]!.left) + 0.5;
-      const rightX = Math.round(tileIntervals[tileIntervals.length - 1]!.right) + 0.5;
-
-      const lineTop = createSvgEl("line");
-      lineTop.setAttribute("x1", String(leftX));
-      lineTop.setAttribute("y1", String(bandTop + 0.5));
-      lineTop.setAttribute("x2", String(rightX));
-      lineTop.setAttribute("y2", String(bandTop + 0.5));
-      lineTop.setAttribute("stroke", "rgba(0,128,255,0.45)"); // blue = top seam
-      lineTop.setAttribute("stroke-width", "1");
-      lineTop.setAttribute("vector-effect", "non-scaling-stroke");
-      g.appendChild(lineTop);
-
-      const lineBot = createSvgEl("line");
-      lineBot.setAttribute("x1", String(leftX));
-      lineBot.setAttribute("y1", String(bandBot + 0.5));
-      lineBot.setAttribute("x2", String(rightX));
-      lineBot.setAttribute("y2", String(bandBot + 0.5));
-      lineBot.setAttribute("stroke", "rgba(255,0,0,0.45)");    // red = bottom seam
-      lineBot.setAttribute("stroke-width", "1");
-      lineBot.setAttribute("vector-effect", "non-scaling-stroke");
-      g.appendChild(lineBot);
-
-      if (isPagDiagOn()) {
-        // log once per tile to correlate screenshots with numbers
-        logStep(
-          `tile ${k}: bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} left=${Math.round(leftX)} right=${Math.round(rightX)}`,
-          { outer }
-        );
-      }
-    }
+    /*
+        // --- DEBUG (viewer-pag): draw this tile's band edges so we can verify the seam
+        if (isPagDiagOn()) {
+          const bandTop = seps[k]!;
+          const bandBot = seps[k + 1]!;
+    
+          // Tile span: from first measure's left to last measure's right
+          const leftX = Math.round(tileIntervals[0]!.left) + 0.5;
+          const rightX = Math.round(tileIntervals[tileIntervals.length - 1]!.right) + 0.5;
+    
+          const lineTop = createSvgEl("line");
+          lineTop.setAttribute("x1", String(leftX));
+          lineTop.setAttribute("y1", String(bandTop + 0.5));
+          lineTop.setAttribute("x2", String(rightX));
+          lineTop.setAttribute("y2", String(bandTop + 0.5));
+          lineTop.setAttribute("stroke", "rgba(0,128,255,0.45)"); // blue = top seam
+          lineTop.setAttribute("stroke-width", "1");
+          lineTop.setAttribute("vector-effect", "non-scaling-stroke");
+          g.appendChild(lineTop);
+    
+          const lineBot = createSvgEl("line");
+          lineBot.setAttribute("x1", String(leftX));
+          lineBot.setAttribute("y1", String(bandBot + 0.5));
+          lineBot.setAttribute("x2", String(rightX));
+          lineBot.setAttribute("y2", String(bandBot + 0.5));
+          lineBot.setAttribute("stroke", "rgba(255,0,0,0.45)"); // red = bottom seam
+          lineBot.setAttribute("stroke-width", "1");
+          lineBot.setAttribute("vector-effect", "non-scaling-stroke");
+          g.appendChild(lineBot);
+    
+          // Log once per tile to correlate screenshot with numbers
+          logStep(
+            `tile ${k}: bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} left=${Math.round(leftX)} right=${Math.round(rightX)}`,
+            { outer }
+          );
+        }
+    
+        // --- DEBUG: draw the current tile's band edges so we can verify the seam
+        {
+          // we already have `seps`, `k`, `g`, and `tileIntervals` in scope here
+          const bandTop = seps[k]!;
+          const bandBot = seps[k + 1]!;
+    
+          // span this tile horizontally (from its first measure's left to its last measure's right)
+          const leftX = Math.round(tileIntervals[0]!.left) + 0.5;
+          const rightX = Math.round(tileIntervals[tileIntervals.length - 1]!.right) + 0.5;
+    
+          const lineTop = createSvgEl("line");
+          lineTop.setAttribute("x1", String(leftX));
+          lineTop.setAttribute("y1", String(bandTop + 0.5));
+          lineTop.setAttribute("x2", String(rightX));
+          lineTop.setAttribute("y2", String(bandTop + 0.5));
+          lineTop.setAttribute("stroke", "rgba(0,128,255,0.45)"); // blue = top seam
+          lineTop.setAttribute("stroke-width", "1");
+          lineTop.setAttribute("vector-effect", "non-scaling-stroke");
+          g.appendChild(lineTop);
+    
+          const lineBot = createSvgEl("line");
+          lineBot.setAttribute("x1", String(leftX));
+          lineBot.setAttribute("y1", String(bandBot + 0.5));
+          lineBot.setAttribute("x2", String(rightX));
+          lineBot.setAttribute("y2", String(bandBot + 0.5));
+          lineBot.setAttribute("stroke", "rgba(255,0,0,0.45)");    // red = bottom seam
+          lineBot.setAttribute("stroke-width", "1");
+          lineBot.setAttribute("vector-effect", "non-scaling-stroke");
+          g.appendChild(lineBot);
+    
+          if (isPagDiagOn()) {
+            // log once per tile to correlate screenshots with numbers
+            logStep(
+              `tile ${k}: bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} left=${Math.round(leftX)} right=${Math.round(rightX)}`,
+              { outer }
+            );
+          }
+        }
+    */
 
     for (let i = 0; i < N; i++) {
       const { m } = items[i]!;
@@ -2472,6 +2537,8 @@ export default function ScoreViewer({
         svg.style.transform = `translateY(${-ySnap + Math.max(0, topGutterPx)}px)`;
         svg.style.transformOrigin = "top left";
         svg.style.willChange = "transform";
+
+        drawPageBandGuidesSVG(svg, bands, startIndex, nextStartIndex);
 
         // Height available to show content
         const hVisible = visiblePageHeight(outer);
