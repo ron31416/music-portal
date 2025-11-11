@@ -2115,7 +2115,9 @@ export default function ScoreViewer({
         svg.style.transformOrigin = "top left";
         svg.style.willChange = "transform";
 
-        drawPageBandGuides(svg, bands, startIndex, nextStartIndex);
+        if (isLogOn()) {
+          drawPageBandGuides(svg, bands, startIndex, nextStartIndex);
+        }
 
         // Visible height (raw) and usable height inside gutters/peek pad
         const PAGE_H_USABLE = usablePageHeight(
