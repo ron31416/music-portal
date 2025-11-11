@@ -15,8 +15,6 @@ interface Props {
   style?: React.CSSProperties;
   topGutterPx?: number; // default: 3 (small white space at very top)
   debugShowAllMeasureNumbers?: boolean; // default: false (dev aid)
-  /** show HUD/guide overlays (default: false) */
-  debugOverlays?: boolean;
 }
 
 interface Band { top: number; bottom: number; height: number }
@@ -282,175 +280,6 @@ export async function logStep(
 }
 
 
-// ---------- DEBUG OVERLAY (visualize bands & starts) ----------
-let DEBUG_BANDS = false; // set true to show guides; false to hide
-
-type DebugOpts = {
-  tag?: string;
-  starts?: number[];
-  startIndex?: number;       // current page's start band index
-  nextStartIndex?: number;   // next page's start band index
-  ySnap?: number;            // REQUIRED for page-local lines: ceil(startBand.top)
-  visibleAbsY?: number;
-  pageAbsY?: number;
-  maskAbsY?: number;
-  topGutter?: number;
-  drawPageLocal?: boolean;   // NEW: draw per-system top/bottom in page space
-};
-
-
-function debugDrawBands(
-  outer: HTMLDivElement,
-  bands: Band[],
-  opts: DebugOpts = {}
-): void {
-  if (!DEBUG_BANDS || !outer) { return; }
-
-  let layer = outer.querySelector<HTMLDivElement>("[data-viewer-debug='1']");
-  if (!layer) {
-    layer = document.createElement("div");
-    layer.dataset.viewerDebug = "1";
-    Object.assign(layer.style, {
-      position: "absolute",
-      inset: "0",
-      pointerEvents: "none",
-      zIndex: "999",
-      fontFamily: "system-ui, sans-serif",
-      fontSize: "11px",
-      lineHeight: "1",
-    } as CSSStyleDeclaration);
-    outer.appendChild(layer);
-  }
-  layer.innerHTML = "";
-
-  const badge = document.createElement("div");
-  badge.textContent = opts.tag ?? "debug";
-  Object.assign(badge.style, {
-    position: "absolute",
-    top: "2px",
-    left: "2px",
-    background: "rgba(0,0,0,0.65)",
-    color: "#fff",
-    padding: "2px 6px",
-    borderRadius: "6px",
-  } as CSSStyleDeclaration);
-  layer.appendChild(badge);
-
-  // Absolute (unshifted) band blocks — keep as-is for reference
-  bands.forEach((b, i) => {
-    const block = document.createElement("div");
-    Object.assign(block.style, {
-      position: "absolute",
-      left: "0",
-      right: "0",
-      top: `${Math.round(b.top)}px`,
-      height: `${Math.round(b.height)}px`,
-      background: "rgba(255,0,0,0.06)",
-      outline: "1px solid rgba(255,0,0,0.35)",
-    } as CSSStyleDeclaration);
-    layer.appendChild(block);
-
-    const label = document.createElement("div");
-    label.textContent = `#${i}  h=${Math.round(b.height)}  top=${Math.round(b.top)}  bot=${Math.round(b.bottom)}`;
-    Object.assign(label.style, {
-      position: "absolute",
-      left: "6px",
-      top: `${Math.max(0, Math.round(b.top) - 13)}px`,
-      color: "#a00",
-      textShadow: "0 1px 0 #fff",
-      fontWeight: i === opts.startIndex ? "700" as const : "600" as const,
-    } as CSSStyleDeclaration);
-    layer.appendChild(label);
-
-    if (i === opts.startIndex) {
-      block.style.outline = "2px solid rgba(0,128,255,0.8)";
-    }
-    if (i === opts.nextStartIndex) {
-      const mark = document.createElement("div");
-      mark.textContent = "▶ next-start";
-      Object.assign(mark.style, {
-        position: "absolute",
-        right: "6px",
-        top: `${Math.max(0, Math.round(b.top) - 13)}px`,
-        color: "#084",
-        fontWeight: "700",
-        textShadow: "0 1px 0 #fff",
-      } as CSSStyleDeclaration);
-      layer.appendChild(mark);
-    }
-  });
-
-  // Page-local top/bottom lines (THIS is what you asked for)
-  const haveYSnap = typeof opts.ySnap === "number" && Number.isFinite(opts.ySnap);
-  if (opts.drawPageLocal && haveYSnap) {
-    const ySnap = Math.floor(opts.ySnap ?? 0);
-    const gutter = Math.max(0, opts.topGutter ?? 0);
-    const first = Math.max(0, opts.startIndex ?? 0);
-    const lastExclusive = (opts.nextStartIndex !== undefined && opts.nextStartIndex !== null && opts.nextStartIndex >= 0)
-      ? opts.nextStartIndex
-      : bands.length;
-
-    for (let i = first; i < lastExclusive; i++) {
-      const b = bands[i]!;
-      const pageTop = Math.round(b.top - ySnap + gutter);
-      const pageBottom = Math.round(b.bottom - ySnap + gutter);
-
-      const topLine = document.createElement("div");
-      Object.assign(topLine.style, {
-        position: "absolute",
-        left: "0",
-        right: "0",
-        top: `${pageTop}px`,
-        borderTop: "2px solid #1976d2", // blue = system TOP (page-local)
-        zIndex: "1000",
-      } as CSSStyleDeclaration);
-      layer.appendChild(topLine);
-
-      const botLine = document.createElement("div");
-      Object.assign(botLine.style, {
-        position: "absolute",
-        left: "0",
-        right: "0",
-        top: `${pageBottom}px`,
-        borderTop: "2px solid #2e7d32", // green = system BOTTOM (page-local)
-        zIndex: "1000",
-      } as CSSStyleDeclaration);
-      layer.appendChild(botLine);
-    }
-  }
-
-  // Horizontal guides: visible height, unified pagination height, and mask top
-  const addHGuide = (y: number, label: string, color: string, dash = false) => {
-    if (!Number.isFinite(y)) { return; }
-    const line = document.createElement("div");
-    Object.assign(line.style, {
-      position: "absolute",
-      left: "0",
-      right: "0",
-      top: `${Math.round(y)}px`,
-      borderTop: `2px ${dash ? "dashed" : "solid"} ${color}`,
-    } as CSSStyleDeclaration);
-    layer.appendChild(line);
-
-    const tag = document.createElement("div");
-    tag.textContent = label;
-    Object.assign(tag.style, {
-      position: "absolute",
-      right: "4px",
-      top: `${Math.max(0, Math.round(y) - 12)}px`,
-      background: color,
-      color: "#fff",
-      padding: "1px 6px",
-      borderRadius: "4px",
-    } as CSSStyleDeclaration);
-    layer.appendChild(tag);
-  };
-
-  if (Number.isFinite(opts.visibleAbsY!)) { addHGuide(opts.visibleAbsY!, "visibleH", "#007acc"); }
-  if (Number.isFinite(opts.pageAbsY!)) { addHGuide(opts.pageAbsY!, "paginationH", "#9c27b0", true); }
-  if (Number.isFinite(opts.maskAbsY!)) { addHGuide(opts.maskAbsY!, "maskTop", "#e53935"); }
-}
-
 function drawPageBandGuidesSVG(
   svg: SVGSVGElement,
   bands: Band[],
@@ -516,135 +345,6 @@ function drawPageBandGuidesSVG(
 }
 
 
-// === HUD & edge-lines (helpers)
-type HudSnapshot = {
-  pageIdx: number;
-  pages: number;
-  startIndex: number;
-  nextStartIndex: number;
-  ySnap: number;
-  translateY: number;
-  visibleH: number;
-  paginationH: number;
-  maskTop: number;
-  startTop?: number;
-  startBottom?: number;
-  nextTop?: number;
-  nextBottom?: number;
-};
-
-
-function drawHud(outer: HTMLDivElement, snap: HudSnapshot): void {
-  let hud = outer.querySelector<HTMLDivElement>("[data-viewer-hud='1']");
-  if (!hud) {
-    hud = document.createElement("div");
-    hud.dataset.viewerHud = "1";
-    Object.assign(hud.style, {
-      position: "absolute",
-      top: "6px",
-      right: "6px",
-      zIndex: "1000",
-      font: "11px system-ui, sans-serif",
-      whiteSpace: "pre",
-      background: "rgba(0,0,0,0.65)",
-      color: "#fff",
-      padding: "6px 8px",
-      borderRadius: "8px",
-      pointerEvents: "auto",
-      maxWidth: "52vw",
-    } as CSSStyleDeclaration);
-    outer.appendChild(hud);
-  }
-
-  const lines: string[] = [
-    `p ${snap.pageIdx + 1}/${snap.pages}  start#=${snap.startIndex} next#=${snap.nextStartIndex}`,
-    `ySnap=${snap.ySnap}  translateY=${snap.translateY}`,
-    `visibleH=${snap.visibleH}  pagH=${snap.paginationH}  maskTop=${snap.maskTop}`,
-  ];
-
-  if (Number.isFinite(snap.startTop ?? NaN)) {
-    lines.push(`start: top=${Math.round(snap.startTop!)}  bot=${Math.round(snap.startBottom!)} `);
-  }
-  if (Number.isFinite(snap.nextTop ?? NaN)) {
-    lines.push(`next : top=${Math.round(snap.nextTop!)}  bot=${Math.round(snap.nextBottom!)} `);
-  }
-
-  hud.textContent = lines.join("\n");
-}
-
-
-type EdgeLineMode = "raw" | "applied";
-
-/** Draw thin lines for each system's top & bottom. */
-function drawSystemEdgeLines(
-  outer: HTMLDivElement,
-  bands: Band[],
-  idxs: number[],
-  mode: EdgeLineMode,
-  ySnap: number,
-  topGutter: number
-): void {
-  const old = outer.querySelectorAll("[data-viewer-edgelines='1']");
-  old.forEach((el) => el.remove());
-
-  const layer = document.createElement("div");
-  layer.dataset.viewerEdgelines = "1";
-  Object.assign(layer.style, {
-    position: "absolute",
-    inset: "0",
-    pointerEvents: "none",
-    zIndex: "998",
-  } as CSSStyleDeclaration);
-  outer.appendChild(layer);
-
-  const makeY = (y: number): number => mode === "raw"
-    ? Math.round(y)
-    : Math.round(y - ySnap + topGutter);
-
-  const colorTop = mode === "raw" ? "#1976d2" : "#2e7d32";   // top: blue vs green
-  const colorBot = mode === "raw" ? "#64b5f6" : "#81c784";   // bottom: dashed
-
-  for (const idx of idxs) {
-    const b = bands[idx];
-    if (!b) { continue; }
-
-    const topLine = document.createElement("div");
-    Object.assign(topLine.style, {
-      position: "absolute",
-      left: "0",
-      right: "0",
-      top: `${makeY(b.top)}px`,
-      borderTop: `2px solid ${colorTop}`,
-    } as CSSStyleDeclaration);
-    layer.appendChild(topLine);
-
-    const botLine = document.createElement("div");
-    Object.assign(botLine.style, {
-      position: "absolute",
-      left: "0",
-      right: "0",
-      top: `${makeY(b.bottom)}px`,
-      borderTop: `2px dashed ${colorBot}`,
-    } as CSSStyleDeclaration);
-    layer.appendChild(botLine);
-  }
-}
-
-
-/** Remove any debug layers if they exist. */
-function clearDebugLayers(outer: HTMLDivElement): void {
-  if (!outer) { return; }
-  const sels = [
-    "[data-viewer-debug='1']",
-    "[data-viewer-hud='1']",
-    "[data-viewer-edgelines='1']",
-  ];
-  for (const sel of sels) {
-    outer.querySelectorAll(sel).forEach((n) => n.remove());
-  }
-}
-
-
 /** Wait for web fonts to be ready (bounded; prevents rare long hangs) */
 async function waitForFonts(): Promise<void> {
   try {
@@ -655,9 +355,7 @@ async function waitForFonts(): Promise<void> {
         new Promise<void>(resolve => window.setTimeout(resolve, 1500)),
       ]);
     }
-  } catch {
-    /* no-op */
-  }
+  } catch { }
 }
 
 
@@ -711,76 +409,57 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "scanSystemsPx";
   try {
-    const pageRoots = getPageRoots(svgRoot);
-    const roots: Array<SVGGElement | SVGSVGElement> = pageRoots.length ? pageRoots : [svgRoot];
-
     const hostTop = outer.getBoundingClientRect().top;
 
     interface Box { top: number; bottom: number; height: number; width: number }
     const boxes: Box[] = [];
 
-    // Exclude micro glyphs (e.g., staccato / fermata dots) from band building.
-    const MIN_H = 0;  // bump from 1 → 2 to drop 1px specks
-    const MIN_W = 0;  // bump from 2 → 6 so tiny dots can't bridge systems
+    // Single-root: query graphics directly from the provided svgRoot.
+    // (We previously iterated page roots, but scores we tested are a single big SVG.)
+    const SELECTORS = "g,path,rect,line,polyline,polygon,text,use,circle,ellipse";
+    const graphics = Array.from(svgRoot.querySelectorAll<SVGGraphicsElement>(SELECTORS));
 
-    for (const root of roots) {
-      // Groups + primitive graphics → dynamics/pedals/slurs count
-      const SELECTORS = "g,path,rect,line,polyline,polygon,text,use,circle,ellipse";
-      const graphics = Array.from(root.querySelectorAll<SVGGraphicsElement>(SELECTORS));
-
-      // Detect the top of the first real system on this page, if the DOM exposes system groups.
-      // We’ll drop any elements fully above that line (i.e., titles/credits).
-      const SYS_SEL = "g[id*='system' i], g[class*='system' i]";
-      let pageContentTop = Number.NEGATIVE_INFINITY;
+    // Collect candidate boxes (no MIN_W / MIN_H gating — those skipped note stems).
+    for (const el of graphics) {
       try {
-        const sysRects = Array
-          .from(root.querySelectorAll<SVGGElement>(SYS_SEL))
-          .map(g => g.getBoundingClientRect())
-          .filter(r => Number.isFinite(r.top) && Number.isFinite(r.height) && r.height > 0);
-
-        if (sysRects.length) {
-          const minSysTop = Math.min(...sysRects.map(r => r.top));
-          const HEADER_GUARD_PX = 12; // allow hairpins/dynamics just above the staff
-          pageContentTop = Math.floor(minSysTop - hostTop) - HEADER_GUARD_PX;
+        const r = el.getBoundingClientRect();
+        if (!Number.isFinite(r.top) || !Number.isFinite(r.height) || !Number.isFinite(r.width)) {
+          continue;
         }
+
+        boxes.push({
+          top: r.top - hostTop,
+          bottom: r.bottom - hostTop,
+          height: r.height,
+          width: r.width
+        });
       } catch { }
-
-      for (const el of graphics) {
-        try {
-          const r = el.getBoundingClientRect();
-          if (!Number.isFinite(r.top) || !Number.isFinite(r.height) || !Number.isFinite(r.width)) { continue; }
-          if (r.height < MIN_H) { continue; }
-          if (r.width < MIN_W) { continue; }
-
-          const top = r.top - hostTop;
-          const bottom = r.bottom - hostTop;
-
-          // If we detected a system top, ignore pure title/credit elements above it
-          if (Number.isFinite(pageContentTop) && bottom < pageContentTop) { continue; }
-
-          boxes.push({ top, bottom, height: r.height, width: r.width });
-        } catch { }
-      }
     }
 
     boxes.sort((a, b) => a.top - b.top);
 
-    // IMPORTANT: merge threshold is derived from the *packing* gap,
-    // minus DPR jitter and a 1px strictness margin (done inside dynamicBandGapPx).
+    // Merge boxes into bands using the dynamic packing gap threshold.
     const THRESH = dynamicBandGapPx();
-
     const bands: Band[] = [];
     for (const b of boxes) {
-      const last = bands.length ? bands[bands.length - 1] : undefined;
+      const last = bands.length > 0 ? bands[bands.length - 1] : undefined;
       if (!last) {
-        bands.push({ top: b.top, bottom: b.bottom, height: b.height });
+        bands.push({
+          top: b.top,
+          bottom: b.bottom,
+          height: b.height
+        });
         continue;
       }
 
-      // Integerize to kill sub-px wobbles, then make the test inclusive.
+      // Integerize to kill sub-px wobbles; inclusive test complements THRESH choice.
       const gapPx = Math.floor(b.top) - Math.ceil(last.bottom);
-      if (gapPx > THRESH) {            // NOTE: strict ">" pairs with packGap-1 above
-        bands.push({ top: b.top, bottom: b.bottom, height: b.height });
+      if (gapPx > THRESH) {
+        bands.push({
+          top: b.top,
+          bottom: b.bottom,
+          height: b.height
+        });
       } else {
         last.top = Math.min(last.top, b.top);
         last.bottom = Math.max(last.bottom, b.bottom);
@@ -788,22 +467,13 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
       }
     }
 
-    // Don't inflate band bottoms; masking already protects page edges.
-    const HAIRLINE_PAD = 0;
-    for (const band of bands) {
-      band.bottom += HAIRLINE_PAD; // no-op by design
-      band.height = band.bottom - band.top;
-    }
-
     void logStep(`bands: ${bands.length}`, { outer });
+
     return bands;
   } finally {
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
   }
 }
-
-// --- Measure scanning + overlay (smoke test) ---
-// (keep scanMeasuresPx as-is)
 
 /** Typed SVG factory (TS strict-friendly) */
 function createSvgEl<K extends keyof SVGElementTagNameMap>(
@@ -812,6 +482,7 @@ function createSvgEl<K extends keyof SVGElementTagNameMap>(
 ): SVGElementTagNameMap[K] {
   return document.createElementNS(ns, tag) as SVGElementTagNameMap[K];
 }
+
 
 /**
  * Scan measure groups from the current OSMD SVG, union staves within the same measure,
@@ -1385,38 +1056,6 @@ function drawMeasureBoxes(
 
     if (globalTop === null || globalBot === null) { return null; }
 
-    /*
-    // Prefer feature extremes whenever present; otherwise fall back to all-shapes extremes.
-    if (featureTop !== null && featureBot !== null) {
-      return { top: featureTop, bottom: featureBot };
-    }
-    return { top: globalTop, bottom: globalBot };
-    */
-    /*
-    // Prefer feature extremes whenever present; otherwise fall back to all-shapes extremes.
-    if (featureTop !== null && featureBot !== null) {
-      // Let thin horizontals (e.g., pedal lines) extend the box when they sit beyond features.
-      const bandH = y1Band - y0Band;
-      const EXTEND_THRESH = 0;                 // px: ignore micro-noise
-      const MAX_EXTEND_PCT = 0.25;             // cap extension to 25% of the band
-      const MAX_EXTEND = Math.max(6, Math.round(bandH * MAX_EXTEND_PCT));
-
-      let top = featureTop;
-      let bottom = featureBot;
-
-      // If the global bottom (incl. hairlines) is meaningfully lower, extend downward.
-      if (globalBot - bottom >= EXTEND_THRESH) {
-        bottom = Math.min(y1Band, Math.min(bottom + MAX_EXTEND, globalBot));
-      }
-      // Symmetric for top (rare, but catches ottava/8va/8vb hairlines above staff).
-      if (top - globalTop >= EXTEND_THRESH) {
-        top = Math.max(y0Band, Math.max(top - MAX_EXTEND, globalTop));
-      }
-      return { top, bottom };
-    }
-    return { top: globalTop, bottom: globalBot };
-    */
-
     // Prefer feature extremes whenever present; otherwise fall back to all-shapes extremes.
     if (featureTop !== null && featureBot !== null) {
       const bandTopClamped = Math.max(y0Band, Math.min(y1Band, globalTop ?? featureTop));
@@ -1579,82 +1218,6 @@ function drawMeasureBoxes(
 
     // Draw rectangles using per-measure verticals (clamped to tile seams)
     const PAD_PX = 4;              // inside-band padding for each rectangle
-    /*
-        // --- DEBUG (viewer-pag): draw this tile's band edges so we can verify the seam
-        if (isPagDiagOn()) {
-          const bandTop = seps[k]!;
-          const bandBot = seps[k + 1]!;
-    
-          // Tile span: from first measure's left to last measure's right
-          const leftX = Math.round(tileIntervals[0]!.left) + 0.5;
-          const rightX = Math.round(tileIntervals[tileIntervals.length - 1]!.right) + 0.5;
-    
-          const lineTop = createSvgEl("line");
-          lineTop.setAttribute("x1", String(leftX));
-          lineTop.setAttribute("y1", String(bandTop + 0.5));
-          lineTop.setAttribute("x2", String(rightX));
-          lineTop.setAttribute("y2", String(bandTop + 0.5));
-          lineTop.setAttribute("stroke", "rgba(0,128,255,0.45)"); // blue = top seam
-          lineTop.setAttribute("stroke-width", "1");
-          lineTop.setAttribute("vector-effect", "non-scaling-stroke");
-          g.appendChild(lineTop);
-    
-          const lineBot = createSvgEl("line");
-          lineBot.setAttribute("x1", String(leftX));
-          lineBot.setAttribute("y1", String(bandBot + 0.5));
-          lineBot.setAttribute("x2", String(rightX));
-          lineBot.setAttribute("y2", String(bandBot + 0.5));
-          lineBot.setAttribute("stroke", "rgba(255,0,0,0.45)"); // red = bottom seam
-          lineBot.setAttribute("stroke-width", "1");
-          lineBot.setAttribute("vector-effect", "non-scaling-stroke");
-          g.appendChild(lineBot);
-    
-          // Log once per tile to correlate screenshot with numbers
-          logStep(
-            `tile ${k}: bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} left=${Math.round(leftX)} right=${Math.round(rightX)}`,
-            { outer }
-          );
-        }
-    
-        // --- DEBUG: draw the current tile's band edges so we can verify the seam
-        {
-          // we already have `seps`, `k`, `g`, and `tileIntervals` in scope here
-          const bandTop = seps[k]!;
-          const bandBot = seps[k + 1]!;
-    
-          // span this tile horizontally (from its first measure's left to its last measure's right)
-          const leftX = Math.round(tileIntervals[0]!.left) + 0.5;
-          const rightX = Math.round(tileIntervals[tileIntervals.length - 1]!.right) + 0.5;
-    
-          const lineTop = createSvgEl("line");
-          lineTop.setAttribute("x1", String(leftX));
-          lineTop.setAttribute("y1", String(bandTop + 0.5));
-          lineTop.setAttribute("x2", String(rightX));
-          lineTop.setAttribute("y2", String(bandTop + 0.5));
-          lineTop.setAttribute("stroke", "rgba(0,128,255,0.45)"); // blue = top seam
-          lineTop.setAttribute("stroke-width", "1");
-          lineTop.setAttribute("vector-effect", "non-scaling-stroke");
-          g.appendChild(lineTop);
-    
-          const lineBot = createSvgEl("line");
-          lineBot.setAttribute("x1", String(leftX));
-          lineBot.setAttribute("y1", String(bandBot + 0.5));
-          lineBot.setAttribute("x2", String(rightX));
-          lineBot.setAttribute("y2", String(bandBot + 0.5));
-          lineBot.setAttribute("stroke", "rgba(255,0,0,0.45)");    // red = bottom seam
-          lineBot.setAttribute("stroke-width", "1");
-          lineBot.setAttribute("vector-effect", "non-scaling-stroke");
-          g.appendChild(lineBot);
-    
-          if (isPagDiagOn()) {
-            // log once per tile to correlate screenshots with numbers
-            logStep(
-              `tile ${k}: bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} left=${Math.round(leftX)} right=${Math.round(rightX)}`,
-              { outer }
-            );
-          }
-        }
-    */
 
     for (let i = 0; i < N; i++) {
       const { m } = items[i]!;
@@ -1768,30 +1331,6 @@ function drawMeasureBoxes(
       g.appendChild(r);
 
       drawnCount++;
-
-      // --- DEBUG: short red tick when this measure’s bottom was clamped to the band seam
-      if (isPagDiagOn()) {
-        const seamBot = seps[k + 1];
-        const wasClampedToBot =
-          Number.isFinite(seamBot) &&
-          (
-            Math.abs((mb as number) + PAD_PX - (seamBot as number)) < 1.0 ||
-            Math.abs(bot - (seamBot as number)) < 1.0
-          );
-
-        if (wasClampedToBot) {
-          const tick = createSvgEl("line");
-          const yTick = (seamBot as number) + 0.5;
-          tick.setAttribute("x1", String(x));
-          tick.setAttribute("y1", String(yTick));
-          tick.setAttribute("x2", String(x + Math.max(8, Math.min(24, w))));
-          tick.setAttribute("y2", String(yTick));
-          tick.setAttribute("stroke", "rgba(255,0,0,0.6)");
-          tick.setAttribute("stroke-width", "1");
-          tick.setAttribute("vector-effect", "non-scaling-stroke");
-          g.appendChild(tick);
-        }
-      }
     }
   }
 
@@ -2218,10 +1757,7 @@ export default function ScoreViewer({
   style,
   topGutterPx = 3,
   debugShowAllMeasureNumbers = false,
-  debugOverlays = false,
 }: Props) {
-  // turn overlays on/off per prop (off by default)
-  DEBUG_BANDS = !!debugOverlays;
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const svgHostRef = useRef<HTMLDivElement | null>(null);
@@ -2517,7 +2053,6 @@ export default function ScoreViewer({
         // TS strict: capture narrowed aliases so flow analysis stays stable below
         const svgNN: SVGSVGElement = svg;
         const bandsNN: Band[] = bands;
-        const startsNN: number[] = starts;
 
         // Clamp target page and remember it
         const pages = starts.length;
@@ -2640,24 +2175,6 @@ export default function ScoreViewer({
         }
         topCutter.style.height = `${Math.max(0, topGutterPx)}px`;
 
-        // Optional debug overlay
-        if (debugOverlays) {
-          debugDrawBands(outer, bandsNN, {
-            tag: `apply p${p + 1}`,
-            starts: startsNN,
-            startIndex,
-            nextStartIndex,
-            ySnap,
-            drawPageLocal: true,
-            visibleAbsY: Math.max(0, topGutterPx) + hVisible,
-            pageAbsY: Math.max(0, topGutterPx) + hVisible,
-            maskAbsY: Math.max(0, topGutterPx) + maskTopWithinMusicPx,
-            topGutter: Math.max(0, topGutterPx),
-          });
-        } else {
-          clearDebugLayers(outer);
-        }
-
         // --- Measure rectangles smoke-test overlay ---
         // Always redraw after pagination transform so outlines match what you see.
         try {
@@ -2680,7 +2197,7 @@ export default function ScoreViewer({
         try { outer.dataset.viewerFunc = prevFuncTag; } catch { /* no-op */ }
       }
     },
-    [visiblePageHeight, topGutterPx, debugOverlays]
+    [visiblePageHeight, topGutterPx]
   );
 
   // Hide the SVG host while we do heavy work, then restore previous styles.
@@ -2797,17 +2314,6 @@ export default function ScoreViewer({
         { outer }
       );
 
-      if (debugOverlays) {
-        debugDrawBands(outer, bands, {
-          tag: "scan",
-          visibleAbsY: Math.max(0, topGutterPx) + visiblePageHeight(outer),
-          pageAbsY: Math.max(0, topGutterPx) + paginationHeight(outer),
-          topGutter: Math.max(0, topGutterPx),
-        });
-      } else {
-        clearDebugLayers(outer);
-      }
-
       const visH = visiblePageHeight(outer);
       const starts = perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
@@ -2860,51 +2366,6 @@ export default function ScoreViewer({
         }
       } catch { }
 
-      if (debugOverlays) {
-        debugDrawBands(outer, bands, {
-          tag: "starts",
-          starts,
-          visibleAbsY: Math.max(0, topGutterPx) + visiblePageHeight(outer),
-          pageAbsY: Math.max(0, topGutterPx) + paginationHeight(outer),
-          topGutter: Math.max(0, topGutterPx),
-        });
-      }
-
-      // HUD & edge-lines (debug only)
-      if (debugOverlays) {
-        const startIndex0 = starts[0] ?? 0;
-        const nextIndex0 = starts.length > 1 ? (starts[1] ?? -1) : -1;
-        const ySnap0 = Math.ceil(bands[startIndex0]?.top ?? 0);
-
-        drawHud(outer, {
-          pageIdx: 0,
-          pages: starts.length,
-          startIndex: startIndex0,
-          nextStartIndex: nextIndex0,
-          ySnap: ySnap0,
-          translateY: -ySnap0 + Math.max(0, topGutterPx),
-          visibleH: visiblePageHeight(outer),
-          paginationH: paginationHeight(outer),
-          maskTop: visiblePageHeight(outer),
-          startTop: bands[startIndex0]?.top,
-          startBottom: bands[startIndex0]?.bottom,
-          nextTop: nextIndex0 >= 0 ? bands[nextIndex0]?.top : undefined,
-          nextBottom: nextIndex0 >= 0 ? bands[nextIndex0]?.bottom : undefined,
-        });
-
-        const rawIdxs: number[] = [startIndex0];
-        if (nextIndex0 >= 0) { rawIdxs.push(nextIndex0); }
-
-        drawSystemEdgeLines(
-          outer,
-          bands,
-          rawIdxs,
-          "raw",
-          ySnap0,
-          Math.max(0, topGutterPx)
-        );
-      }
-
       await logStep("phase finished", { outer });
       outer.dataset.viewerPhase = "apply";
       await logStep("phase starting", { outer });
@@ -2930,7 +2391,7 @@ export default function ScoreViewer({
     } finally {
       try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
     }
-  }, [nextPerfUID, renderViewer, withHostHidden, paginationHeight, applyPage, visiblePageHeight, topGutterPx, debugOverlays]);
+  }, [nextPerfUID, renderViewer, withHostHidden, paginationHeight, applyPage, visiblePageHeight]);
 
 
   // --- HEIGHT-ONLY REPAGINATION (no OSMD re-init) ---
