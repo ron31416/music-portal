@@ -79,6 +79,10 @@ const REFLOW = {
   // Fixed bottom cutter padding
   BOTTOM_PEEK_PAD_LO_DPR: 5,
   BOTTOM_PEEK_PAD_HI_DPR: 6,
+
+  // --- NEW: band/measure padding (will be capped by gutters) ---
+  BAND_PAD_PX_BASE: 12,      // headroom added to each system band (top+bottom)
+  MEASURE_PAD_PX_BASE: 8,    // headroom added to each measure box (clamped inside band)
 } as const;
 
 async function withTimeout<T>(p: Promise<T>, ms: number, tag: string): Promise<T> {
@@ -482,6 +486,84 @@ function createSvgEl<K extends keyof SVGElementTagNameMap>(
   ns = "http://www.w3.org/2000/svg"
 ): SVGElementTagNameMap[K] {
   return document.createElementNS(ns, tag) as SVGElementTagNameMap[K];
+}
+
+
+/**
+ * Return a *new* Band[] whose top/bottom are expanded for annotation headroom.
+ * Pads are capped by the page gutters so we never ask for more space than exists.
+ */
+function derivePaddedBands(
+  raw: Band[],
+  topGutterPx: number,
+  bottomGutterPx: number
+): Band[] {
+  const padTop = Math.min(REFLOW.BAND_PAD_PX_BASE, Math.max(0, topGutterPx));
+  const padBot = Math.min(REFLOW.BAND_PAD_PX_BASE, Math.max(0, bottomGutterPx));
+  if ((padTop | padBot) === 0) { return raw.slice(); }
+
+  const out: Band[] = new Array(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    const b = raw[i]!;
+    const top = b.top - padTop;
+    const bottom = b.bottom + padBot;
+    out[i] = {
+      top,
+      bottom,
+      height: bottom - top,
+      // If your Band type has other fields, copy them here:
+      // ...(b as any),
+      // then overwrite top/bottom/height after spreading
+    } as Band;
+  }
+  return out;
+}
+
+/**
+ * Logs hard warnings when padded bands overlap or leave too little gap.
+ * Overlap > 0 means the page needs data-level spacing (MusicXML) fixes.
+ */
+function validateBandSpacing(
+  outer: HTMLDivElement,
+  bands: Band[],
+  {
+    minGapAlertPx = 2,   // log if the inter-system gap is smaller than this
+  }: { minGapAlertPx?: number } = {}
+): void {
+  if (!bands.length) { return; }
+
+  let overlaps = 0;
+  let tightGaps = 0;
+
+  for (let i = 0; i + 1 < bands.length; i++) {
+    const a = bands[i]!;
+    const b = bands[i + 1]!;
+    const gap = Math.floor(b.top) - Math.ceil(a.bottom);
+    if (gap < 0) { overlaps++; }
+    else if (gap < minGapAlertPx) { tightGaps++; }
+  }
+
+  if (overlaps > 0 || tightGaps > 0) {
+    console.warn(`band-spacing check: overlaps=${overlaps} tightGaps(<${minGapAlertPx}px)=${tightGaps}`);
+
+    // Emit per-incident detail (kept short).
+    for (let i = 0; i + 1 < bands.length; i++) {
+      const a = bands[i]!;
+      const b = bands[i + 1]!;
+      const gap = Math.floor(b.top) - Math.ceil(a.bottom);
+      if (gap < 0) {
+        void logStep(
+          `OVERLAP: bands[${i}] bottom=${Math.ceil(a.bottom)} > bands[${i + 1}] top=${Math.floor(b.top)} (delta ${gap})`,
+          { outer }
+        );
+      } else if (gap < minGapAlertPx) {
+        void logStep(
+          `TIGHT: bands[${i}]→[${i + 1}] gap=${gap}px (<${minGapAlertPx})`,
+          { outer }
+        );
+      }
+    }
+  }
 }
 
 
@@ -2187,15 +2269,25 @@ export default function ScoreViewer({
       const preBands = withSvgAtUnitScale(outer, (svg) => scanSystemsPx(outer, svg)) ?? [];
       await logStep(`bands: ${preBands.length}`, { outer });
 
-      const bands = perfBlock(
+      // Scan (raw) then derive padded bands capped by the gutters
+      const rawBands = perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
         () => withSvgAtUnitScale(outer, (svg) => scanSystemsPx(outer, svg)) ?? [],
         (ms) => { void logStep(`scanSystemsPx() runtime: ${ms}ms`, { outer }); }
       );
+
+      const bands = derivePaddedBands(
+        rawBands,
+        Math.max(0, topGutterPx),
+        Math.max(0, bottomGutterPx)
+      );
+
+      validateBandSpacing(outer, bands, { minGapAlertPx: 2 });
+
       const packGap = interSystemPackGapPx(outer);
       const mergeThresh = dynamicBandGapPx();
       await logStep(
-        `bands: ${bands.length} packGap: ${packGap} mergeThresh=${mergeThresh}`,
+        `bands(raw→padded): ${rawBands.length}→${bands.length} packGap: ${packGap} mergeThresh=${mergeThresh}`,
         { outer }
       );
 
