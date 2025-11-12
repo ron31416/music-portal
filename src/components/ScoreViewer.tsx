@@ -82,7 +82,7 @@ const REFLOW = {
 
   // --- NEW: band/measure padding (will be capped by gutters) ---
   BAND_PAD_PX_BASE: 12,      // headroom added to each system band (top+bottom)
-  MEASURE_PAD_PX_BASE: 8,    // headroom added to each measure box (clamped inside band)
+  MEASURE_PAD_PX_BASE: 11,    // headroom added to each measure box (clamped inside band)
 } as const;
 
 async function withTimeout<T>(p: Promise<T>, ms: number, tag: string): Promise<T> {
