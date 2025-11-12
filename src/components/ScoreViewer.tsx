@@ -1029,9 +1029,6 @@ function drawMeasureBoxes(
   // Cache of intervals per tile index + expected bar count
   const BAND_INTERVAL_CACHE = new Map<string, Interval[]>();
 
-  type AnnotExtents = { top: number; bottom: number };
-  const ANNOT_CACHE = new Map<string, AnnotExtents>();
-
   function getMeasureIntervalsCached(
     tileIndex: number,
     yTop: number,
@@ -1097,7 +1094,6 @@ function drawMeasureBoxes(
     for (const el of nodes) {
       let bbSvg: DOMRect;
       try { bbSvg = el.getBBox(); } catch { continue; }
-
       // Convert bbox to page-local px
       const p1 = toPageLocal(el, bbSvg.x, bbSvg.y);
       const p2 = toPageLocal(el, bbSvg.x + bbSvg.width, bbSvg.y + bbSvg.height);
@@ -1286,63 +1282,51 @@ function drawMeasureBoxes(
       // Clamp band for this tile
       const bandTop = seps[k]!;
       const bandBot = seps[k + 1]!;
-
       // Try pre-existing measure fields first
       let mt: number | undefined = (m as { annotTopPx?: number }).annotTopPx;
       let mb: number | undefined = (m as { annotBotPx?: number }).annotBotPx;
 
-      // Fallback to cache / compute-once if missing or invalid
+      // If missing/invalid, compute once directly (no intra-call cache)
       if (!Number.isFinite(mt) || !Number.isFinite(mb) || (mb as number) <= (mt as number)) {
-        const key = (m as { id: string }).id;
-        let cached = ANNOT_CACHE.get(key);
+        const ivLeft = Math.min(l, rEdge);
+        const ivRight = Math.max(l, rEdge);
 
-        if (!cached) {
-          // Compute once, then cache (INCLUDES thin horizontal hairlines like pedal lines)
-          const ivLeft = Math.min(l, rEdge);
-          const ivRight = Math.max(l, rEdge);
-          const MIN_X_OVERLAP = 2; // px
+        let tMin = Number.POSITIVE_INFINITY;
+        let bMax = Number.NEGATIVE_INFINITY;
 
-          let tMin = Number.POSITIVE_INFINITY;
-          let bMax = Number.NEGATIVE_INFINITY;
+        for (const el of allGraphics) {
+          let bbSvg: DOMRect | null = null;
+          try { bbSvg = el.getBBox(); } catch { bbSvg = null; }
+          if (!bbSvg) { continue; }
 
-          for (const el of allGraphics) {
-            let bbSvg: DOMRect | null = null;
-            try { bbSvg = el.getBBox(); } catch { bbSvg = null; }
-            if (!bbSvg) { continue; }
+          const p1 = toPageLocal(el, bbSvg.x, bbSvg.y);
+          const p2 = toPageLocal(el, bbSvg.x + bbSvg.width, bbSvg.y + bbSvg.height);
 
-            const p1 = toPageLocal(el, bbSvg.x, bbSvg.y);
-            const p2 = toPageLocal(el, bbSvg.x + bbSvg.width, bbSvg.y + bbSvg.height);
+          const bbx = Math.min(p1.x, p2.x);
+          const bby = Math.min(p1.y, p2.y);
+          const bbw = Math.abs(p2.x - p1.x);
+          const bbh = Math.abs(p2.y - p1.y);
 
-            const bbx = Math.min(p1.x, p2.x);
-            const bby = Math.min(p1.y, p2.y);
-            const bbw = Math.abs(p2.x - p1.x);
-            const bbh = Math.abs(p2.y - p1.y);
+          // Horizontal gate: require any overlap with [ivLeft, ivRight]
+          const ovX = Math.min(bbx + bbw, ivRight) - Math.max(bbx, ivLeft);
+          if (ovX <= 0) { continue; }
 
-            // Horizontal gate by overlap with this measure interval
-            const ovX = Math.min(bbx + bbw, ivRight) - Math.max(bbx, ivLeft);
-            if (ovX < MIN_X_OVERLAP) { continue; }
+          // Include ALL glyphs so pedal lines count
+          const top = bby;
+          const bot = bby + bbh;
 
-            // Include ALL glyphs (no hairline filter) so pedal lines count
-            const top = bby;
-            const bot = bby + bbh;
-
-            if (top < tMin) { tMin = top; }
-            if (bot > bMax) { bMax = bot; }
-          }
-
-          if (Number.isFinite(tMin) && Number.isFinite(bMax) && bMax > tMin) {
-            mt = Math.max(bandTop, Math.round(tMin));
-            mb = Math.min(bandBot, Math.round(bMax));
-            cached = { top: mt, bottom: mb };
-            ANNOT_CACHE.set(key, cached);
-          }
-        } else {
-          mt = cached.top;
-          mb = cached.bottom;
+          if (top < tMin) { tMin = top; }
+          if (bot > bMax) { bMax = bot; }
         }
-      } else {
-        // Persist the good values so page flips / redraws reuse them
-        ANNOT_CACHE.set((m as { id: string }).id, { top: mt as number, bottom: mb as number });
+
+        if (Number.isFinite(tMin) && Number.isFinite(bMax) && bMax > tMin) {
+          mt = Math.max(bandTop, Math.round(tMin));
+          mb = Math.min(bandBot, Math.round(bMax));
+
+          // persist on the measure so re-uses in this invocation don’t recompute
+          (m as { annotTopPx?: number }).annotTopPx = mt;
+          (m as { annotBotPx?: number }).annotBotPx = mb;
+        }
       }
 
       // Guard invalid/missing extents
