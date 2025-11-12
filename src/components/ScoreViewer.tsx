@@ -658,10 +658,9 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
   }
 }
 
-/** Draw/refresh a lightweight SVG overlay of measure rectangles (stroke-only),
- * snapping vertical bounds to per-system page separators so boxes tile cleanly.
- * STRICT TS SAFE (noUncheckedIndexedAccess compatible).
- */
+//Draw/refresh a lightweight SVG overlay of measure rectangles (stroke-only),
+// snapping vertical bounds to per-system page separators so boxes tile cleanly.
+// STRICT TS SAFE (noUncheckedIndexedAccess compatible).
 function drawMeasureBoxes(
   outer: HTMLDivElement,
   svgRoot: SVGSVGElement,
