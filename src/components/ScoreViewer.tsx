@@ -1300,7 +1300,7 @@ function drawMeasureBoxes(
     }
 
     // Draw rectangles using per-measure verticals (clamped to tile seams)
-    const PAD_PX = 4;              // inside-band padding for each rectangle
+    const BASE_PAD = REFLOW.MEASURE_PAD_PX_BASE;  // inside-band padding cap per edge
 
     for (let i = 0; i < N; i++) {
       const { m } = items[i]!;
@@ -1380,12 +1380,20 @@ function drawMeasureBoxes(
         continue;
       }
 
-      // Apply inner padding but keep rectangle inside the band
-      let top = (mt as number) - PAD_PX;
-      let bot = (mb as number) + PAD_PX;
+      // Apply inner padding per edge, capped by available headroom to band edges
+      const mtNum = mt as number;
+      const mbNum = mb as number;
 
-      top = Math.max(bandTop, top);
-      bot = Math.min(bandBot, bot);
+      // how much room we actually have inside the band
+      const availTop = Math.max(0, mtNum - bandTop);
+      const availBot = Math.max(0, bandBot - mbNum);
+
+      // per-edge pads: never exceed headroom or our base knob
+      const padTop = Math.min(BASE_PAD, availTop);
+      const padBot = Math.min(BASE_PAD, availBot);
+
+      const top = Math.max(bandTop, Math.round(mtNum - padTop));
+      const bot = Math.min(bandBot, Math.round(mbNum + padBot));
 
       // Pixel-perfect y/h
       const y = Math.round(Math.min(top, bot)) + 0.5;
@@ -1408,7 +1416,7 @@ function drawMeasureBoxes(
       r.setAttribute("width", String(w));
       r.setAttribute("height", String(h));
       r.setAttribute("fill", "none");
-      r.setAttribute("stroke", "rgba(0,0,0,0.35)");
+      r.setAttribute("stroke", "rgba(0,0,0,0.7)");
       r.setAttribute("stroke-width", "1");
       r.setAttribute("vector-effect", "non-scaling-stroke");
       g.appendChild(r);
