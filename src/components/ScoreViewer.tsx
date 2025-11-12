@@ -195,7 +195,7 @@ async function waitForPaint(timeoutMs = 450): Promise<void> {
 }
 
 
-// URL-driven debug flags: #viewer-log or #viewer-pag 
+// URL-driven debug flags: #viewer-log or #viewer-diag 
 function readDebugFlag(name: string, fallback = false): boolean {
   try {
     const read = (s: string) => {
@@ -225,11 +225,11 @@ function readDebugFlag(name: string, fallback = false): boolean {
 }
 // URL flags (read once at module import; change URL + Reload to apply)
 const URL_LOG = readDebugFlag("viewer-log", false);
-const URL_PAG = readDebugFlag("viewer-pag", false);
+const URL_PAG = readDebugFlag("viewer-diag", false);
 
 // Effective switches: pagination diag implies logging
 const isLogOn = () => URL_LOG || URL_PAG;
-const isPagDiagOn = () => URL_PAG;
+const isDiagOn = () => URL_PAG;
 
 
 export async function logStep(
@@ -405,8 +405,10 @@ function useVisibleViewportHeight() {
 
 
 function dynamicBandGapPx(): number {
+  // Tighten the merge threshold: only bridge true micro-gaps from rounding/jitter.
   const dpr = (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1;
-  return dpr >= 2 ? 4 : 3;
+  // Old: 4/3. New: 2/1 keeps systems separate on cramped pages.
+  return dpr >= 2 ? 2 : 1;
 }
 
 
@@ -586,7 +588,7 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
     const MEASURE_SEL = "g[id*='measure' i], g[class*='measure' i]";
     const groups = Array.from(svgRoot.querySelectorAll<SVGGElement>(MEASURE_SEL));
 
-    if (isPagDiagOn()) {
+    if (isDiagOn()) {
       logStep(`raw measure-like groups: ${groups.length}`, { outer });
     }
 
@@ -636,7 +638,7 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
       const dur = Math.round((t1 as number) - (t0 as number));
       logStep(`merged measures: ${rows.length} in ${dur}ms`, { outer });
     }
-    if (isPagDiagOn()) {
+    if (isDiagOn()) {
       // Log a small, non-spammy sample: first 3 and last 3
       const sample = rows.length <= 6
         ? rows
@@ -829,7 +831,7 @@ function drawMeasureBoxes(
 
   // Collect inner-edge X positions of vertical barlines that belong to a given tile.
   // expectedBars = measures_in_tile + 1
-  function computeBandMeasureIntervals(
+  function computeMeasureIntervals(
     yTop: number,
     yBot: number,
     expectedBars: number,
@@ -1030,7 +1032,7 @@ function drawMeasureBoxes(
   type AnnotExtents = { top: number; bottom: number };
   const ANNOT_CACHE = new Map<string, AnnotExtents>();
 
-  function getBandMeasureIntervalsCached(
+  function getMeasureIntervalsCached(
     tileIndex: number,
     yTop: number,
     yBot: number,
@@ -1041,7 +1043,7 @@ function drawMeasureBoxes(
     const cached = BAND_INTERVAL_CACHE.get(key);
     if (cached) { return cached; }
 
-    const xs = computeBandMeasureIntervals(yTop, yBot, expectedBars, leftBoundPx);
+    const xs = computeMeasureIntervals(yTop, yBot, expectedBars, leftBoundPx);
     const intervals: Interval[] = [];
     for (let i = 0; i < xs.length - 1; i++) {
       const l = xs[i]!;
@@ -1139,43 +1141,12 @@ function drawMeasureBoxes(
 
     if (globalTop === null || globalBot === null) { return null; }
 
-    // Prefer feature extremes whenever present; otherwise fall back to all-shapes extremes.
-    if (featureTop !== null && featureBot !== null) {
-      const bandTopClamped = Math.max(y0Band, Math.min(y1Band, globalTop ?? featureTop));
-      const bandBotClamped = Math.max(y0Band, Math.min(y1Band, globalBot ?? featureBot));
-
-      // Cap how far we can extend beyond the feature box so staff lines can't blow it up.
-      const bandH = y1Band - y0Band;
-      const MAX_EXTEND_PCT = 0.25;                 // up to 25% of the band
-      const MAX_EXTEND = Math.max(6, Math.round(bandH * MAX_EXTEND_PCT));
-
-      let top = featureTop;
-      let bottom = featureBot;
-
-      // Extend DOWN: toward global bottom, but no further than featureBot + MAX_EXTEND and not past band bottom
-      if (globalBot !== null) {
-        const target = Math.min(y1Band, Math.max(y0Band, bandBotClamped));
-        const capped = Math.min(target, featureBot + MAX_EXTEND);
-        bottom = Math.max(featureBot, capped);
-      }
-
-      // Extend UP: toward global top, but no further than featureTop - MAX_EXTEND and not above band top
-      if (globalTop !== null) {
-        const target = Math.max(y0Band, Math.min(y1Band, bandTopClamped));
-        const capped = Math.max(target, featureTop - MAX_EXTEND);
-        top = Math.min(featureTop, capped);
-      }
-
-      return { top, bottom };
-    }
-
     // No reliable feature box → use all-shapes union (includes hairlines like pedal lines).
     // (These should be non-null if we reached this branch; guard defensively.)
     return {
       top: globalTop ?? y0Band,
       bottom: globalBot ?? y1Band,
     };
-
   }
   // --- End interval-gated recompute helper ---
 
@@ -1248,7 +1219,7 @@ function drawMeasureBoxes(
     const LEFT_TOL = 2;
     const leftBoundPx = musicLeft - LEFT_TOL;
 
-    let tileIntervals = getBandMeasureIntervalsCached(k, detectTop, detectBot, expectedBars, leftBoundPx);
+    let tileIntervals = getMeasureIntervalsCached(k, detectTop, detectBot, expectedBars, leftBoundPx);
 
     // Clamp intervals to the measures' horizontal span,
     // but don't reject a true first interval just because its left barline
@@ -1399,8 +1370,7 @@ function drawMeasureBoxes(
       const y = Math.round(Math.min(top, bot)) + 0.5;
       const h = Math.max(1, Math.round(Math.abs(bot - top)) - 1);
 
-      // ---- DEBUG: log once per tile (pag diag only)
-      if (isPagDiagOn() && i === 0) {
+      if (isDiagOn() && i === 0) {
         logStep(
           `m=${m.id} mt=${Math.round(mt as number)} mb=${Math.round(mb as number)} ` +
           `bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} ` +
@@ -1439,136 +1409,7 @@ function clearMeasureBoxes(outer: HTMLDivElement): void {
 }
 
 
-// --- System packing helpers (insert after scanSystemsPx) ---
-
-function interSystemPackGapPx(outer: HTMLDivElement): number {
-  const h = outer.clientHeight || 0;
-  const dpr = (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1;
-  let gap = 10;                 // nominal inter-system gap (keeps 2nd line close)
-  if (h <= 750) { gap += 1; }   // small visible height → a touch more
-  if (dpr >= 2) { gap += 1; }   // Hi-DPR safety
-  return gap;
-}
-
-
-// Find per-page root elements produced by OSMD, across its different layouts.
-// May return <g> (pages inside one SVG), <svg> (one per page), or <div> wrappers.
-// Always returns at least one element.
-// Returns page roots as <g> or <svg> only.
-// Signature stays compatible with callers that expect (SVGGElement | SVGSVGElement)[]
-function getPageRoots(svgRoot: SVGSVGElement): Array<SVGGElement | SVGSVGElement> {
-  // Case 1: single <svg> with per-page <g> wrappers
-  const gPages = Array.from(
-    svgRoot.querySelectorAll<SVGGElement>(
-      'g[id^="osmdPage"], g[class*="osmd-page" i], g[id*="svgpage" i], g[id*="page" i]'
-    )
-  );
-  if (gPages.length > 0) { return gPages; }
-
-  const parent = svgRoot.parentElement;
-  const grand = parent?.parentElement ?? null;
-
-  // Helper: collect <svg>/<g> inside div.osmd-page wrappers under a scope
-  const collectFromDivPages = (scope: Element | null): Array<SVGGElement | SVGSVGElement> => {
-    if (!scope) { return []; }
-    const divs = Array.from(
-      scope.querySelectorAll<HTMLDivElement>(
-        ':scope > div.osmd-page, :scope > div[class*="osmd-page" i], :scope > div[class*="page" i]'
-      )
-    );
-    const pages: Array<SVGGElement | SVGSVGElement> = [];
-    for (const d of divs) {
-      const svg = d.querySelector<SVGSVGElement>('svg');
-      if (svg) { pages.push(svg); continue; }
-      const g = d.querySelector<SVGGElement>('g');
-      if (g) { pages.push(g); }
-    }
-    return pages;
-  };
-
-  // Case 2: div.osmd-page wrappers near the svg
-  const divPagesParent = collectFromDivPages(parent);
-  if (divPagesParent.length > 0) { return divPagesParent; }
-
-  const divPagesGrand = collectFromDivPages(grand);
-  if (divPagesGrand.length > 0) { return divPagesGrand; }
-
-  // Case 3: multiple sibling <svg> elements (each is a page)
-  const svgSiblingsParent = parent ? Array.from(parent.querySelectorAll<SVGSVGElement>(':scope > svg')) : [];
-  if (svgSiblingsParent.length > 1) { return svgSiblingsParent; }
-
-  const svgSiblingsGrand = grand ? Array.from(grand.querySelectorAll<SVGSVGElement>(':scope > svg')) : [];
-  if (svgSiblingsGrand.length > 1) { return svgSiblingsGrand; }
-
-  // Fallback: treat the single SVG as one page
-  return [svgRoot];
-}
-
-
-function systemGroupCount(svgRoot: SVGSVGElement): number {
-  return Array.from(
-    svgRoot.querySelectorAll<SVGGElement>("g[id*='system' i], g[class*='system' i]")
-  ).filter(g => g.ownerSVGElement === svgRoot).length;
-}
-
-
-/** Repack systems *inside* each engraved page to the nominal gap. */
-function packSystemsWithinPages(
-  outer: HTMLDivElement,
-  svgRoot: SVGSVGElement
-): void {
-  const GAP = interSystemPackGapPx(outer);
-  const pages = getPageRoots(svgRoot);
-  const pageGroups: Array<SVGGElement | SVGSVGElement> = pages.length ? pages : [svgRoot];
-
-  const hostTop = outer.getBoundingClientRect().top;
-
-  for (const page of pageGroups) {
-    const systems = Array.from(
-      page.querySelectorAll<SVGGElement>("g[id*='system' i], g[class*='system' i]")
-    );
-
-    if (systems.length === 0) {
-      const n = Number(outer.dataset.viewerWarnEmptyPage || "0") + 1;
-      outer.dataset.viewerWarnEmptyPage = String(n);
-      continue;
-    }
-
-    systems.forEach(g => { g.style.transform = ""; });
-
-    const boxes = systems
-      .map((g) => {
-        try {
-          const r = g.getBoundingClientRect();
-          return { g, top: r.top - hostTop, bottom: r.bottom - hostTop, height: r.height };
-        } catch { return null; }
-      })
-      .filter((v): v is { g: SVGGElement; top: number; bottom: number; height: number } =>
-        !!v && Number.isFinite(v.top) && v.height > 0
-      )
-      .sort((a, b) => a.top - b.top);
-
-    if (boxes.length === 0) { continue; }
-
-    let y = boxes[0]!.top;
-    for (let i = 0; i < boxes.length; i++) {
-      const b = boxes[i]!;
-      const desiredTop = Math.round(y);
-      const delta = Math.round(desiredTop - b.top);
-
-      if (Math.abs(delta) >= 1) {
-        b.g.style.transform = `translateY(${delta}px)`;
-      } else {
-        b.g.style.transform = ""; // keep it clean if no move
-      }
-
-      y = desiredTop + b.height + (i < boxes.length - 1 ? GAP : 0);
-    }
-  }
-}
-
-
-/** Deterministic page starts from measured system rectangles (strict, bottom-based). */
+// Deterministic page starts from measured system rectangles (strict, bottom-based).
 function computePageStarts(
   outer: HTMLDivElement,
   bands: Band[],
@@ -2112,7 +1953,7 @@ export default function ScoreViewer({
         let bottomCutter = outer.querySelector<HTMLDivElement>("[data-viewer-bottomcutter='1']");
         const needsMask = maskTopWithinMusicPx < PAGE_H_USABLE;
 
-        if (isPagDiagOn()) {
+        if (isDiagOn()) {
           const lastForLog = nextStartIndex >= 0 ? (nextStartIndex - 1) : (bands.length - 1);
           void logStep(
             `pages: ${p + 1}/${pages} startIndex: ${startIndex} lastForLog: ${lastForLog} ` +
@@ -2264,16 +2105,6 @@ export default function ScoreViewer({
         throw new Error("No SVG produced by OSMD render");
       }
 
-      // Always attempt to repack systems within each page.
-      // Even if the top-level SVG doesn't expose system groups, the packer no-ops per page.
-      const sysCountTopSvg = systemGroupCount(svgForPack);
-      const gap = interSystemPackGapPx(outer);
-      await logStep(
-        `sysCount(top-svg): ${sysCountTopSvg} — running packSystemsWithinPages (GAP=${gap})`,
-        { outer }
-      );
-      packSystemsWithinPages(outer, svgForPack);
-
       const preBands = withSvgAtUnitScale(outer, (svg) => scanSystemsPx(outer, svg)) ?? [];
       await logStep(`bands: ${preBands.length}`, { outer });
 
@@ -2292,10 +2123,9 @@ export default function ScoreViewer({
 
       validateBandSpacing(outer, bands, { minGapAlertPx: 2 });
 
-      const packGap = interSystemPackGapPx(outer);
       const mergeThresh = dynamicBandGapPx();
       await logStep(
-        `bands(raw→padded): ${rawBands.length}→${bands.length} packGap: ${packGap} mergeThresh=${mergeThresh}`,
+        `bands: ${bands.length} mergeThresh=${mergeThresh} (no packGap; packer disabled)`,
         { outer }
       );
 
@@ -2315,7 +2145,7 @@ export default function ScoreViewer({
           { outer }
         );
 
-        if (isPagDiagOn()) {
+        if (isDiagOn()) {
           // Compact page map (page -> band range)
           {
             const lastBand = bands.length - 1;
@@ -2425,7 +2255,7 @@ export default function ScoreViewer({
       outer.dataset.viewerPages = String(starts.length);
 
       // Optional diagnostics: compact page map
-      if (isPagDiagOn()) {
+      if (isDiagOn()) {
         const lastBand = bands.length - 1;
         const parts: string[] = [];
         for (let p = 0; p < starts.length; p++) {
