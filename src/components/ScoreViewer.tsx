@@ -281,7 +281,7 @@ export async function logStep(
 }
 
 
-function drawPageBandGuides(
+function drawBandGuides(
   svg: SVGSVGElement,
   bands: Band[],
   startIndex: number,
@@ -2116,7 +2116,7 @@ export default function ScoreViewer({
         svg.style.willChange = "transform";
 
         if (isLogOn()) {
-          drawPageBandGuides(svg, bands, startIndex, nextStartIndex);
+          drawBandGuides(svg, bands, startIndex, nextStartIndex);
         }
 
         // Visible height (raw) and usable height inside gutters/peek pad
