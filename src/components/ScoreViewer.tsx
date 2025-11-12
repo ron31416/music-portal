@@ -548,21 +548,23 @@ function validateBandSpacing(
   if (overlaps > 0 || tightGaps > 0) {
     console.warn(`band-spacing check: overlaps=${overlaps} tightGaps(<${minGapAlertPx}px)=${tightGaps}`);
 
-    // Emit per-incident detail (kept short).
-    for (let i = 0; i + 1 < bands.length; i++) {
-      const a = bands[i]!;
-      const b = bands[i + 1]!;
-      const gap = Math.floor(b.top) - Math.ceil(a.bottom);
-      if (gap < 0) {
-        void logStep(
-          `OVERLAP: bands[${i}] bottom=${Math.ceil(a.bottom)} > bands[${i + 1}] top=${Math.floor(b.top)} (delta ${gap})`,
-          { outer }
-        );
-      } else if (gap < minGapAlertPx) {
-        void logStep(
-          `TIGHT: bands[${i}]→[${i + 1}] gap=${gap}px (<${minGapAlertPx})`,
-          { outer }
-        );
+    if (isDiagOn()) {
+      // Emit per-incident detail (kept short).
+      for (let i = 0; i + 1 < bands.length; i++) {
+        const a = bands[i]!;
+        const b = bands[i + 1]!;
+        const gap = Math.floor(b.top) - Math.ceil(a.bottom);
+        if (gap < 0) {
+          void logStep(
+            `OVERLAP: bands[${i}] bottom=${Math.ceil(a.bottom)} > bands[${i + 1}] top=${Math.floor(b.top)} (delta ${gap})`,
+            { outer }
+          );
+        } else if (gap < minGapAlertPx) {
+          void logStep(
+            `TIGHT: bands[${i}]→[${i + 1}] gap=${gap}px (<${minGapAlertPx})`,
+            { outer }
+          );
+        }
       }
     }
   }
@@ -2038,12 +2040,10 @@ export default function ScoreViewer({
   }, []);
 
 
-  /** layoutViewer
-   * Full layout pipeline:
-   *   renderViewer()  → scanSystemsPx() → computePageStarts() → applyPage(0)
-   * Optionally double-applies page 1 to settle masking; bounded by a paint gate.
-   * Returns {bands, starts} for callers to stash.
-   */
+  // Full layout pipeline:
+  // renderViewer()  → scanSystemsPx() → computePageStarts() → applyPage(0)
+  // Optionally double-applies page 1 to settle masking; bounded by a paint gate.
+  // Returns {bands, starts} for callers to stash.
   const layoutViewer = useCallback(async (
     outer: HTMLDivElement,
     osmd: OpenSheetMusicDisplay,
