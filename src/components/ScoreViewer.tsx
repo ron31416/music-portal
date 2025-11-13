@@ -1888,7 +1888,7 @@ export default function ScoreViewer({
           // Allow a larger centered “hole” (grand-staff gap) but keep halves stringent
           const maxCenteredHoleFrac = 0.35;     // up to 35% if it's the central gap
           const minHalfCoverageFrac = 0.60;     // ≥60% coverage in each half
-          const minOverallCoverageFrac = 0.65;
+          const minOverallCoverageFrac = 0.55;  // was 0.65; fixed missing measure boxes when changed
           type Span = { t: number; b: number };
 
           // Bucket candidates by integer X and retain their vertical spans
