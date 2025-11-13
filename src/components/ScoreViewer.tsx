@@ -1,11 +1,10 @@
-/* eslint curly: ["error", "all"] */
 // src/components/ScoreViewer.tsx
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 
-/* ---------- Props & Types ---------- */
+// ---------- Props & Types ----------
 
 interface Props {
   src: string;
@@ -133,7 +132,7 @@ function makeAfterPaint(outer: HTMLDivElement) {
           const ms = Math.round(now - t0);
           outer.dataset.viewerAfterpaintMs = String(ms);
 
-          void logStep(`${label ?? ""} -> ${why} (${ms}ms)`, { outer });
+          void logStep(`${label ?? ""} -> ${why} (${ms}ms)`, { outer, caller: label });
         } catch { }
         resolve();
       }
@@ -199,7 +198,7 @@ function withSvgAtUnitScale<T>(outer: HTMLDivElement, fn: (svg: SVGSVGElement) =
 }
 
 
-/** Best-effort "wait until the browser can paint" (bounded) */
+// Best-effort "wait until the browser can paint" (bounded)
 async function waitForPaint(timeoutMs = 450): Promise<void> {
   try {
     await new Promise<void>(r => window.setTimeout(r, 0)); // macrotask
@@ -242,7 +241,7 @@ function readDebugFlag(name: string, fallback = false): boolean {
 
     const q = qs ? read(qs) : null;
     if (q !== null) { return q; }
-  } catch { /* ignore */ }
+  } catch { }
   return fallback;
 }
 // URL flags (read once at module import; change URL + Reload to apply)
@@ -256,13 +255,14 @@ const isDiagOn = () => URL_PAG;
 
 export async function logStep(
   message: string,
-  opts: { paint?: boolean; outer?: HTMLDivElement | null } = {}
+  opts: { outer?: HTMLDivElement | null; caller?: string } = {}
 ): Promise<void> {
   if (!isLogOn()) { return; }
 
-  const { paint = false, outer = null } = opts;
+  const { outer = null, caller } = opts;
 
-  // Fixed DevTools console column widths (tweak as needed) 
+  // Fixed DevTools console column widths (tweak as needed)
+  const CALLER_COL = 16;
   const FN_COL = 18;
   const PHASE_COL = 8;
 
@@ -287,21 +287,18 @@ export async function logStep(
       if (typeof dp === "string" && dp.length > 0) { phase = dp; }
     }
 
-    // Always render both columns with fixed widths.
+    // Always render all columns with fixed widths.
+    const callerChunk = `[${pad(caller ?? "", CALLER_COL)}]`;
     const fnChunk = `[${pad(fn === "(none)" ? "" : fn, FN_COL)}]`;
     const phaseChunk = `[${pad(phase === "(none)" ? "" : phase, PHASE_COL)}]`;
 
-    const composed = `${fnChunk} ${phaseChunk} ${message}`;
+    const composed = `${callerChunk} ${fnChunk} ${phaseChunk} ${message}`;
 
     // eslint-disable-next-line no-console
     console.log(composed);
 
     if (wrap) {
       wrap.dataset.viewerLastLog = `${Date.now()}:${composed.slice(0, 80)}`;
-    }
-
-    if (paint) {
-      await waitForPaint();
     }
   } catch { }
 }
@@ -372,7 +369,7 @@ function drawBandGuides(
 }
 
 
-/** Wait for web fonts to be ready (bounded; prevents rare long hangs) */
+// Wait for web fonts to be ready (bounded; prevents rare long hangs)
 async function waitForFonts(): Promise<void> {
   try {
     const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
@@ -386,7 +383,7 @@ async function waitForFonts(): Promise<void> {
 }
 
 
-/** Track the *visible* viewport height (accounts for mobile URL/tool bars) */
+// Track the *visible* viewport height (accounts for mobile URL/tool bars)
 function useVisibleViewportHeight() {
   const vpRef = useRef<number>(0);
   const [, force] = React.useReducer((x: number) => x + 1, 0);
@@ -496,7 +493,7 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
       }
     }
 
-    void logStep(`bands: ${bands.length}`, { outer });
+    void logStep(`bands: ${bands.length}`, { outer, caller: prevFuncTag });
 
     return bands;
   } finally {
@@ -504,7 +501,7 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   }
 }
 
-/** Typed SVG factory (TS strict-friendly) */
+// Typed SVG factory (TS strict-friendly)
 function createSvgEl<K extends keyof SVGElementTagNameMap>(
   tag: K,
   ns = "http://www.w3.org/2000/svg"
@@ -513,10 +510,8 @@ function createSvgEl<K extends keyof SVGElementTagNameMap>(
 }
 
 
-/**
- * Return a *new* Band[] whose top/bottom are expanded for annotation headroom.
- * Pads are capped by the page gutters so we never ask for more space than exists.
- */
+// Return a *new* Band[] whose top/bottom are expanded for annotation headroom.
+// Pads are capped by the page gutters so we never ask for more space than exists.
 function derivePaddedBands(
   raw: Band[],
   topGutterPx: number,
@@ -543,10 +538,8 @@ function derivePaddedBands(
   return out;
 }
 
-/**
- * Logs hard warnings when padded bands overlap or leave too little gap.
- * Overlap > 0 means the page needs data-level spacing (MusicXML) fixes.
- */
+// Logs hard warnings when padded bands overlap or leave too little gap.
+// Overlap > 0 means the page needs data-level spacing (MusicXML) fixes.
 function validateBandSpacing(
   outer: HTMLDivElement,
   bands: Band[],
@@ -593,16 +586,12 @@ function validateBandSpacing(
 }
 
 
-/**
- * Scan measure groups from the current OSMD SVG, union staves within the same measure,
- * and return unified per-measure rectangles relative to the wrapper host.
- * Runs AFTER pagination transform so boxes align with what you see.
- */
+// Scan measure groups from the current OSMD SVG, union staves within the same measure,
+// and return unified per-measure rectangles relative to the wrapper host.
+// Runs AFTER pagination transform so boxes align with what you see.
 function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ id: string; rect: Rect }> {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "scanMeasuresPx";
-
-  const t0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
 
   try {
     const hostTop = outer.getBoundingClientRect().top;
@@ -613,7 +602,7 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
     const groups = Array.from(svgRoot.querySelectorAll<SVGGElement>(MEASURE_SEL));
 
     if (isDiagOn()) {
-      logStep(`raw measure-like groups: ${groups.length}`, { outer });
+      logStep(`raw measure-like groups: ${groups.length}`, { outer, caller: prevFuncTag });
     }
 
     // Map string id-key -> union rect
@@ -649,7 +638,7 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
         if (r && r.width > 0 && r.height > 0) {
           unionInto(key, r);
         }
-      } catch { /* ignore bad nodes */ }
+      } catch { }
     }
 
     // Emit sorted by y then x for deterministic draw order
@@ -657,11 +646,6 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
       .map(([id, rect]) => ({ id, rect }))
       .sort((a, b) => (a.rect.y - b.rect.y) || (a.rect.x - b.rect.x));
 
-    if (isLogOn()) {
-      const t1 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
-      const dur = Math.round((t1 as number) - (t0 as number));
-      logStep(`merged measures: ${rows.length} in ${dur}ms`, { outer });
-    }
     if (isDiagOn()) {
       // Log a small, non-spammy sample: first 3 and last 3
       const sample = rows.length <= 6
@@ -671,10 +655,12 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
       for (const { id, rect } of sample) {
         logStep(
           `id: ${id} @ x${Math.round(rect.x)} y${Math.round(rect.y)} w${Math.round(rect.w)} h${Math.round(rect.h)}`,
-          { outer }
+          { outer, caller: prevFuncTag }
         );
       }
     }
+
+    logStep(`merged measures: ${rows.length}`, { outer, caller: prevFuncTag });
 
     return rows;
   } finally {
@@ -707,7 +693,7 @@ function drawMeasureBoxes(
 
   // Quick guards
   if (!outer || !svgRoot || bands.length === 0) {
-    logStep("boxes: 0 (early-guard bands/svg/outer)", { outer });
+    logStep("boxes: 0 (early-guard bands/svg/outer)", { outer, caller: prevFuncTag });
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
     return;
   }
@@ -716,7 +702,7 @@ function drawMeasureBoxes(
   //    adjust them by the same translateY we apply to the SVG in applyPage.
   const srcMeasures = Array.isArray(measuresIn) ? measuresIn : [];
   if (srcMeasures.length === 0) {
-    logStep("boxes: 0 (no measures-pre)", { outer });
+    logStep("boxes: 0 (no measures-pre)", { outer, caller: prevFuncTag });
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
     return;
   }
@@ -849,7 +835,7 @@ function drawMeasureBoxes(
 
     void logStep(
       `diag: page window [${Math.round(pageTop)},${Math.round(pageBottom)}] measuresInWindow=${pageMeasureIds.length}`,
-      { outer }
+      { outer, caller: prevFuncTag }
     );
 
     // For each tile on this page, compare bucketing vs cached geometry
@@ -877,7 +863,7 @@ function drawMeasureBoxes(
         `diag: tile k=${k} band=[${bandTop},${bandBot}) items=${items.length} ok=${okCount}` +
         (missing.length ? ` missingGeom=${missing.length} [${missing.slice(0, 6).join(",")}${missing.length > 6 ? "…" : ""}]` : "") +
         (tileMismatch.length ? ` tileMismatch=${tileMismatch.length} [${tileMismatch.slice(0, 6).join(",")}${tileMismatch.length > 6 ? "…" : ""}]` : ""),
-        { outer }
+        { outer, caller: prevFuncTag }
       );
     }
   }
@@ -887,7 +873,7 @@ function drawMeasureBoxes(
     const keysSample = Array.from(geomIn.keys()).slice(0, 12);
     void logStep(
       `diag: geomIn size=${(geomIn as ReadonlyMap<string, MeasureGeom>).size} sample=[${keysSample.join(", ")}]`,
-      { outer }
+      { outer, caller: prevFuncTag }
     );
   }
 
@@ -945,7 +931,10 @@ function drawMeasureBoxes(
       const g = getGeom(m.id);
 
       if (!g) {
-        if (isDiagOn()) { void logStep(`diag: cache miss after resolve id='${m.id}'`, { outer }); }
+        if (isDiagOn()) {
+          void logStep(`diag: cache miss after resolve id='${m.id}'`,
+            { outer, caller: prevFuncTag });
+        }
         continue;
       }
 
@@ -999,7 +988,7 @@ function drawMeasureBoxes(
           `m=${m.id} mt=${Math.round(mtDraw)} mb=${Math.round(mbDraw)} ` +
           `bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} ` +
           `y=${Math.round(y)} h=${h}`,
-          { outer }
+          { outer, caller: prevFuncTag }
         );
       }
 
@@ -1022,12 +1011,12 @@ function drawMeasureBoxes(
   // append the overlay once (after all tiles are drawn)
   outer.appendChild(layer);
 
-  logStep(`boxes: ${drawnCount} tiles: ${Math.max(0, seps.length - 1)}`, { outer });
+  logStep(`boxes: ${drawnCount} tiles: ${Math.max(0, seps.length - 1)}`, { outer, caller: prevFuncTag });
   try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
 }
 
 
-/** Remove the measure overlay layer if present. */
+// Remove the measure overlay layer if present.
 function clearMeasureBoxes(outer: HTMLDivElement): void {
   outer.querySelectorAll("[data-viewer-measureboxes='1']").forEach(n => n.remove());
 }
@@ -1045,7 +1034,7 @@ function computePageStarts(
   outer.dataset.viewerFunc = "computePageStarts";
   try {
     if (bands.length === 0 || viewportH <= 0) {
-      void logStep("starts: 1 (fallback [0])", { outer });
+      void logStep("starts: 1 (fallback [0])", { outer, caller: prevFuncTag });
       return [0];
     }
 
@@ -1093,10 +1082,11 @@ function computePageStarts(
     // Breadcrumbs to verify in DevTools
     outer.dataset.viewerUsableH = String(pageHeightUsable);
 
-    void logStep(`starts: ${starts.length} pageHeightUsable: ${pageHeightUsable}`, { outer });
+    void logStep(`starts: ${starts.length} pageHeightUsable: ${pageHeightUsable}`,
+      { outer, caller: prevFuncTag });
     return starts.length ? starts : [0];
   } finally {
-    try { outer.dataset.viewerFunc = prevFuncTag; } catch { /* no-op */ }
+    try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
   }
 }
 
@@ -1169,7 +1159,7 @@ async function perfBlockAsync<T>(
 }
 
 
-/* ---------- Component ---------- */
+// ---------- Component ----------
 
 export default function ScoreViewer({
   src,
@@ -1310,16 +1300,21 @@ export default function ScoreViewer({
         // Let spinner/host paint before the heavy render
         await waitForPaint(300);
 
-        await logStep(`layoutW: ${layoutW} hostW: ${hostW} zf: ${zf.toFixed(3)}`, { outer });
+        await logStep(`layoutW: ${layoutW} hostW: ${hostW} zf: ${zf.toFixed(3)}`,
+          { outer, caller: prevFuncTag });
 
         // Timed core render (isolates synchronous OSMD work)
         perfBlock(
           nextPerfUID(outer.dataset.viewerRun),
           () => { osmd.render(); },
-          (ms) => { void logStep(`osmd.render() runtime: ${ms}ms`, { outer }); }
+          (ms) => {
+            void logStep(`osmd.render() runtime: ${ms}ms`,
+              { outer, caller: prevFuncTag });
+          }
         );
       } catch (e) {
-        void logStep(`render:error ${(e as Error)?.message ?? e}`, { outer });
+        void logStep(`render:error ${(e as Error)?.message ?? e}`,
+          { outer, caller: prevFuncTag });
         throw e;
       } finally {
         try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
@@ -1471,7 +1466,7 @@ export default function ScoreViewer({
           : REFLOW.BOTTOM_PEEK_PAD_LO_DPR;
       }
 
-      /** Visible height that the music can actually occupy on a page, after gutters/peek pad. */
+      // Visible height that the music can actually occupy on a page, after gutters/peek pad.
       function usablePageHeight(
         outer: HTMLDivElement,
         topPad: number,
@@ -1486,7 +1481,6 @@ export default function ScoreViewer({
 
       const prevFuncTag = outer.dataset.viewerFunc ?? "";
       outer.dataset.viewerFunc = "applyPage";
-      logStep("called by: " + prevFuncTag, { outer });
 
       try {
         const svg = getSvg(outer);
@@ -1580,19 +1574,19 @@ export default function ScoreViewer({
         let bottomCutter = outer.querySelector<HTMLDivElement>("[data-viewer-bottomcutter='1']");
         const needsMask = maskTopWithinMusicPx < PAGE_H_USABLE;
 
+        const lastForLog = nextStartIndex >= 0 ? (nextStartIndex - 1) : (bands.length - 1);
         if (isDiagOn()) {
-          const lastForLog = nextStartIndex >= 0 ? (nextStartIndex - 1) : (bands.length - 1);
           void logStep(
             `pages: ${p + 1}/${pages} startIndex: ${startIndex} lastForLog: ${lastForLog} ` +
             `nextStartIndex: ${nextStartIndex >= 0 ? `${nextStartIndex}` : "end"} ` +
             `ySnap: ${ySnap} PAGE_H_USABLE: ${PAGE_H_USABLE} maskTopWithinMusicPx: ${maskTopWithinMusicPx} needsMask: ${needsMask}`,
-            { outer }
+            { outer, caller: prevFuncTag }
           );
-          const first = startIndex;
-          const last = lastForLog;     // use the same name you already use above
-          const list = Array.from({ length: last - first + 1 }, (_, j) => first + j).join(",");
-          logStep(`pageBands: [${list}]`, { outer });
         }
+        const first = startIndex;
+        const last = lastForLog;     // use the same name you already use above
+        const list = Array.from({ length: last - first + 1 }, (_, j) => first + j).join(",");
+        logStep(`pageBands: [${list}]`, { outer, caller: prevFuncTag });
 
         if (!bottomCutter) {
           bottomCutter = document.createElement("div");
@@ -1645,12 +1639,12 @@ export default function ScoreViewer({
             Math.max(0, topGutterPx),
             maskTopWithinMusicPx                     // page-local bottom cut for this page
           );
-        } catch { /* overlay render is best-effort; ignore failures */ }
+        } catch { }
 
         // Stop layer promotion after page is applied
         svg.style.willChange = "auto";
       } finally {
-        try { outer.dataset.viewerFunc = prevFuncTag; } catch { /* no-op */ }
+        try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
       }
     },
     [visiblePageHeight, topGutterPx, bottomGutterPx]
@@ -1669,7 +1663,7 @@ export default function ScoreViewer({
       prevCv = host.style.getPropertyValue("content-visibility") || "";
       host.style.removeProperty("content-visibility");
       host.style.visibility = "hidden";
-      try { void host.getBoundingClientRect().width; } catch { /* layout flush */ }
+      try { void host.getBoundingClientRect().width; } catch { }
     }
     try {
       return await work();
@@ -1702,7 +1696,7 @@ export default function ScoreViewer({
     const prevFuncTag = outer.dataset.viewerFunc ?? "";
     outer.dataset.viewerFunc = "layoutViewer";
     outer.dataset.viewerPhase = "render";
-    await logStep("phase starting", { outer });
+    await logStep("phase starting", { outer, caller: prevFuncTag });
 
     try {
       const ap = makeAfterPaint(outer);
@@ -1715,15 +1709,15 @@ export default function ScoreViewer({
         await perfBlockAsync(
           uid,
           async () => { await renderViewer(outer, osmd); },
-          (ms) => { void logStep(`osmd.render() runtime: ${ms}ms`, { outer }); }
+          (ms) => { void logStep(`osmd.render() runtime: ${ms}ms`, { outer, caller: prevFuncTag }); }
         );
       });
 
       await new Promise<void>((r) => setTimeout(r, 0)); // yield one task
 
-      await logStep("phase finished", { outer });
+      await logStep("phase finished", { outer, caller: prevFuncTag });
       outer.dataset.viewerPhase = "scan";
-      await logStep("phase starting", { outer });
+      await logStep("phase starting", { outer, caller: prevFuncTag });
 
       const svgForPack = getSvg(outer);
       if (!svgForPack) {
@@ -1732,14 +1726,11 @@ export default function ScoreViewer({
         throw new Error("No SVG produced by OSMD render");
       }
 
-      const preBands = withSvgAtUnitScale(outer, (svg) => scanSystemsPx(outer, svg)) ?? [];
-      await logStep(`bands: ${preBands.length}`, { outer });
-
       // Scan (raw) then derive padded bands capped by the gutters
       const rawBands = perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
         () => withSvgAtUnitScale(outer, (svg) => scanSystemsPx(outer, svg)) ?? [],
-        (ms) => { void logStep(`scanSystemsPx() runtime: ${ms}ms`, { outer }); }
+        (ms) => { void logStep(`scanSystemsPx() runtime: ${ms}ms`, { outer, caller: prevFuncTag }); }
       );
 
       const bands = derivePaddedBands(
@@ -1856,15 +1847,17 @@ export default function ScoreViewer({
           if (arr) { arr.push(bi); } else { buckets.set(kBest, [bi]); }
         }
 
-        await logStep(
-          `[geomBuild     ] buckets: ` +
-          Array.from(buckets.entries())
-            .map(([k, arr]) =>
-              `k=${k} count=${arr.length} ids=[${arr.map(bi => bi.m.id).join(",")}]`
-            )
-            .join(" | "),
-          { outer }
-        );
+        if (isDiagOn()) {
+          await logStep(
+            `geom: buckets: ` +
+            Array.from(buckets.entries())
+              .map(([k, arr]) =>
+                `k=${k} count=${arr.length} ids=[${arr.map(bi => bi.m.id).join(",")}]`
+              )
+              .join(" | "),
+            { outer, caller: prevFuncTag }
+          );
+        }
 
         // Collect inner-edge X positions of vertical barlines that belong to a given tile.
         // expectedBars = measures_in_tile + 1
@@ -2098,13 +2091,8 @@ export default function ScoreViewer({
               const x1 = Math.max(p1.x, p2.x);
               const y0 = Math.min(p1.y, p2.y);
               const y1 = Math.max(p1.y, p2.y);
-              if (
-                Number.isFinite(x0) && Number.isFinite(x1) &&
-                Number.isFinite(y0) && Number.isFinite(y1) &&
-                y1 > y0
-              ) {
-                rows.push({ x0, x1, y0, y1 });
-              }
+
+              rows.push({ x0, x1, y0, y1 });
             }
             return rows;
           })();
@@ -2159,10 +2147,12 @@ export default function ScoreViewer({
             });
 
             if (items.length === 0) {
-              await logStep(
-                `[geomBuild     ] tile k=${k} items=0 (no measures in bucket)`,
-                { outer }
-              );
+              if (isDiagOn()) {
+                await logStep(
+                  `geom: tile k=${k} items=0 (no measures in bucket)`,
+                  { outer, caller: prevFuncTag }
+                );
+              }
               continue;
             }
 
@@ -2175,10 +2165,12 @@ export default function ScoreViewer({
 
             const xs = computeMeasureIntervals(bandTop, bandBot, expectedBars, leftBoundPx);
 
-            await logStep(
-              `[geomBuild     ] tile k=${k} xs.len=${xs.length} xs=[${xs.join(",")}] expectedBars=${expectedBars}`,
-              { outer }
-            );
+            if (isDiagOn()) {
+              await logStep(
+                `geom: tile k=${k} xs.len=${xs.length} xs=[${xs.join(",")}] expectedBars=${expectedBars}`,
+                { outer, caller: prevFuncTag }
+              );
+            }
 
             if (xs.length < 2) { continue; }
 
@@ -2198,18 +2190,22 @@ export default function ScoreViewer({
               const iv = intervals[i]!;
               const mm = computeMeasureVerticalExtents(iv.left, iv.right, EPS, bandTop, bandBot);
               if (!mm) {
-                void logStep(
-                  `[geomBuild     ] tile k=${k} id=${m.id} interval=[${iv.left},${iv.right}] mm=null`,
-                  { outer }
-                );
+                if (isDiagOn()) {
+                  void logStep(
+                    `geom: tile k=${k} id=${m.id} interval=[${iv.left},${iv.right}] mm=null`,
+                    { outer, caller: prevFuncTag }
+                  );
+                }
                 continue;
               }
 
-              void logStep(
-                `[geomBuild     ] tile k=${k} id=${m.id} interval=[${iv.left},${iv.right}] ` +
-                `mm.top=${mm.top} mm.bot=${mm.bottom}`,
-                { outer }
-              );
+              if (isDiagOn()) {
+                void logStep(
+                  `geom: tile k=${k} id=${m.id} interval=[${iv.left},${iv.right}] ` +
+                  `mm.top=${mm.top} mm.bot=${mm.bottom}`,
+                  { outer, caller: prevFuncTag }
+                );
+              }
 
               geomPairs.push([m.id, {
                 id: m.id,
@@ -2224,76 +2220,37 @@ export default function ScoreViewer({
           geometryRef.current = new Map<string, MeasureGeom>(geomPairs);
         }
 
-        await logStep(
-          `measures(pre): ${res.measuresPre.length} bar-cands(pre): ${res.barCands.length} geom(pre): ${geometryRef.current.size}`,
-          { outer }
-        );
+        if (isDiagOn()) {
+          await logStep(
+            `measures(pre): ${res.measuresPre.length} bar-cands(pre): ${res.barCands.length} geom(pre): ${geometryRef.current.size}`,
+            { outer, caller: prevFuncTag }
+          );
+        }
       }
 
       const mergeThresh = dynamicBandGapPx();
-      await logStep(
-        `bands: ${bands.length} mergeThresh=${mergeThresh} (no packGap; packer disabled)`,
-        { outer }
-      );
+
+      if (isDiagOn()) {
+        await logStep(
+          `bands: ${bands.length} mergeThresh=${mergeThresh} (no packGap; packer disabled)`,
+          { outer, caller: prevFuncTag }
+        );
+      }
 
       const visH = visiblePageHeight(outer);
       const starts = perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
         () => computePageStarts(outer, bands, visH, Math.max(0, topGutterPx), Math.max(0, bottomGutterPx)),
         (ms) => {
-          void logStep(`computePageStarts() runtime: ${ms}ms visH: ${visH} topGutterPx: ${topGutterPx} bottomGutterPx: ${bottomGutterPx}`, { outer }
+          void logStep(`computePageStarts() runtime: ${ms}ms visH: ${visH} topGutterPx: ${topGutterPx} bottomGutterPx: ${bottomGutterPx}`,
+            { outer, caller: prevFuncTag }
           );
         }
       );
 
-      try {
-        await logStep(
-          `bands: ${bands.length} visibleH: ${visiblePageHeight(outer)} paginationH: ${paginationHeight(outer)}`,
-          { outer }
-        );
-
-        if (isDiagOn()) {
-          // Compact page map (page -> band range)
-          {
-            const lastBand = bands.length - 1;
-            const parts: string[] = [];
-            for (let p = 0; p < starts.length; p++) {
-              const s = starts[p]!;
-              const e = ((p + 1 < starts.length ? starts[p + 1]! : lastBand + 1) - 1);
-              parts.push(`[p${p + 1} ${s}–${e}]`);
-            }
-            await logStep(`pages: ${starts.length} map: ${parts.join(" ")}`, { outer });
-          }
-
-          // Verbose per-band rows (kept under the same flag)
-          {
-            const rows = bands.map((b, i) =>
-              `#${i} top=${Math.round(b.top)} bottom=${Math.round(b.bottom)} h=${Math.round(b.height)}`
-            );
-            for (let k = 0; k < rows.length; k += 10) {
-              await logStep(
-                `bandRows ${k}-${Math.min(k + 9, rows.length - 1)}: ${rows.slice(k, k + 10).join(" | ")}`,
-                { outer }
-              );
-            }
-          }
-
-          // Elements-pane breadcrumbs (keep under the flag per your preference)
-          outer.dataset.viewerBandsDump = JSON.stringify(
-            bands.map((b, i) => ({
-              i,
-              top: Math.round(b.top),
-              bottom: Math.round(b.bottom),
-              height: Math.round(b.height),
-            }))
-          );
-          outer.dataset.viewerStartsDump = JSON.stringify(starts);
-        }
-      } catch { }
-
-      await logStep("phase finished", { outer });
+      await logStep("phase finished", { outer, caller: prevFuncTag });
       outer.dataset.viewerPhase = "apply";
-      await logStep("phase starting", { outer });
+      await logStep("phase starting", { outer, caller: prevFuncTag });
 
       pageStartIdxsRef.current = starts;
       systemBandsRef.current = bands;
@@ -2306,17 +2263,17 @@ export default function ScoreViewer({
           await Promise.race([ap(gateLabel, gateMs), new Promise<void>((r) => setTimeout(r, gateMs))]);
           if (doubleApply) { applyPage(0); }
         },
-        (ms) => { void logStep(`applyPage() runtime: ${ms}ms`, { outer }); }
+        (ms) => { void logStep(`applyPage() runtime: ${ms}ms`, { outer, caller: prevFuncTag }); }
       );
 
-      await logStep(`bands: ${bands.length} pages: ${starts.length}`, { outer });
+      await logStep(`bands: ${bands.length} pages: ${starts.length}`, { outer, caller: prevFuncTag });
 
       return { bands, starts };
 
     } finally {
       try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
     }
-  }, [nextPerfUID, renderViewer, withHostHidden, paginationHeight, applyPage, visiblePageHeight, topGutterPx, bottomGutterPx]);
+  }, [nextPerfUID, renderViewer, withHostHidden, applyPage, visiblePageHeight, topGutterPx, bottomGutterPx]);
 
 
   // --- HEIGHT-ONLY REPAGINATION (no OSMD re-init) ---
@@ -2333,27 +2290,28 @@ export default function ScoreViewer({
 
     const prevFuncTag = outer.dataset.viewerFunc ?? "";
     outer.dataset.viewerFunc = "paginateViewer";
-    logStep("called by: " + prevFuncTag, { outer });
+    logStep("called by: " + prevFuncTag, { outer, caller: prevFuncTag });
 
     try {
       outer.dataset.viewerRecompute = String(Date.now());
 
       const bands = systemBandsRef.current;
       if (bands.length === 0) {
-        void logStep("repag: bands=0 — exit", { outer });
+        void logStep("repag: bands=0 — exit", { outer, caller: prevFuncTag });
         return;
       }
 
       const visH = visiblePageHeight(outer);
 
       // Always-on, high-signal line
-      void logStep(`repag: bands=${bands.length} visibleH=${visH}`, { outer });
+      void logStep(`repag: bands=${bands.length} visibleH=${visH}`, { outer, caller: prevFuncTag });
 
       const starts = perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
         () => computePageStarts(outer, bands, visH, Math.max(0, topGutterPx), Math.max(0, bottomGutterPx)),
         (ms) => {
-          void logStep(`computePageStarts() runtime: ${ms}ms visH: ${visH} topGutterPx: ${topGutterPx} bottomGutterPx: ${bottomGutterPx}`, { outer }
+          void logStep(`computePageStarts() runtime: ${ms}ms visH: ${visH} topGutterPx: ${topGutterPx} bottomGutterPx: ${bottomGutterPx}`,
+            { outer, caller: prevFuncTag }
           );
         }
       );
@@ -2370,26 +2328,26 @@ export default function ScoreViewer({
           const e = ((p + 1 < starts.length ? starts[p + 1]! : lastBand + 1) - 1);
           parts.push(`[p${p + 1} ${s}–${e}]`);
         }
-        void logStep(`repag map: pages=${starts.length} ${parts.join(" ")}`, { outer });
+        void logStep(`repag map: pages=${starts.length} ${parts.join(" ")}`, { outer, caller: prevFuncTag });
       }
 
       // Always reset to page 1 after repagination
       perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
         () => { applyPage(0); },
-        (ms) => { void logStep(`applyPage runtime: ${ms}ms`, { outer }); }
+        (ms) => { void logStep(`applyPage runtime: ${ms}ms`, { outer, caller: prevFuncTag }); }
       );
 
     } catch (e) {
       // Visible breadcrumb + best-effort fallback so the UI doesn't look stuck
       const msg = (e as Error)?.message ?? String(e);
       outer.dataset.viewerErr = msg.slice(0, 180);
-      void logStep(`repag:error ${msg}`, { outer });
+      void logStep(`repag:error ${msg}`, { outer, caller: prevFuncTag });
 
       if (!pageStartIdxsRef.current?.length) {
         pageStartIdxsRef.current = [0];
       }
-      try { applyPage(0); } catch { /* swallow */ }
+      try { applyPage(0); } catch { }
 
     } finally {
       // Drain any queued work that accumulated while we were repaginating
@@ -2418,11 +2376,10 @@ export default function ScoreViewer({
   }, [paginateViewer]);
 
 
-  /** reflowViewer
-   * Heavy path for when effective layout width changes (width/zoom/DPR etc.).
-   * Shows spinner, bumps run#, calls layoutViewer(), drains any queued work.
-   * Concurrency-safe via reflowRunningRef; may queue a follow-up if invoked again mid-run.
-   */
+  // reflowViewer
+  // Heavy path for when effective layout width changes (width/zoom/DPR etc.).
+  // Shows spinner, bumps run#, calls layoutViewer(), drains any queued work.
+  // Concurrency-safe via reflowRunningRef; may queue a follow-up if invoked again mid-run.
   const reflowViewer = useCallback(
     async function reflowViewer(): Promise<void> {
       const outer = wrapRef.current;
@@ -2436,13 +2393,13 @@ export default function ScoreViewer({
       const prevFuncTag = outer.dataset.viewerFunc ?? "";
       outer.dataset.viewerFunc = "reflowViewer";
       outer.dataset.viewerPhase = "prep";
-      await logStep("phase starting", { outer });
+      await logStep("phase starting", { outer, caller: prevFuncTag });
 
       let started = false;
 
       try {
         if (!osmd) {
-          void logStep("early-bail outer=1 osmd=0", { outer });
+          void logStep("early-bail outer=1 osmd=0", { outer, caller: prevFuncTag });
           return;
         }
 
@@ -2452,7 +2409,7 @@ export default function ScoreViewer({
           outer.dataset.viewerReflowQueued = String(run);
           outer.dataset.viewerReflowQueueWhy = "reflowRunning";
           outer.dataset.viewerReflowQueuedAt = String(Date.now());
-          void logStep("reflow already in progress; queued follow-up", { outer });
+          void logStep("reflow already in progress; queued follow-up", { outer, caller: prevFuncTag });
           return;
         }
 
@@ -2465,7 +2422,7 @@ export default function ScoreViewer({
 
         const pages = Math.max(1, pageStartIdxsRef.current.length);
         const page = Math.max(1, Math.min(pageIdxRef.current + 1, pages));
-        void logStep(`run: ${run} page: ${page}/${pages}`, { outer });
+        void logStep(`run: ${run} page: ${page}/${pages}`, { outer, caller: prevFuncTag });
 
         const currW = outer.clientWidth;
         const currH = outer.clientHeight;
@@ -2478,7 +2435,7 @@ export default function ScoreViewer({
         } catch { }
 
         await startSpinner({ message: DEFAULT_BUSY_MSG, gatePaint: true });
-        await logStep("spinner started", { outer });
+        await logStep("spinner started", { outer, caller: prevFuncTag });
 
         const { bands, starts } = await layoutViewer(outer, osmd, {
           gateLabel: "reflowViewer",
@@ -2488,19 +2445,19 @@ export default function ScoreViewer({
         outer.dataset.viewerBands = String(bands.length);
         outer.dataset.viewerPages = String(starts.length);
 
-        await logStep("phase finished", { outer });
+        await logStep("phase finished", { outer, caller: prevFuncTag });
 
       } finally {
         if (started) {
           try { outer.dataset.viewerPhase = "finally"; } catch { }
-          await logStep("phase starting", { outer });
+          await logStep("phase starting", { outer, caller: prevFuncTag });
 
           // we finished a run; drop the guard before hiding spinner
           reflowRunningRef.current = false;
 
           // spinner end + small paint gate
           await stopSpinner();
-          await logStep("spinner stopped", { outer });
+          await logStep("spinner stopped", { outer, caller: prevFuncTag });
 
           // clear breadcrumbs
           outer.dataset.viewerReflowTargetW = "";
@@ -2513,14 +2470,14 @@ export default function ScoreViewer({
           reflowQueuedCauseRef.current = "";
 
           if (queued === "width") {
-            await logStep(`draining queued width reflow (cause=${cause})`, { outer });
+            await logStep(`draining queued width reflow (cause=${cause})`, { outer, caller: prevFuncTag });
             setTimeout(() => { reflowFnRef.current(); }, 0);
           } else if (queued === "height") {
-            await logStep(`draining queued height repagination (cause=${cause})`, { outer });
+            await logStep(`draining queued height repagination (cause=${cause})`, { outer, caller: prevFuncTag });
             setTimeout(() => { repagFnRef.current(); }, 0);
           }
 
-          await logStep("phase finished", { outer });
+          await logStep("phase finished", { outer, caller: prevFuncTag });
         }
         try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
         try { outer.dataset.viewerPhase = ""; } catch { }
@@ -2630,13 +2587,12 @@ export default function ScoreViewer({
     };
   }, [computeZoomFactor]);
 
-  /** initViewer
-   * One-time boot for the component:
-   * - feature checks, dynamic import of OSMD
-   * - load MusicXML (MXL/URL), wait for fonts
-   * - first layout via layoutViewer, then height-only repagination
-   * - marks ready & clears the spinner
-   */
+  // initViewer
+  // One-time boot for the component:
+  // - feature checks, dynamic import of OSMD
+  // - load MusicXML (MXL/URL), wait for fonts
+  // - first layout via layoutViewer, then height-only repagination
+  // - marks ready & clears the spinner
   useEffect(function initViewer() {
     (async () => {
       const host = svgHostRef.current;
@@ -2646,7 +2602,7 @@ export default function ScoreViewer({
       const prevFuncTag = outer.dataset.viewerFunc ?? "";
       outer.dataset.viewerFunc = "initViewer";
       outer.dataset.viewerPhase = "prep";
-      await logStep("phase starting", { outer });
+      await logStep("phase starting", { outer, caller: prevFuncTag });
 
       try {
         const epoch = ++initEpochRef.current;
@@ -2669,7 +2625,8 @@ export default function ScoreViewer({
           outer.dataset.viewerCapVv = hasVV ? "1" : "0";
           outer.dataset.viewerCapRo = hasRO ? "1" : "0";
 
-          await logStep(`hasVV: ${hasVV ? "yes" : "no"} hasRO: ${hasRO ? "yes" : "no"}`, { outer });
+          await logStep(`hasVV: ${hasVV ? "yes" : "no"} hasRO: ${hasRO ? "yes" : "no"}`,
+            { outer, caller: prevFuncTag });
 
           if (!hasVV) {
             outer.dataset.viewerPhase = "fatal:no-visual-viewport";
@@ -2686,7 +2643,8 @@ export default function ScoreViewer({
             // Show blocking overlay; do NOT use startSpinner here
             setBusy(true);
 
-            await logStep("fatal: visualViewport unavailable — aborting init", { outer });
+            await logStep("fatal: visualViewport unavailable — aborting init",
+              { outer, caller: prevFuncTag });
             return; // stop init right here
           }
           if (isStale()) { return; }
@@ -2697,7 +2655,10 @@ export default function ScoreViewer({
         const mod = await perfBlockAsync(
           nextPerfUID(outer.dataset.viewerRun),
           async () => await import("opensheetmusicdisplay"),
-          (ms) => { void logStep(`import("opensheetmusicdisplay") runtime: ${ms}ms`, { outer }); }
+          (ms) => {
+            void logStep(`import("opensheetmusicdisplay") runtime: ${ms}ms`,
+              { outer, caller: prevFuncTag });
+          }
         );
         const { OpenSheetMusicDisplay: OSMDClass } =
           mod as typeof import("opensheetmusicdisplay");
@@ -2722,11 +2683,11 @@ export default function ScoreViewer({
         osmdRef.current = osmd;
 
         await startSpinner({ message: DEFAULT_BUSY_MSG, gatePaint: true });
-        await logStep("spinner started", { outer });
+        await logStep("spinner started", { outer, caller: prevFuncTag });
 
-        await logStep("phase finished", { outer });
+        await logStep("phase finished", { outer, caller: prevFuncTag });
         outer.dataset.viewerPhase = "load";
-        await logStep("phase starting", { outer });
+        await logStep("phase starting", { outer, caller: prevFuncTag });
 
         let loadInput: string | Document | ArrayBuffer | Uint8Array = src;
 
@@ -2743,26 +2704,33 @@ export default function ScoreViewer({
             },
             (ms) => {
               const bytes = outer.dataset.viewerZipBytes ?? "?";
-              void logStep(`fetch() + arrayBuffer() runtime: ${ms}ms bytes: ${bytes}`, { outer });
+              void logStep(`fetch() + arrayBuffer() runtime: ${ms}ms bytes: ${bytes}`,
+                { outer, caller: prevFuncTag });
             }
           );
 
           const uzMod = await perfBlockAsync(
             nextPerfUID(outer.dataset.viewerRun),
             async () => await withTimeout(import("unzipit"), 4000, "unzipit timeout"),
-            (ms) => { void logStep(`import("unzipit") runtime: ${ms}ms`, { outer }); }
+            (ms) => {
+              void logStep(`import("unzipit") runtime: ${ms}ms`,
+                { outer, caller: prevFuncTag });
+            }
           );
           const { unzip } = uzMod as typeof import("unzipit");
 
           const { entries } = await perfBlockAsync(
             nextPerfUID(outer.dataset.viewerRun),
             async () => await withTimeout(unzip(ab), 8000, "unzip timeout"),
-            (ms) => { void logStep(`unzip() runtime: ${ms}ms`, { outer }); }
+            (ms) => {
+              void logStep(`unzip() runtime: ${ms}ms`,
+                { outer, caller: prevFuncTag });
+            }
           );
 
           const container = entries["META-INF/container.xml"];
           if (!container) {
-            await logStep("container.xml missing → abort", { outer });
+            await logStep("container.xml missing → abort", { outer, caller: prevFuncTag });
             throw new Error("MXL error: META-INF/container.xml missing");
           }
 
@@ -2775,14 +2743,18 @@ export default function ScoreViewer({
             },
             (ms) => {
               const chars = outer.dataset.viewerContainerChars ?? "?";
-              void logStep(`container.text() runtime: ${ms}ms chars: ${chars}`, { outer });
+              void logStep(`container.text() runtime: ${ms}ms chars: ${chars}`,
+                { outer, caller: prevFuncTag });
             }
           );
 
           const cdoc = perfBlock(
             nextPerfUID(outer.dataset.viewerRun),
             () => new DOMParser().parseFromString(containerXml, "application/xml"),
-            (ms) => { void logStep(`DOMParser().parseFromString() runtime: ${ms}ms`, { outer }); }
+            (ms) => {
+              void logStep(`DOMParser().parseFromString() runtime: ${ms}ms`,
+                { outer, caller: prevFuncTag });
+            }
           );
 
           const rootEl =
@@ -2797,12 +2769,12 @@ export default function ScoreViewer({
             "";
 
           if (!fullPath) {
-            await logStep("container rootfile path missing → abort", { outer });
+            await logStep("container rootfile path missing → abort", { outer, caller: prevFuncTag });
             throw new Error("MXL error: container.xml lacks a rootfile path");
           }
 
           if (!entries[fullPath]) {
-            await logStep(`container rootfile not in ZIP (${fullPath}) → abort`, { outer });
+            await logStep(`container rootfile not in ZIP (${fullPath}) → abort`, { outer, caller: prevFuncTag });
             throw new Error(`MXL error: rootfile entry not found in archive: ${fullPath}`);
           }
 
@@ -2810,7 +2782,7 @@ export default function ScoreViewer({
           const xmlText = await perfBlockAsync(
             nextPerfUID(outer.dataset.viewerRun),
             async () => await withTimeout(entry.text(), 10000, "entry.text() timeout"),
-            (ms) => { void logStep(`entry.text() runtime: ${ms}ms`, { outer }); }
+            (ms) => { void logStep(`entry.text() runtime: ${ms}ms`, { outer, caller: prevFuncTag }); }
           );
           outer.dataset.viewerZipChosen = fullPath;
           outer.dataset.viewerZipChars = String(xmlText.length);
@@ -2818,7 +2790,10 @@ export default function ScoreViewer({
           const xmlDoc = await perfBlockAsync(
             nextPerfUID(outer.dataset.viewerRun),
             async () => new DOMParser().parseFromString(xmlText, "application/xml"),
-            (ms) => { void logStep(`DOMParser().parseFromString runtime: ${ms}ms`, { outer }); }
+            (ms) => {
+              void logStep(`DOMParser().parseFromString runtime: ${ms}ms`,
+                { outer, caller: prevFuncTag });
+            }
           );
 
           if (xmlDoc.getElementsByTagName("parsererror").length > 0) {
@@ -2826,7 +2801,8 @@ export default function ScoreViewer({
           }
           const hasPartwise = xmlDoc.getElementsByTagName("score-partwise").length > 0;
           const hasTimewise = xmlDoc.getElementsByTagName("score-timewise").length > 0;
-          await logStep(`xmlDoc.getElementsByTagName() hasPartwise: ${String(hasPartwise)} hasTimewise: ${String(hasTimewise)}`, { outer });
+          await logStep(`xmlDoc.getElementsByTagName() hasPartwise: ${String(hasPartwise)} hasTimewise: ${String(hasTimewise)}`,
+            { outer, caller: prevFuncTag });
           if (!hasPartwise && !hasTimewise) {
             throw new Error("xmlDoc.getElementsByTagName() no partwise or timewise");
           }
@@ -2839,7 +2815,8 @@ export default function ScoreViewer({
               (ms) => { serializeMs = ms; }
             );
             outer.dataset.viewerXmlChars = String(serialized.length);
-            await logStep(`XMLSerializer().serializeToString runtime: ${serializeMs}ms chars: ${serialized.length}`, { outer });
+            await logStep(`XMLSerializer().serializeToString runtime: ${serializeMs}ms chars: ${serialized.length}`,
+              { outer, caller: prevFuncTag });
             loadInput = serialized;
           }
         } else {
@@ -2847,7 +2824,7 @@ export default function ScoreViewer({
           // - If `src` is a URL/path to a plain MusicXML file (e.g. "/scores/foo.musicxml" or "https://…"),
           //   OSMD.load(...) will fetch it internally.
           // - If `src` is already a MusicXML XML string, OSMD.load(...) will parse it directly.
-          // - (We only take the manual fetch + unzip path for "/api/*" endpoints that return MXL/ZIP content.)
+          // - (We only take the manual fetch + unzip path for "/api/<star>" endpoints that return MXL/ZIP content.)
           // In other words: non-API = plain MusicXML, so no special handling here.
           loadInput = src;
         }
@@ -2858,17 +2835,17 @@ export default function ScoreViewer({
             await loadOSMD(osmd, loadInput);
           },
           (ms) => {
-            void logStep(`loadOSMD() runtime: ${ms}ms`, { outer });
+            void logStep(`loadOSMD() runtime: ${ms}ms`, { outer, caller: prevFuncTag });
           }
         );
 
         await perfBlockAsync(
           nextPerfUID(outer.dataset.viewerRun),
           async () => { await waitForFonts(); },
-          (ms) => { void logStep(`waitForFonts() runtime: ${ms}ms`, { outer }); }
+          (ms) => { void logStep(`waitForFonts() runtime: ${ms}ms`, { outer, caller: prevFuncTag }); }
         );
 
-        await logStep("phase finished", { outer });
+        await logStep("phase finished", { outer, caller: prevFuncTag });
 
         const { bands, starts } = await layoutViewer(outer, osmd, {
           gateLabel: "initViewer",
@@ -2901,13 +2878,13 @@ export default function ScoreViewer({
         // In the reflow path the spinner is ended in its `finally` block.
         // because a fatal no-VV path sets busy directly and must keep the overlay visible.
         await stopSpinner();
-        await logStep("spinner stopped", { outer });
+        await logStep("spinner stopped", { outer, caller: prevFuncTag });
 
       } finally {
         try { outer.dataset.viewerPhase = "finally"; } catch { }
-        await logStep("phase starting", { outer });
+        await logStep("phase starting", { outer, caller: prevFuncTag });
 
-        await logStep("phase finished", { outer });
+        await logStep("phase finished", { outer, caller: prevFuncTag });
 
         try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
         try { outer.dataset.viewerPhase = ""; } catch { }
@@ -2952,7 +2929,7 @@ export default function ScoreViewer({
   }, [src, debugShowAllMeasureNumbers]);
 
 
-  /** Paging helpers */
+  // Paging helpers
 
   // Core page-turn handler (goNext/goPrev). On rare layout shifts, retries next frame.
   const turnPage = useCallback(
@@ -3396,7 +3373,7 @@ export default function ScoreViewer({
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [hideBusy]);
 
-  /* ---------- Styles ---------- */
+  // ---------- Styles ----------
 
   const isFill = fillParent;
   const outerStyle: React.CSSProperties = isFill
@@ -3430,7 +3407,7 @@ export default function ScoreViewer({
     minWidth: 0,
   };
 
-  /* ---------- Busy overlay ---------- */
+  // ---------- Busy overlay ---------- 
   const blockerStyle: React.CSSProperties = {
     position: "fixed",
     inset: 0,
