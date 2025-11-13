@@ -1709,7 +1709,7 @@ export default function ScoreViewer({
         await perfBlockAsync(
           uid,
           async () => { await renderViewer(outer, osmd); },
-          (ms) => { void logStep(`osmd.render() runtime: ${ms}ms`, { outer, caller: prevFuncTag }); }
+          (ms) => { void logStep(`renderViewer runtime: ${ms}ms`, { outer, caller: prevFuncTag }); }
         );
       });
 
