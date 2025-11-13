@@ -2098,7 +2098,11 @@ export default function ScoreViewer({
               const x1 = Math.max(p1.x, p2.x);
               const y0 = Math.min(p1.y, p2.y);
               const y1 = Math.max(p1.y, p2.y);
-              if (Number.isFinite(x0) && Number.isFinite(x1) && Number.isFinite(y0) && Number.isFinite(y1) && x1 > x0 && y1 > y0) {
+              if (
+                Number.isFinite(x0) && Number.isFinite(x1) &&
+                Number.isFinite(y0) && Number.isFinite(y1) &&
+                y1 > y0
+              ) {
                 rows.push({ x0, x1, y0, y1 });
               }
             }
