@@ -159,6 +159,28 @@ function getSvg(outer: HTMLDivElement): SVGSVGElement | null {
 }
 
 
+// Module-scope: shared by scan phase and drawMeasureBoxes
+type BarCand = {
+  el: SVGGraphicsElement;
+  bb: { x: number; y: number; width: number; height: number }; // page-local px (pre-translate)
+  thin: boolean;
+  yTop: number;  // page-local (pre-translate)
+  yBot: number;  // page-local (pre-translate)
+  hinted: boolean;
+};
+
+// Cached geometry per measure (pre-translate, page-local px)
+type MeasureInterval = { left: number; right: number };
+
+type MeasureGeom = {
+  id: string;              // measure id (e.g., "measure-12")
+  tileIndex: number;       // system index this measure belongs to
+  interval: MeasureInterval; // horizontal span from barlines
+  top: number;             // vertical extent (px, pre-translate)
+  bottom: number;          // vertical extent (px, pre-translate)
+};
+
+
 function withSvgAtUnitScale<T>(outer: HTMLDivElement, fn: (svg: SVGSVGElement) => T): T | null {
   const svg = getSvg(outer);
   if (!svg) {
@@ -660,12 +682,14 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
   }
 }
 
-//Draw/refresh a lightweight SVG overlay of measure rectangles (stroke-only),
+// Draw/refresh a lightweight SVG overlay of measure rectangles (stroke-only),
 // snapping vertical bounds to per-system page separators so boxes tile cleanly.
 // STRICT TS SAFE (noUncheckedIndexedAccess compatible).
 function drawMeasureBoxes(
   outer: HTMLDivElement,
   svgRoot: SVGSVGElement,
+  measuresIn: ReadonlyArray<{ id: string; rect: Rect }>,
+  geomIn: ReadonlyMap<string, MeasureGeom>,
   bands: Band[],
   startIndex: number,
   nextStartIndex: number,            // -1 on last page
@@ -688,23 +712,38 @@ function drawMeasureBoxes(
     return;
   }
 
-  // 1) Scan raw measure rects in wrapper coords (already post-translate)
-  const measures = scanMeasuresPx(outer, svgRoot);
-  if (measures.length === 0) {
-    logStep("boxes: 0 (no measures)", { outer });
+  // 1) Use precomputed raw measure rects (captured pre-translate) and
+  //    adjust them by the same translateY we apply to the SVG in applyPage.
+  const srcMeasures = Array.isArray(measuresIn) ? measuresIn : [];
+  if (srcMeasures.length === 0) {
+    logStep("boxes: 0 (no measures-pre)", { outer });
     try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
     return;
   }
 
+  // Same translate applied to the score SVG in applyPage:
+  const pageTy = (-ySnap + Math.max(0, topGutterPx));
+
+  // Shift Y into the current page-local coordinate space
+  const measures = srcMeasures.map(m => ({
+    id: m.id,
+    rect: { x: m.rect.x, y: m.rect.y + pageTy, w: m.rect.w, h: m.rect.h }
+  }));
+
   // 2) Build page-local system separators: sep[0..N]
   const seps: number[] = [];
   const topG = Math.max(0, topGutterPx);
-  seps.push(topG); // sep[0]
 
-  // Clamp indices defensively
+  // Clamp indices defensively (compute firstBand before any use)
   const firstBand = Math.max(0, Math.min(startIndex | 0, Math.max(0, bands.length - 1)));
   const lastBandInclRaw = (nextStartIndex >= 0 ? nextStartIndex : bands.length) - 1;
   const lastBandIncl = Math.max(firstBand, Math.min(lastBandInclRaw, Math.max(0, bands.length - 1)));
+
+  // Anchor first separator to the actual first band's top in page-local coords; fall back to topG
+  const firstBandTopPL =
+    (bands[firstBand] ? Math.round(bands[firstBand]!.top) : 0) - Math.ceil(ySnap) + topG;
+
+  seps.push(Math.max(topG, firstBandTopPL)); // sep[0]
 
   if (lastBandIncl > firstBand) {
     for (let i = firstBand; i < lastBandIncl; i++) {
@@ -722,17 +761,15 @@ function drawMeasureBoxes(
     }
   }
 
-  // Bottom limit (page-local)
+  // Bottom limit (page-local) — ensures the last tile closes at the mask cut
   const bottomLimit = Math.max(0, Math.floor(topG + maskTopWithinMusicPx));
   seps.push(bottomLimit); // sep[last]
 
-  // Ensure non-decreasing (monotone), strict-safe
+  // Ensure non-decreasing separators (defensive against rounding)
   for (let i = 1; i < seps.length; i++) {
-    const prev = seps[i - 1];
-    const curr = seps[i];
-    if (prev !== undefined && curr !== undefined && curr < prev) {
-      seps[i] = prev;
-    }
+    const prev = seps[i - 1]!;
+    const curr = seps[i]!;
+    if (curr < prev) { seps[i] = prev; }
   }
 
   // Fallback: at least two separators
@@ -742,8 +779,8 @@ function drawMeasureBoxes(
   }
 
   // Page window for THIS page (in page-local coords)
-  const pageTop = seps[0] ?? topG;
-  const pageBottom = seps[seps.length - 1] ?? bottomLimit;
+  const pageTop = seps[0]!;
+  const pageBottom = seps[seps.length - 1]!;
 
   // 3) Build overlay SVG
   const layer = createSvgEl("svg");
@@ -765,389 +802,6 @@ function drawMeasureBoxes(
   const g = createSvgEl("g");
   layer.appendChild(g);
 
-  // Pre-scan and cache potential barline graphics once per page, in PAGE-LOCAL px.
-  // This avoids mixing SVG user units with overlay CSS pixels.
-  type BarCand = {
-    el: SVGGraphicsElement;
-    bb: { x: number; y: number; width: number; height: number }; // page-local px
-    thin: boolean;
-    yTop: number;  // page-local
-    yBot: number;  // page-local
-    hinted: boolean;
-  };
-
-  const allGraphics = Array.from(
-    svgRoot.querySelectorAll<SVGGraphicsElement>("line, rect, path")
-  );
-
-  // Helper to map (x,y) in SVG user units → page-local px (outer’s 0,0)
-  const outerRect = outer.getBoundingClientRect();
-  const svgPoint = svgRoot.createSVGPoint();
-  const toPageLocal = (el: SVGGraphicsElement, x: number, y: number) => {
-    const m = el.getScreenCTM();
-    if (!m) { return { x: 0, y: 0 }; }
-    svgPoint.x = x;
-    svgPoint.y = y;
-    const scr = svgPoint.matrixTransform(m);
-    return { x: scr.x - outerRect.left, y: scr.y - outerRect.top };
-  };
-
-  const BAR_CANDS: BarCand[] = [];
-  for (const el of allGraphics) {
-    let bbSvg: DOMRect | null = null;
-    try { bbSvg = el.getBBox(); } catch { bbSvg = null; }
-    if (!bbSvg) { continue; }
-
-    // Convert bbox corners to page-local px
-    const p1 = toPageLocal(el, bbSvg.x, bbSvg.y);
-    const p2 = toPageLocal(el, bbSvg.x + bbSvg.width, bbSvg.y + bbSvg.height);
-
-    const bb = {
-      x: Math.min(p1.x, p2.x),
-      y: Math.min(p1.y, p2.y),
-      width: Math.abs(p2.x - p1.x),
-      height: Math.abs(p2.y - p1.y),
-    };
-
-    // Class hints (optional)
-    const cls = (el.getAttribute("class") || "").toLowerCase();
-    const parentCls = (el.parentElement?.getAttribute("class") || "").toLowerCase();
-    const hinted = cls.includes("stave") || cls.includes("bar")
-      || parentCls.includes("stave") || parentCls.includes("bar");
-
-    const thin = Math.round(bb.width) <= 4;
-
-    BAR_CANDS.push({
-      el,
-      bb,
-      thin,
-      yTop: bb.y,
-      yBot: bb.y + bb.height,
-      hinted,
-    });
-  }
-
-  // --- Per-tile barline extraction & interval cache ---
-  type Interval = { left: number; right: number };
-
-  // Collect inner-edge X positions of vertical barlines that belong to a given tile.
-  // expectedBars = measures_in_tile + 1
-  function computeMeasureIntervals(
-    yTop: number,
-    yBot: number,
-    expectedBars: number,
-    leftBoundPx = -Infinity
-  ): number[] {
-    const y0 = Math.min(yTop, yBot);
-    const y1 = Math.max(yTop, yBot);
-    const tileH = Math.max(0, y1 - y0);
-    if (tileH <= 0 || expectedBars <= 1) { return []; }
-
-    // Staff corridor: ignore ornaments near the system edges
-    const pad = Math.floor(tileH * 0.10);  // 0.06 caused additional lines to break
-    const corTop = y0 + pad;
-    const corBot = y1 - pad;
-    const corrH = Math.max(1, corBot - corTop);
-
-    // Allow a larger centered “hole” (grand-staff gap) but keep halves stringent
-    const maxCenteredHoleFrac = 0.35;     // up to 35% if it's the central gap
-    const minHalfCoverageFrac = 0.60;     // ≥60% coverage in each half
-    const minOverallCoverageFrac = 0.65;
-    type Span = { t: number; b: number };
-
-    // Bucket candidates by integer X and retain their vertical spans
-    const BUCKETS = new Map<number, Span[]>();
-    const put = (x: number, t: number, b: number): void => {
-      const xr = Math.round(x);
-      if (xr < leftBoundPx) { return; }       // <<< NEW: ignore anything left of the music
-      const arr = BUCKETS.get(xr);
-      const s: Span = { t, b };
-      if (arr) { arr.push(s); } else { BUCKETS.set(xr, [s]); }
-    };
-
-    // Scan graphics → keep verticals inside the corridor with realistic widths
-    for (const c of BAR_CANDS) {
-      // widen width gate to admit thick/double bars rendered as rects
-      const w = Math.round(c.bb.width);
-      if (w < 1) { continue; }
-
-      // Require candidate to meaningfully live in the corridor
-      const cTop = Math.min(c.yTop, c.yBot);
-      const cBot = Math.max(c.yTop, c.yBot);
-      const insideTop = Math.max(corTop, cTop);
-      const insideBot = Math.min(corBot, cBot);
-      const insideH = Math.max(0, insideBot - insideTop);
-      if (insideH < corrH * 0.55) { continue; } // a touch softer than before
-
-      // Start from bbox edges by default
-      let left = c.bb.x;
-      let right = c.bb.x + c.bb.width;
-
-      // If it's a nearly vertical <line>, prefer x1/x2
-      const tag = c.el.tagName.toLowerCase();
-      if (tag === "line") {
-        const x1s = c.el.getAttribute("x1");
-        const x2s = c.el.getAttribute("x2");
-        if (x1s !== null && x2s !== null) {
-          const x1 = Math.round(Number(x1s));
-          const x2 = Math.round(Number(x2s));
-          if (Number.isFinite(x1) && Number.isFinite(x2) && Math.abs(x1 - x2) <= 1) {
-            left = Math.min(x1, x2);
-            right = Math.max(x1, x2);
-          }
-        }
-      }
-
-      put(left, c.yTop, c.yBot);
-      if (right !== left) { put(right, c.yTop, c.yBot); }
-    }
-
-    if (BUCKETS.size === 0) { return []; }
-
-    // Merge helper inside corridor
-    const mergeSpans = (spans: Span[]) => {
-      const S = spans
-        .map(s => ({ t: Math.max(corTop, Math.min(s.t, s.b)), b: Math.min(corBot, Math.max(s.t, s.b)) }))
-        .filter(s => s.b > s.t)
-        .sort((a, b) => a.t - b.t);
-
-      const merged: Span[] = [];
-      for (const s of S) {
-        const last = merged.length ? merged[merged.length - 1] : null;
-        if (!last || s.t > last.b) { merged.push({ t: s.t, b: s.b }); }
-        else { last.b = Math.max(last.b, s.b); }
-      }
-      return merged;
-    };
-
-    // Evaluate buckets with grand-staff aware acceptance
-    const xsRaw: number[] = [];
-    for (const [x, spans] of BUCKETS) {
-      const merged = mergeSpans(spans);
-      if (merged.length === 0) { continue; }
-
-      // overall coverage + largest hole
-      let covered = 0;
-      let maxHole = 0;
-      let cursor = corTop;
-      for (const m of merged) {
-        if (m.t > cursor) { maxHole = Math.max(maxHole, m.t - cursor); }
-        covered += (m.b - Math.max(m.t, cursor));
-        cursor = Math.max(cursor, m.b);
-      }
-      if (cursor < corBot) { maxHole = Math.max(maxHole, corBot - cursor); }
-      const overallOK = (covered >= corrH * minOverallCoverageFrac);
-
-      // split by largest gap into halves and test each half's coverage
-      let halvesOK = false;
-      if (merged.length > 1) {
-        // find largest internal gap to define a candidate staff gap
-        let bestGap = -1, splitY = corTop;
-        let lastB = merged[0]!.b;
-        for (let i = 1; i < merged.length; i++) {
-          const gap = merged[i]!.t - lastB;
-          if (gap > bestGap) { bestGap = gap; splitY = (lastB + merged[i]!.t) / 2; }
-          lastB = merged[i]!.b;
-        }
-        const topH = Math.max(1, splitY - corTop);
-        const botH = Math.max(1, corBot - splitY);
-
-        // coverage in each half
-        const covHalf = (t0: number, t1: number) => {
-          let c = 0;
-          for (const m of merged) {
-            const a = Math.max(t0, m.t);
-            const b = Math.min(t1, m.b);
-            if (b > a) { c += (b - a); }
-          }
-          return c;
-        };
-        const topCov = covHalf(corTop, splitY);
-        const botCov = covHalf(splitY, corBot);
-
-        // accept if both halves are reasonably covered,
-        // and allow a larger central hole if that's what created the split
-        const centeredOK = (bestGap >= corrH * 0.10) && (bestGap <= corrH * maxCenteredHoleFrac);
-        halvesOK = centeredOK &&
-          (topCov >= topH * minHalfCoverageFrac) &&
-          (botCov >= botH * minHalfCoverageFrac);
-      }
-
-      if (overallOK || halvesOK) {
-        xsRaw.push(x);
-      }
-    }
-
-    if (xsRaw.length === 0) { return []; }
-
-    // Sort and cluster near-duplicates (collapse double/thick bars)
-    xsRaw.sort((a, b) => a - b);
-
-    const CLUSTER_EPS = 3; // px
-    const xsClustered: number[] = [];
-
-    let sum = xsRaw[0]!;
-    let count = 1;
-
-    for (let i = 1; i < xsRaw.length; i++) {
-      const x = xsRaw[i]!;
-      const mean = sum / count;
-      if (Math.abs(x - mean) <= CLUSTER_EPS) {
-        // keep extending current cluster
-        sum += x;
-        count++;
-      } else {
-        // close current cluster and start a new one
-        xsClustered.push(Math.round(mean));
-        sum = x;
-        count = 1;
-      }
-    }
-
-    // push the final cluster centroid
-    xsClustered.push(Math.round(sum / count));
-
-    // If we still have too many, prune conservatively by removing the tightest pair
-    const xs = xsClustered.slice();
-    while (xs.length > expectedBars) {
-      let bestIdx = -1;
-      let bestGap = Number.POSITIVE_INFINITY;
-      for (let i = 0; i < xs.length - 1; i++) {
-        const g = xs[i + 1]! - xs[i]!;
-        if (g < bestGap) { bestGap = g; bestIdx = i; }
-      }
-      // remove the member of the tightest pair that yields larger neighborhood gap after removal
-      if (bestIdx < 0) { break; }
-      const leftPull = bestIdx > 0 ? xs[bestIdx]! - xs[bestIdx - 1]! : Number.POSITIVE_INFINITY;
-      const rightPull = (bestIdx + 2 < xs.length) ? xs[bestIdx + 2]! - xs[bestIdx + 1]! : Number.POSITIVE_INFINITY;
-      if (leftPull <= rightPull) { xs.splice(bestIdx, 1); }
-      else { xs.splice(bestIdx + 1, 1); }
-    }
-
-    return xs;
-  }
-
-  // Cache of intervals per tile index + expected bar count
-  const BAND_INTERVAL_CACHE = new Map<string, Interval[]>();
-
-  function getMeasureIntervalsCached(
-    tileIndex: number,
-    yTop: number,
-    yBot: number,
-    expectedBars: number,
-    leftBoundPx = -Infinity
-  ): Interval[] {
-    const key = `${tileIndex}:${expectedBars}:${Math.round(leftBoundPx)}`;
-    const cached = BAND_INTERVAL_CACHE.get(key);
-    if (cached) { return cached; }
-
-    const xs = computeMeasureIntervals(yTop, yBot, expectedBars, leftBoundPx);
-    const intervals: Interval[] = [];
-    for (let i = 0; i < xs.length - 1; i++) {
-      const l = xs[i]!;
-      const r = xs[i + 1]!;
-      if (r > l) { intervals.push({ left: l, right: r }); }
-    }
-
-    BAND_INTERVAL_CACHE.set(key, intervals);
-    return intervals;
-  }
-  // --- End per-tile barline helpers ---
-
-  // --- Interval-gated per-measure recompute of vertical extents (page-local px) ---
-  type MinMax = { top: number; bottom: number };
-
-  /**
-   * Recompute a measure's vertical extents using:
-   *  - the SAME horizontal interval we draw with (plus ±eps)
-   *  - AND the tile's vertical band [bandTop, bandBot]
-   *
-   * Policy:
-   *  - INCLUDE horizontals (staff/ledger/pedal). They set the boundary only if there are no features.
-   *  - Prefer "features" (anything not an almost-horizontal hairline) whenever present.
-   *  - Clip Y to the system band to keep page-header/footer/brace junk out.
-   */
-  function computeMeasureVerticalExtents(
-    svgRoot: SVGSVGElement,
-    intervalLeft: number,
-    intervalRight: number,
-    eps: number,
-    bandTop: number,
-    bandBot: number,
-    toPageLocal: (el: SVGGraphicsElement, x: number, y: number) => { x: number; y: number }
-  ): MinMax | null {
-    const leftGate = Math.min(intervalLeft, intervalRight) - Math.max(0, Math.floor(eps));
-    const rightGate = Math.max(intervalLeft, intervalRight) + Math.max(0, Math.floor(eps));
-
-    const y0Band = Math.min(bandTop, bandBot);
-    const y1Band = Math.max(bandTop, bandBot);
-    if (y1Band <= y0Band) { return null; }
-
-    let globalTop: number | null = null;
-    let globalBot: number | null = null;
-    let featureTop: number | null = null;
-    let featureBot: number | null = null;
-
-    const nodes: NodeListOf<SVGGraphicsElement> = svgRoot.querySelectorAll<
-      SVGGraphicsElement
-    >("path, rect, line, polyline, polygon, text, use, circle, ellipse");
-
-    for (const el of nodes) {
-      let bbSvg: DOMRect;
-      try { bbSvg = el.getBBox(); } catch { continue; }
-      // Convert bbox to page-local px
-      const p1 = toPageLocal(el, bbSvg.x, bbSvg.y);
-      const p2 = toPageLocal(el, bbSvg.x + bbSvg.width, bbSvg.y + bbSvg.height);
-      const x0 = Math.min(p1.x, p2.x);
-      const x1 = Math.max(p1.x, p2.x);
-      const y0 = Math.min(p1.y, p2.y);
-      const y1 = Math.max(p1.y, p2.y);
-
-      // Horizontal gate: require >= 1 px overlap with [leftGate, rightGate]
-      if (x1 <= leftGate + 1 || x0 >= rightGate - 1) { continue; }
-
-      // Vertical gate: require overlap with the tile's band; clip to the band
-      const clipTop = Math.max(y0Band, y0);
-      const clipBot = Math.min(y1Band, y1);
-      if (clipBot <= clipTop) { continue; }
-
-      // Accumulate global extremes (ALL shapes, including horizontals), using the clipped Y
-      globalTop = globalTop === null ? clipTop : Math.min(globalTop, clipTop);
-      globalBot = globalBot === null ? clipBot : Math.max(globalBot, clipBot);
-
-      // "Horizontal hairline" narrowly defined: height ≤ 2 px AND width ≥ 20 px.
-      // Anything else (including slightly slanted/vertical <line>) counts as a feature.
-      const widthPx = x1 - x0;
-      const heightPx = y1 - y0;
-      let isHorizontalHairline = heightPx <= 2 && widthPx >= 20;
-
-      if (el.tagName.toLowerCase() === "line") {
-        const y1a = Number(el.getAttribute("y1"));
-        const y2a = Number(el.getAttribute("y2"));
-        if (Number.isFinite(y1a) && Number.isFinite(y2a)) {
-          const dy = Math.abs(y1a - y2a);
-          if (dy > 2) { isHorizontalHairline = false; } // stems / slanted beams / hooks
-        }
-      }
-
-      if (!isHorizontalHairline) {
-        featureTop = featureTop === null ? clipTop : Math.min(featureTop, clipTop);
-        featureBot = featureBot === null ? clipBot : Math.max(featureBot, clipBot);
-      }
-    }
-
-    if (globalTop === null || globalBot === null) { return null; }
-
-    // No reliable feature box → use all-shapes union (includes hairlines like pedal lines).
-    // (These should be non-null if we reached this branch; guard defensively.)
-    return {
-      top: globalTop ?? y0Band,
-      bottom: globalBot ?? y1Band,
-    };
-  }
-  // --- End interval-gated recompute helper ---
-
-
   // 4) Bucket measures by tile (system) and draw in left→right order per tile.
   //    This guarantees monotonic interval selection and prevents overlap.
   type BucketItem = { m: typeof measures[number]; k: number };
@@ -1156,14 +810,13 @@ function drawMeasureBoxes(
   const buckets = new Map<number, BucketItem[]>();
 
   for (const m of measures) {
-    // 1) Page filter by vertical center in *page-local* coords (strict)
-    const cy = Math.round(m.rect.y + m.rect.h / 2);
-    if (cy < pageTop || cy >= pageBottom) { continue; }
-
-    // 2) Robust tile pick by vertical overlap against seps (within this page)
+    // 1) Page filter by vertical **overlap** with the page window (robust at boundaries)
     const rectTopPL = Math.round(m.rect.y);
     const rectBotPL = Math.round(m.rect.y + Math.max(1, Math.round(m.rect.h)));
+    const ovPage = Math.max(0, Math.min(rectBotPL, pageBottom) - Math.max(rectTopPL, pageTop));
+    if (ovPage <= 0) { continue; }
 
+    // 2) Robust tile pick by vertical overlap against seps (within this page)
     const lastIdx = seps.length - 2; // last valid tile
     let k = -1;
     let bestOv = 0;
@@ -1182,6 +835,64 @@ function drawMeasureBoxes(
     if (arr) { arr.push(item); } else { buckets.set(k, [item]); }
   }
 
+  // --- DIAG: page/tile coverage vs cached geometry (guarded) ---
+  if (isDiagOn()) {
+    // Which measures are actually in this page window?
+    const pageMeasureIds = measures
+      .filter(m => {
+        const rectTopPL = Math.round(m.rect.y);
+        const rectBotPL = Math.round(m.rect.y + Math.max(1, Math.round(m.rect.h)));
+        const ovPage = Math.max(0, Math.min(rectBotPL, pageBottom) - Math.max(rectTopPL, pageTop));
+        return ovPage > 0;
+      })
+      .map(m => m.id);
+
+    void logStep(
+      `diag: page window [${Math.round(pageTop)},${Math.round(pageBottom)}] measuresInWindow=${pageMeasureIds.length}`,
+      { outer }
+    );
+
+    // For each tile on this page, compare bucketing vs cached geometry
+    for (let k = 0; k <= seps.length - 2; k++) {
+      const items = buckets.get(k) || [];
+
+      // Pair each bucketed measure with cached geometry
+      const paired = items.map(it => {
+        const g = geomIn.get(it.m.id);
+        return {
+          id: it.m.id,
+          hasGeom: !!g,
+          tileOk: g ? g.tileIndex === k : false,
+        };
+      });
+
+      const okCount = paired.filter(p => p.hasGeom && p.tileOk).length;
+      const missing = paired.filter(p => !p.hasGeom).map(p => p.id);
+      const tileMismatch = paired.filter(p => p.hasGeom && !p.tileOk).map(p => p.id);
+
+      const bandTop = Math.round(seps[k]!);
+      const bandBot = Math.round(seps[k + 1]!);
+
+      void logStep(
+        `diag: tile k=${k} band=[${bandTop},${bandBot}) items=${items.length} ok=${okCount}` +
+        (missing.length ? ` missingGeom=${missing.length} [${missing.slice(0, 6).join(",")}${missing.length > 6 ? "…" : ""}]` : "") +
+        (tileMismatch.length ? ` tileMismatch=${tileMismatch.length} [${tileMismatch.slice(0, 6).join(",")}${tileMismatch.length > 6 ? "…" : ""}]` : ""),
+        { outer }
+      );
+    }
+  }
+
+  // --- DIAG: sample the geometry cache keys once (guarded) ---
+  if (isDiagOn()) {
+    const keysSample = Array.from(geomIn.keys()).slice(0, 12);
+    void logStep(
+      `diag: geomIn size=${(geomIn as ReadonlyMap<string, MeasureGeom>).size} sample=[${keysSample.join(", ")}]`,
+      { outer }
+    );
+  }
+
+  // --- END DIAG ---
+
   // Now iterate tiles in order
   const lastTileIndex = seps.length - 2;
   for (let k = 0; k <= lastTileIndex; k++) {
@@ -1198,158 +909,86 @@ function drawMeasureBoxes(
       return a.m.rect.x - b.m.rect.x;
     });
 
-    // ---- Draw window (from seams) -> contiguous full-height boxes
-    const drawTop = seps[k]!;
-    const drawBot = seps[k + 1]!;
+    // Pair measures in this tile with cached geometry entries (resilient id resolver; guard by vertical overlap)
+    const paired: Array<{ m: typeof measures[number]; iv: { left: number; right: number }; mt: number; mb: number }> = [];
 
-    // ---- Detect window (from measures, clamped to seams) -> robust bar detection
-    const mTop = Math.min(...items.map(it => Math.round(it.m.rect.y)));
-    const mBot = Math.max(...items.map(it => Math.round(it.m.rect.y + Math.max(1, Math.round(it.m.rect.h)))));
-    const detectTop = Math.max(drawTop, mTop);
-    const detectBot = Math.min(drawBot, mBot);
+    const normKey = (id: string): string => {
+      // Accept "measure-12", "measure_12", "measure 12", or plain "12" → normalize to "measure-12"
+      const m = id.match(/measure[-_\s]?(\d+)/i) || id.match(/^(\d+)$/);
+      return m ? `measure-${m[1]}` : id;
+    };
 
-    // Build intervals from detected barlines (detection uses detectTop/Bottom)
-    const expectedBars = items.length + 1;
+    const getGeom = (id: string): MeasureGeom | undefined => {
+      // Try exact, normalized, numeric-only-derived, and (last resort) numeric-containing key scan.
+      const idExact = id;
+      const idNorm = normKey(id);
+      if (geomIn.has(idExact)) { return geomIn.get(idExact)!; }
+      if (geomIn.has(idNorm)) { return geomIn.get(idNorm)!; }
 
-    // left bound = left edge of the music for this tile (a tiny tolerance is OK)
-    const musicLeft = Math.min(...items.map(it => Math.round(it.m.rect.x)));
-    const LEFT_TOL = 2;
-    const leftBoundPx = musicLeft - LEFT_TOL;
-
-    let tileIntervals = getMeasureIntervalsCached(k, detectTop, detectBot, expectedBars, leftBoundPx);
-
-    // Clamp intervals to the measures' horizontal span,
-    // but don't reject a true first interval just because its left barline
-    // is a few px left of tileMinX. Instead, keep a right-edge guard
-    // and discard only tiny pre-measure slivers by width.
-    const tileMaxX = Math.max(...items.map(it => Math.round(it.m.rect.x + Math.round(it.m.rect.w))));
-    const XTOL = 2;
-    const MIN_MEASURE_W = 8; // px, small but kills connector→bar slivers
-
-    tileIntervals = tileIntervals
-      .filter(iv => iv.right <= tileMaxX + XTOL)                 // keep inside music on the right
-      .filter(iv => (iv.right - iv.left) >= MIN_MEASURE_W);      // drop ultra-thin pre-measure shards
-
-    const N = Math.min(items.length, tileIntervals.length);
-
-    // --- Final brace/connector exclusion ---
-    if (Array.isArray(tileIntervals) && tileIntervals.length > 0 && N > 0) {
-      const t0 = tileIntervals;
-      const firstLeft = t0[0]!.left;
-      tileIntervals = t0.map(iv => ({
-        left: Math.max(iv.left, firstLeft),
-        right: iv.right
-      }));
-    }
-    if (N === 0) { continue; }
-
-    // --- NEW: interval-gated recompute for each measure BEFORE drawing ---
-    // This is where the boxes are computed to fit the actual contents of the measure top to bottom
-    const EPS = 6; // px, slightly larger to capture diagonals near barlines
-    const bandTop = seps[k]!;
-    const bandBot = seps[k + 1]!;
-
-    for (let i = 0; i < N; i++) {
-      const { m } = items[i]!;
-      const chosen = tileIntervals[i]!;
-      const mm = computeMeasureVerticalExtents(
-        svgRoot,
-        chosen.left,
-        chosen.right,
-        EPS,
-        bandTop,
-        bandBot,
-        toPageLocal
-      );
-      if (mm) {
-        (m as { annotTopPx?: number }).annotTopPx = mm.top;
-        (m as { annotBotPx?: number }).annotBotPx = mm.bottom;
+      const num = (id.match(/\d+/)?.[0]) ?? "";
+      if (num) {
+        const mk = `measure-${num}`;
+        if (geomIn.has(mk)) { return geomIn.get(mk)!; }
+        // LAST RESORT: scan for any key that contains that exact number token
+        // (kept cheap by early break; map is at most a few hundred entries)
+        for (const [k, v] of geomIn as Map<string, MeasureGeom>) {
+          if (new RegExp(`(^|\\D)${num}(\\D|$)`).test(k)) { return v; }
+        }
       }
+      return undefined;
+    };
+
+    const bandTopK = seps[k]!;
+    const bandBotK = seps[k + 1]!;
+    for (let i = 0; i < items.length; i++) {
+      const { m } = items[i]!;
+      const g = getGeom(m.id);
+
+      if (!g) {
+        if (isDiagOn()) { void logStep(`diag: cache miss after resolve id='${m.id}'`, { outer }); }
+        continue;
+      }
+
+      // Geometry is pre-translate; drawing is post-translate -> shift to page-local
+      const mtDraw = g.top + pageTy;
+      const mbDraw = g.bottom + pageTy;
+
+      // Require any vertical overlap with this tile’s band window to avoid accidental cross-tile draws
+      if (mbDraw <= bandTopK || mtDraw >= bandBotK) { continue; }
+
+      paired.push({ m, iv: g.interval, mt: g.top, mb: g.bottom });
     }
 
-    // Draw rectangles using per-measure verticals (clamped to tile seams)
-    const BASE_PAD = REFLOW.MEASURE_PAD_PX_BASE;  // inside-band padding cap per edge
+    if (paired.length === 0) { continue; }
 
-    for (let i = 0; i < N; i++) {
-      const { m } = items[i]!;
-      const chosen = tileIntervals[i]!;
+    // Draw rectangles using cached per-measure verticals (clamped to tile seams)
+    const BASE_PAD = REFLOW.MEASURE_PAD_PX_BASE;
+
+    for (let i = 0; i < paired.length; i++) {
+      const { m, iv, mt, mb } = paired[i]!;
 
       // Horizontal (barline-derived)
-      const l = Math.round(chosen.left) + 0.5;
-      const rEdge = Math.round(chosen.right) + 0.5;
+      const l = Math.round(iv.left) + 0.5;
+      const rEdge = Math.round(iv.right) + 0.5;
       const x = Math.min(l, rEdge);
       const w = Math.max(1, Math.round(Math.abs(rEdge - l)) - 1);
 
       // Clamp band for this tile
       const bandTop = seps[k]!;
       const bandBot = seps[k + 1]!;
-      // Try pre-existing measure fields first
-      let mt: number | undefined = (m as { annotTopPx?: number }).annotTopPx;
-      let mb: number | undefined = (m as { annotBotPx?: number }).annotBotPx;
 
-      // If missing/invalid, compute once directly (no intra-call cache)
-      if (!Number.isFinite(mt) || !Number.isFinite(mb) || (mb as number) <= (mt as number)) {
-        const ivLeft = Math.min(l, rEdge);
-        const ivRight = Math.max(l, rEdge);
+      // mt/mb are pre-translate; drawing is post-translate
+      const mtDraw = mt + pageTy;
+      const mbDraw = mb + pageTy;
 
-        let tMin = Number.POSITIVE_INFINITY;
-        let bMax = Number.NEGATIVE_INFINITY;
-
-        for (const el of allGraphics) {
-          let bbSvg: DOMRect | null = null;
-          try { bbSvg = el.getBBox(); } catch { bbSvg = null; }
-          if (!bbSvg) { continue; }
-
-          const p1 = toPageLocal(el, bbSvg.x, bbSvg.y);
-          const p2 = toPageLocal(el, bbSvg.x + bbSvg.width, bbSvg.y + bbSvg.height);
-
-          const bbx = Math.min(p1.x, p2.x);
-          const bby = Math.min(p1.y, p2.y);
-          const bbw = Math.abs(p2.x - p1.x);
-          const bbh = Math.abs(p2.y - p1.y);
-
-          // Horizontal gate: require any overlap with [ivLeft, ivRight]
-          const ovX = Math.min(bbx + bbw, ivRight) - Math.max(bbx, ivLeft);
-          if (ovX <= 0) { continue; }
-
-          // Include ALL glyphs so pedal lines count
-          const top = bby;
-          const bot = bby + bbh;
-
-          if (top < tMin) { tMin = top; }
-          if (bot > bMax) { bMax = bot; }
-        }
-
-        if (Number.isFinite(tMin) && Number.isFinite(bMax) && bMax > tMin) {
-          mt = Math.max(bandTop, Math.round(tMin));
-          mb = Math.min(bandBot, Math.round(bMax));
-
-          // persist on the measure so re-uses in this invocation don’t recompute
-          (m as { annotTopPx?: number }).annotTopPx = mt;
-          (m as { annotBotPx?: number }).annotBotPx = mb;
-        }
-      }
-
-      // Guard invalid/missing extents
-      if (!Number.isFinite(mt) || !Number.isFinite(mb) || (mb as number) <= (mt as number)) {
-        logStep(`annot-skip: ${m.id} (missing/invalid union)`, { outer });
-        continue;
-      }
-
-      // Apply inner padding per edge, capped by available headroom to band edges
-      const mtNum = mt as number;
-      const mbNum = mb as number;
-
-      // how much room we actually have inside the band
-      const availTop = Math.max(0, mtNum - bandTop);
-      const availBot = Math.max(0, bandBot - mbNum);
-
-      // per-edge pads: never exceed headroom or our base knob
+      // Pads capped by headroom
+      const availTop = Math.max(0, mtDraw - bandTop);
+      const availBot = Math.max(0, bandBot - mbDraw);
       const padTop = Math.min(BASE_PAD, availTop);
       const padBot = Math.min(BASE_PAD, availBot);
 
-      const top = Math.max(bandTop, Math.round(mtNum - padTop));
-      const bot = Math.min(bandBot, Math.round(mbNum + padBot));
+      const top = Math.max(bandTop, Math.round(mtDraw - padTop));
+      const bot = Math.min(bandBot, Math.round(mbDraw + padBot));
 
       // Pixel-perfect y/h
       const y = Math.round(Math.min(top, bot)) + 0.5;
@@ -1357,7 +996,7 @@ function drawMeasureBoxes(
 
       if (isDiagOn() && i === 0) {
         logStep(
-          `m=${m.id} mt=${Math.round(mt as number)} mb=${Math.round(mb as number)} ` +
+          `m=${m.id} mt=${Math.round(mtDraw)} mb=${Math.round(mbDraw)} ` +
           `bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} ` +
           `y=${Math.round(y)} h=${h}`,
           { outer }
@@ -1815,6 +1454,9 @@ export default function ScoreViewer({
     [visiblePageHeight]
   );
 
+  const measuresRef = useRef<ReadonlyArray<{ id: string; rect: Rect }>>([]);
+  const barCandsRef = useRef<ReadonlyArray<BarCand>>([]);
+  const geometryRef = useRef<ReadonlyMap<string, MeasureGeom>>(new Map());
 
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
   // May recompute page starts and re-apply to preserve whole systems; bounded recursion prevents oscillation.
@@ -1993,13 +1635,15 @@ export default function ScoreViewer({
           clearMeasureBoxes(outer);
           drawMeasureBoxes(
             outer,
-            svgNN,                   // non-nullable alias
-            bandsNN,                 // non-nullable alias
-            startIndex,              // this page's first system index
-            nextStartIndex,          // -1 if last page
-            ySnap,                   // ceil(top of start band)
+            svgNN,                                   // non-nullable alias
+            measuresRef.current ?? [],               // precomputed measures
+            geometryRef.current ?? new Map(),
+            bandsNN,                                 // non-nullable alias
+            startIndex,                              // this page's first system index
+            nextStartIndex,                          // -1 if last page
+            ySnap,                                   // ceil(top of start band)
             Math.max(0, topGutterPx),
-            maskTopWithinMusicPx     // page-local bottom cut for this page
+            maskTopWithinMusicPx                     // page-local bottom cut for this page
           );
         } catch { /* overlay render is best-effort; ignore failures */ }
 
@@ -2105,6 +1749,482 @@ export default function ScoreViewer({
       );
 
       validateBandSpacing(outer, bands, { minGapAlertPx: 2 });
+
+      // --- NEW: precompute measures & bar-cands once at unit scale (page-local px) ---
+      {
+        const res = withSvgAtUnitScale(outer, (svg) => {
+          const measuresPre = scanMeasuresPx(outer, svg) ?? [];
+
+          // Build barline candidates exactly like drawMeasureBoxes used to.
+          const allGraphics = Array.from(
+            svg.querySelectorAll<SVGGraphicsElement>("line, rect, path")
+          );
+
+          const outerRect = outer.getBoundingClientRect();
+          const svgPoint = svg.createSVGPoint();
+          const toPageLocal = (el: SVGGraphicsElement, x: number, y: number) => {
+            const m = el.getScreenCTM();
+            if (!m) { return { x: 0, y: 0 }; }
+            svgPoint.x = x;
+            svgPoint.y = y;
+            const scr = svgPoint.matrixTransform(m);
+            return { x: scr.x - outerRect.left, y: scr.y - outerRect.top };
+          };
+
+          const barCands: BarCand[] = [];
+          for (const el of allGraphics) {
+            let bbSvg: DOMRect | null = null;
+            try { bbSvg = el.getBBox(); } catch { bbSvg = null; }
+            if (!bbSvg) { continue; }
+
+            // Convert bbox corners to page-local px (pre-translate)
+            const p1 = toPageLocal(el, bbSvg.x, bbSvg.y);
+            const p2 = toPageLocal(el, bbSvg.x + bbSvg.width, bbSvg.y + bbSvg.height);
+
+            const bb = {
+              x: Math.min(p1.x, p2.x),
+              y: Math.min(p1.y, p2.y),
+              width: Math.abs(p2.x - p1.x),
+              height: Math.abs(p2.y - p1.y),
+            };
+
+            const cls = (el.getAttribute("class") || "").toLowerCase();
+            const parentCls = (el.parentElement?.getAttribute("class") || "").toLowerCase();
+            const hinted = cls.includes("stave") || cls.includes("bar")
+              || parentCls.includes("stave") || parentCls.includes("bar");
+
+            const thin = Math.round(bb.width) <= 4;
+
+            barCands.push({
+              el,
+              bb,
+              thin,
+              yTop: bb.y,
+              yBot: bb.y + bb.height,
+              hinted,
+            });
+          }
+
+          return { measuresPre, barCands };
+        }) ?? { measuresPre: [], barCands: [] };
+
+        measuresRef.current = res.measuresPre as ReadonlyArray<{ id: string; rect: Rect }>;
+        barCandsRef.current = res.barCands as ReadonlyArray<BarCand>;
+
+        // --- NEW: compute per-measure geometry once (pre-translate, page-local px)
+        const measuresPre = measuresRef.current;
+        const barCands = barCandsRef.current;
+
+        // Build band seams in pre-translate coords: [sep0, sep1, ..., sepN]
+        // We use band tops/bottoms to derive a non-decreasing seam array per system band.
+        const seps: number[] = [];
+        if (bands.length > 0) {
+          seps.push(Math.round(bands[0]!.top));
+          for (let i = 0; i < bands.length - 1; i++) {
+            const bCurr = bands[i]!;
+            const bNext = bands[i + 1]!;
+            const seam = Math.round((Math.round(bCurr.bottom) + Math.round(bNext.top)) / 2);
+            seps.push(seam);
+          }
+          seps.push(Math.round(bands[bands.length - 1]!.bottom));
+          // monotone fix
+          for (let i = 1; i < seps.length; i++) {
+            if (seps[i]! < seps[i - 1]!) { seps[i] = seps[i - 1]!; }
+          }
+        }
+
+        // Bucket measures into tiles (systems) using overlap against [sep[k], sep[k+1]]
+        type BucketItem = { m: { id: string; rect: Rect }; k: number };
+        const buckets = new Map<number, BucketItem[]>();
+
+        for (const m of measuresPre) {
+          const rectTop = Math.round(m.rect.y);
+          const rectBot = Math.round(m.rect.y + Math.max(1, Math.round(m.rect.h)));
+
+
+          // choose tile by maximum vertical overlap
+          let kBest = -1, bestOv = 0;
+          for (let k = 0; k < seps.length - 1; k++) {
+            const y0 = seps[k]!;
+            const y1 = seps[k + 1]!;
+            const ov = Math.max(0, Math.min(rectBot, y1) - Math.max(rectTop, y0));
+            if (ov > bestOv) { bestOv = ov; kBest = k; }
+          }
+          if (kBest < 0 || bestOv === 0) { continue; }
+          const arr = buckets.get(kBest);
+          const bi: BucketItem = { m, k: kBest };
+          if (arr) { arr.push(bi); } else { buckets.set(kBest, [bi]); }
+        }
+
+        await logStep(
+          `[geomBuild     ] buckets: ` +
+          Array.from(buckets.entries())
+            .map(([k, arr]) =>
+              `k=${k} count=${arr.length} ids=[${arr.map(bi => bi.m.id).join(",")}]`
+            )
+            .join(" | "),
+          { outer }
+        );
+
+        // Collect inner-edge X positions of vertical barlines that belong to a given tile.
+        // expectedBars = measures_in_tile + 1
+        function computeMeasureIntervals(
+          yTop: number,
+          yBot: number,
+          expectedBars: number,
+          leftBoundPx = -Infinity
+        ): number[] {
+          const y0 = Math.min(yTop, yBot);
+          const y1 = Math.max(yTop, yBot);
+          const tileH = Math.max(0, y1 - y0);
+          if (tileH <= 0 || expectedBars <= 1) { return []; }
+
+          // Staff corridor: ignore ornaments near the system edges
+          const pad = Math.floor(tileH * 0.10);  // 0.06 caused additional lines to break
+          const corTop = y0 + pad;
+          const corBot = y1 - pad;
+          const corrH = Math.max(1, corBot - corTop);
+
+          // Allow a larger centered “hole” (grand-staff gap) but keep halves stringent
+          const maxCenteredHoleFrac = 0.35;     // up to 35% if it's the central gap
+          const minHalfCoverageFrac = 0.60;     // ≥60% coverage in each half
+          const minOverallCoverageFrac = 0.65;
+          type Span = { t: number; b: number };
+
+          // Bucket candidates by integer X and retain their vertical spans
+          const BUCKETS = new Map<number, Span[]>();
+          const put = (x: number, t: number, b: number): void => {
+            const xr = Math.round(x);
+            if (xr < leftBoundPx) { return; }       // <<< NEW: ignore anything left of the music
+            const arr = BUCKETS.get(xr);
+            const s: Span = { t, b };
+            if (arr) { arr.push(s); } else { BUCKETS.set(xr, [s]); }
+          };
+
+          // Scan graphics → keep verticals inside the corridor with realistic widths
+          for (const c of barCands) {
+            // widen width gate to admit thick/double bars rendered as rects
+            const w = Math.round(c.bb.width);
+            if (w < 1) { continue; }
+
+            // Require candidate to meaningfully live in the corridor
+            const cTop = Math.min(c.yTop, c.yBot);
+            const cBot = Math.max(c.yTop, c.yBot);
+            const insideTop = Math.max(corTop, cTop);
+            const insideBot = Math.min(corBot, cBot);
+            const insideH = Math.max(0, insideBot - insideTop);
+            if (insideH < corrH * 0.55) { continue; } // a touch softer than before
+
+            // Start from bbox edges by default
+            let left = c.bb.x;
+            let right = c.bb.x + c.bb.width;
+
+            // If it's a nearly vertical <line>, prefer x1/x2
+            const tag = c.el.tagName.toLowerCase();
+            if (tag === "line") {
+              const x1s = c.el.getAttribute("x1");
+              const x2s = c.el.getAttribute("x2");
+              if (x1s !== null && x2s !== null) {
+                const x1 = Math.round(Number(x1s));
+                const x2 = Math.round(Number(x2s));
+                if (Number.isFinite(x1) && Number.isFinite(x2) && Math.abs(x1 - x2) <= 1) {
+                  left = Math.min(x1, x2);
+                  right = Math.max(x1, x2);
+                }
+              }
+            }
+
+            put(left, c.yTop, c.yBot);
+            if (right !== left) { put(right, c.yTop, c.yBot); }
+          }
+
+          if (BUCKETS.size === 0) { return []; }
+
+          // Merge helper inside corridor
+          const mergeSpans = (spans: Span[]) => {
+            const S = spans
+              .map(s => ({ t: Math.max(corTop, Math.min(s.t, s.b)), b: Math.min(corBot, Math.max(s.t, s.b)) }))
+              .filter(s => s.b > s.t)
+              .sort((a, b) => a.t - b.t);
+
+            const merged: Span[] = [];
+            for (const s of S) {
+              const last = merged.length ? merged[merged.length - 1] : null;
+              if (!last || s.t > last.b) { merged.push({ t: s.t, b: s.b }); }
+              else { last.b = Math.max(last.b, s.b); }
+            }
+            return merged;
+          };
+
+          // Evaluate buckets with grand-staff aware acceptance
+          const xsRaw: number[] = [];
+          for (const [x, spans] of BUCKETS) {
+            const merged = mergeSpans(spans);
+            if (merged.length === 0) { continue; }
+
+            // overall coverage + largest hole
+            let covered = 0;
+            let maxHole = 0;
+            let cursor = corTop;
+            for (const m of merged) {
+              if (m.t > cursor) { maxHole = Math.max(maxHole, m.t - cursor); }
+              covered += (m.b - Math.max(m.t, cursor));
+              cursor = Math.max(cursor, m.b);
+            }
+            if (cursor < corBot) { maxHole = Math.max(maxHole, corBot - cursor); }
+            const overallOK = (covered >= corrH * minOverallCoverageFrac);
+
+            // split by largest gap into halves and test each half's coverage
+            let halvesOK = false;
+            if (merged.length > 1) {
+              // find largest internal gap to define a candidate staff gap
+              let bestGap = -1, splitY = corTop;
+              let lastB = merged[0]!.b;
+              for (let i = 1; i < merged.length; i++) {
+                const gap = merged[i]!.t - lastB;
+                if (gap > bestGap) { bestGap = gap; splitY = (lastB + merged[i]!.t) / 2; }
+                lastB = merged[i]!.b;
+              }
+              const topH = Math.max(1, splitY - corTop);
+              const botH = Math.max(1, corBot - splitY);
+
+              // coverage in each half
+              const covHalf = (t0: number, t1: number) => {
+                let c = 0;
+                for (const m of merged) {
+                  const a = Math.max(t0, m.t);
+                  const b = Math.min(t1, m.b);
+                  if (b > a) { c += (b - a); }
+                }
+                return c;
+              };
+              const topCov = covHalf(corTop, splitY);
+              const botCov = covHalf(splitY, corBot);
+
+              // accept if both halves are reasonably covered,
+              // and allow a larger central hole if that's what created the split
+              const centeredOK = (bestGap >= corrH * 0.10) && (bestGap <= corrH * maxCenteredHoleFrac);
+              halvesOK = centeredOK &&
+                (topCov >= topH * minHalfCoverageFrac) &&
+                (botCov >= botH * minHalfCoverageFrac);
+            }
+
+            if (overallOK || halvesOK) {
+              xsRaw.push(x);
+            }
+          }
+
+          if (xsRaw.length === 0) { return []; }
+
+          // Sort and cluster near-duplicates (collapse double/thick bars)
+          xsRaw.sort((a, b) => a - b);
+
+          const CLUSTER_EPS = 3; // px
+          const xsClustered: number[] = [];
+
+          let sum = xsRaw[0]!;
+          let count = 1;
+
+          for (let i = 1; i < xsRaw.length; i++) {
+            const x = xsRaw[i]!;
+            const mean = sum / count;
+            if (Math.abs(x - mean) <= CLUSTER_EPS) {
+              // keep extending current cluster
+              sum += x;
+              count++;
+            } else {
+              // close current cluster and start a new one
+              xsClustered.push(Math.round(mean));
+              sum = x;
+              count = 1;
+            }
+          }
+
+          // push the final cluster centroid
+          xsClustered.push(Math.round(sum / count));
+
+          // If we still have too many, prune conservatively by removing the tightest pair
+          const xs = xsClustered.slice();
+          while (xs.length > expectedBars) {
+            let bestIdx = -1;
+            let bestGap = Number.POSITIVE_INFINITY;
+            for (let i = 0; i < xs.length - 1; i++) {
+              const g = xs[i + 1]! - xs[i]!;
+              if (g < bestGap) { bestGap = g; bestIdx = i; }
+            }
+            // remove the member of the tightest pair that yields larger neighborhood gap after removal
+            if (bestIdx < 0) { break; }
+            const leftPull = bestIdx > 0 ? xs[bestIdx]! - xs[bestIdx - 1]! : Number.POSITIVE_INFINITY;
+            const rightPull = (bestIdx + 2 < xs.length) ? xs[bestIdx + 2]! - xs[bestIdx + 1]! : Number.POSITIVE_INFINITY;
+            if (leftPull <= rightPull) { xs.splice(bestIdx, 1); }
+            else { xs.splice(bestIdx + 1, 1); }
+          }
+
+          return xs;
+        }
+
+        // For vertical extent recompute we need toPageLocal + SVG nodes; reuse the scan svg
+        const svgForV = withSvgAtUnitScale(outer, (svg) => svg) as SVGSVGElement | null;
+        if (!svgForV) {
+          geometryRef.current = new Map();
+        } else {
+          const outerRectV = outer.getBoundingClientRect();
+          const svgPointV = svgForV.createSVGPoint();
+          const toPageLocalV = (el: SVGGraphicsElement, x: number, y: number) => {
+            const m = el.getScreenCTM();
+            if (!m) { return { x: 0, y: 0 }; }
+            svgPointV.x = x;
+            svgPointV.y = y;
+            const scr = svgPointV.matrixTransform(m);
+            return { x: scr.x - outerRectV.left, y: scr.y - outerRectV.top };
+          };
+
+          // Precompute page-local bounding boxes for all relevant nodes ONCE.
+          const nodesAll: SVGGraphicsElement[] = Array.from(
+            svgForV.querySelectorAll<SVGGraphicsElement>(
+              "path, rect, line, polyline, polygon, text, use, circle, ellipse"
+            )
+          );
+
+          type NodeBB = { x0: number; x1: number; y0: number; y1: number };
+          const nodeBBs: ReadonlyArray<NodeBB> = (() => {
+            const rows: NodeBB[] = [];
+            for (const el of nodesAll) {
+              let bbSvg: DOMRect;
+              try { bbSvg = el.getBBox(); } catch { continue; }
+              const p1 = toPageLocalV(el, bbSvg.x, bbSvg.y);
+              const p2 = toPageLocalV(el, bbSvg.x + bbSvg.width, bbSvg.y + bbSvg.height);
+              const x0 = Math.min(p1.x, p2.x);
+              const x1 = Math.max(p1.x, p2.x);
+              const y0 = Math.min(p1.y, p2.y);
+              const y1 = Math.max(p1.y, p2.y);
+              if (Number.isFinite(x0) && Number.isFinite(x1) && Number.isFinite(y0) && Number.isFinite(y1) && x1 > x0 && y1 > y0) {
+                rows.push({ x0, x1, y0, y1 });
+              }
+            }
+            return rows;
+          })();
+
+          function computeMeasureVerticalExtents(
+            intervalLeft: number,
+            intervalRight: number,
+            eps: number,
+            bandTop: number,
+            bandBot: number
+          ): { top: number; bottom: number } | null {
+            const leftGate = Math.min(intervalLeft, intervalRight) - Math.max(0, Math.floor(eps));
+            const rightGate = Math.max(intervalLeft, intervalRight) + Math.max(0, Math.floor(eps));
+            const y0Band = Math.min(bandTop, bandBot);
+            const y1Band = Math.max(bandTop, bandBot);
+            if (y1Band <= y0Band) { return null; }
+
+            let globalTop: number | null = null;
+            let globalBot: number | null = null;
+
+            // Single pass over precomputed page-local bounding boxes
+            for (const bb of nodeBBs) {
+              // horizontal gate
+              if (bb.x1 <= leftGate + 1 || bb.x0 >= rightGate - 1) { continue; }
+
+              // vertical gate + clip to band
+              const clipTop = Math.max(y0Band, bb.y0);
+              const clipBot = Math.min(y1Band, bb.y1);
+              if (clipBot <= clipTop) { continue; }
+
+              globalTop = globalTop === null ? clipTop : Math.min(globalTop, clipTop);
+              globalBot = globalBot === null ? clipBot : Math.max(globalBot, clipBot);
+            }
+
+            if (globalTop === null || globalBot === null) { return null; }
+            return { top: globalTop, bottom: globalBot };
+          }
+
+          const geomPairs: Array<[string, MeasureGeom]> = [];
+
+          for (let k = 0; k < seps.length - 1; k++) {
+            const items = (buckets.get(k) || []).slice();
+
+            // Sort measures deterministically (same as draw)
+            items.sort((a, b) => {
+              const an = (a.m.id.match(/measure[-_\s]?(\d+)/i)?.[1]);
+              const bn = (b.m.id.match(/measure[-_\s]?(\d+)/i)?.[1]);
+              const ai = an ? Number(an) : Number.POSITIVE_INFINITY;
+              const bi = bn ? Number(bn) : Number.POSITIVE_INFINITY;
+              if (ai !== bi) { return ai - bi; }
+              return a.m.rect.x - b.m.rect.x;
+            });
+
+            if (items.length === 0) {
+              await logStep(
+                `[geomBuild     ] tile k=${k} items=0 (no measures in bucket)`,
+                { outer }
+              );
+              continue;
+            }
+
+            const bandTop = seps[k]!;
+            const bandBot = seps[k + 1]!;
+            const expectedBars = items.length + 1;
+            const musicLeft = Math.min(...items.map(it => Math.round(it.m.rect.x)));
+            const LEFT_TOL = 2;
+            const leftBoundPx = musicLeft - LEFT_TOL;
+
+            const xs = computeMeasureIntervals(bandTop, bandBot, expectedBars, leftBoundPx);
+
+            await logStep(
+              `[geomBuild     ] tile k=${k} xs.len=${xs.length} xs=[${xs.join(",")}] expectedBars=${expectedBars}`,
+              { outer }
+            );
+
+            if (xs.length < 2) { continue; }
+
+            // intervals
+            const intervals: MeasureInterval[] = [];
+            for (let i = 0; i < xs.length - 1; i++) {
+              const l = xs[i]!, r = xs[i + 1]!;
+              if (r > l) { intervals.push({ left: l, right: r }); }
+            }
+
+            // pair measures with intervals
+            const N = Math.min(items.length, intervals.length);
+            const EPS = 6;
+
+            for (let i = 0; i < N; i++) {
+              const { m } = items[i]!;
+              const iv = intervals[i]!;
+              const mm = computeMeasureVerticalExtents(iv.left, iv.right, EPS, bandTop, bandBot);
+              if (!mm) {
+                void logStep(
+                  `[geomBuild     ] tile k=${k} id=${m.id} interval=[${iv.left},${iv.right}] mm=null`,
+                  { outer }
+                );
+                continue;
+              }
+
+              void logStep(
+                `[geomBuild     ] tile k=${k} id=${m.id} interval=[${iv.left},${iv.right}] ` +
+                `mm.top=${mm.top} mm.bot=${mm.bottom}`,
+                { outer }
+              );
+
+              geomPairs.push([m.id, {
+                id: m.id,
+                tileIndex: k,
+                interval: iv,
+                top: Math.max(bandTop, Math.round(mm.top)),
+                bottom: Math.min(bandBot, Math.round(mm.bottom)),
+              }]);
+            }
+          }
+
+          geometryRef.current = new Map<string, MeasureGeom>(geomPairs);
+        }
+
+        await logStep(
+          `measures(pre): ${res.measuresPre.length} bar-cands(pre): ${res.barCands.length} geom(pre): ${geometryRef.current.size}`,
+          { outer }
+        );
+      }
 
       const mergeThresh = dynamicBandGapPx();
       await logStep(
