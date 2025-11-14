@@ -2228,21 +2228,20 @@ export default function ScoreViewer({
         }
       }
 
-      const mergeThresh = dynamicBandGapPx();
+      const visH = visiblePageHeight(outer);
 
       if (isDiagOn()) {
         await logStep(
-          `bands: ${bands.length} mergeThresh=${mergeThresh} (no packGap; packer disabled)`,
+          `bands: ${bands.length} visH: ${visH} topGutterPx: ${topGutterPx} bottomGutterPx: ${bottomGutterPx}`,
           { outer, caller: prevFuncTag }
         );
       }
 
-      const visH = visiblePageHeight(outer);
       const starts = perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
         () => computePageStarts(outer, bands, visH, Math.max(0, topGutterPx), Math.max(0, bottomGutterPx)),
         (ms) => {
-          void logStep(`computePageStarts() runtime: ${ms}ms visH: ${visH} topGutterPx: ${topGutterPx} bottomGutterPx: ${bottomGutterPx}`,
+          void logStep(`computePageStarts() runtime: ${ms}ms`,
             { outer, caller: prevFuncTag }
           );
         }
@@ -2303,14 +2302,18 @@ export default function ScoreViewer({
 
       const visH = visiblePageHeight(outer);
 
-      // Always-on, high-signal line
-      void logStep(`repag: bands=${bands.length} visibleH=${visH}`, { outer, caller: prevFuncTag });
+      if (isDiagOn()) {
+        void logStep(
+          `bands: ${bands.length} visH: ${visH} topGutterPx: ${topGutterPx} bottomGutterPx: ${bottomGutterPx}`,
+          { outer, caller: prevFuncTag }
+        );
+      }
 
       const starts = perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
         () => computePageStarts(outer, bands, visH, Math.max(0, topGutterPx), Math.max(0, bottomGutterPx)),
         (ms) => {
-          void logStep(`computePageStarts() runtime: ${ms}ms visH: ${visH} topGutterPx: ${topGutterPx} bottomGutterPx: ${bottomGutterPx}`,
+          void logStep(`computePageStarts() runtime: ${ms}ms`,
             { outer, caller: prevFuncTag }
           );
         }
