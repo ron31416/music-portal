@@ -6,17 +6,6 @@ import type { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 
 // ---------- Props & Types ----------
 
-interface Props {
-  src: string;
-  fillParent?: boolean; // default: true
-  height?: number;
-  className?: string;
-  style?: React.CSSProperties;
-  topGutterPx?: number;
-  bottomGutterPx?: number;
-  debugShowAllMeasureNumbers?: boolean;
-}
-
 interface Band { top: number; bottom: number; height: number }
 
 // Viewer-space rectangle (left/top/width/height in px, relative to wrapper host)
@@ -79,9 +68,8 @@ const REFLOW = {
   BOTTOM_PEEK_PAD_LO_DPR: 5,
   BOTTOM_PEEK_PAD_HI_DPR: 6,
 
-  // --- NEW: band/measure padding (will be capped by gutters) ---
-  BAND_PAD_PX_BASE: 12,      // headroom added to each system band (top+bottom)
-  MEASURE_PAD_PX_BASE: 12,    // headroom added to each measure box (clamped inside band)
+  // base headroom for both system bands and measure boxes
+  PAD_PX_BASE: 12
 } as const;
 
 async function withTimeout<T>(p: Promise<T>, ms: number, tag: string): Promise<T> {
@@ -524,8 +512,8 @@ function derivePaddedBands(
   topGutterPx: number,
   bottomGutterPx: number
 ): Band[] {
-  const padTop = Math.min(REFLOW.BAND_PAD_PX_BASE, Math.max(0, topGutterPx));
-  const padBot = Math.min(REFLOW.BAND_PAD_PX_BASE, Math.max(0, bottomGutterPx));
+  const padTop = Math.min(REFLOW.PAD_PX_BASE, Math.max(0, topGutterPx));
+  const padBot = Math.min(REFLOW.PAD_PX_BASE, Math.max(0, bottomGutterPx));
   if ((padTop | padBot) === 0) { return raw.slice(); }
 
   const out: Band[] = new Array(raw.length);
@@ -961,8 +949,6 @@ function drawMeasureBoxes(
     if (paired.length === 0) { continue; }
 
     // Draw rectangles using cached per-measure verticals (clamped to tile seams)
-    const BASE_PAD = REFLOW.MEASURE_PAD_PX_BASE;
-
     for (let i = 0; i < paired.length; i++) {
       const { m, iv, mt, mb } = paired[i]!;
 
@@ -983,8 +969,8 @@ function drawMeasureBoxes(
       // Pads capped by headroom
       const availTop = Math.max(0, mtDraw - bandTop);
       const availBot = Math.max(0, bandBot - mbDraw);
-      const padTop = Math.min(BASE_PAD, availTop);
-      const padBot = Math.min(BASE_PAD, availBot);
+      const padTop = Math.min(REFLOW.PAD_PX_BASE, availTop);
+      const padBot = Math.min(REFLOW.PAD_PX_BASE, availBot);
 
       const top = Math.max(bandTop, Math.round(mtDraw - padTop));
       const bot = Math.min(bandBot, Math.round(mbDraw + padBot));
@@ -1168,19 +1154,19 @@ async function perfBlockAsync<T>(
   }
 }
 
+// Props for the score viewer; currently just the song source ID.
+interface Props {
+  src: string;
+}
 
 // ---------- Component ----------
 
 export default function ScoreViewer({
   src,
-  fillParent = true,
-  height = 600,
-  className = "",
-  style,
-  topGutterPx = 12,
-  bottomGutterPx = topGutterPx,
-  debugShowAllMeasureNumbers = false,
 }: Props) {
+
+  const topGutterPx = REFLOW.PAD_PX_BASE;
+  const bottomGutterPx = REFLOW.PAD_PX_BASE;
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const svgHostRef = useRef<HTMLDivElement | null>(null);
@@ -1417,7 +1403,6 @@ export default function ScoreViewer({
 
   // ---- callback ref proxies (used by queued window.setTimeouts) ----
   const reflowFnRef = useRef<ReflowCallback>(async () => { });
-
   const repagFnRef = useRef<() => void>(() => { });
 
   const vpHRef = useVisibleViewportHeight();
@@ -2691,7 +2676,6 @@ export default function ScoreViewer({
           drawComposer: true,
           drawLyricist: true,
           drawMeasureNumbers: false, // do not set to 'true' or it can cause bands to overlap
-          measureNumberInterval: debugShowAllMeasureNumbers ? 1 : undefined,
         }) as OpenSheetMusicDisplay;
 
         osmdRef.current = osmd;
@@ -2940,10 +2924,10 @@ export default function ScoreViewer({
     };
     // Only re-init when source changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, debugShowAllMeasureNumbers]);
+  }, [src]);
 
 
-  // Paging helpers
+  // ---------- Paging helpers ----------
 
   // Core page-turn handler (goNext/goPrev). On rare layout shifts, retries next frame.
   const turnPage = useCallback(
@@ -3387,32 +3371,20 @@ export default function ScoreViewer({
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [hideBusy]);
 
+
   // ---------- Styles ----------
 
-  const isFill = fillParent;
-  const outerStyle: React.CSSProperties = isFill
-    ? {
-      width: "100%",
-      height: vpHRef.current > 0 ? vpHRef.current : "100vh", // ← was "100%"
-      minHeight: 320,                                        // ← was 0
-      position: "relative",
-      overflow: "hidden",
-      background: "#fff",
-      paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 2px)",
-      boxSizing: "border-box",
-      isolation: "isolate",
-    }
-    : {
-      width: "100%",
-      height: height ?? 600,
-      minHeight: height ?? 600,
-      position: "relative",
-      overflow: "hidden",
-      background: "#fff",
-      paddingBottom: "2px",
-      boxSizing: "border-box",
-      isolation: "isolate",
-    };
+  const outerStyle: React.CSSProperties = {
+    width: "100%",
+    height: vpHRef.current > 0 ? vpHRef.current : "100vh",
+    minHeight: 320,
+    position: "relative",
+    overflow: "hidden",
+    background: "#fff",
+    paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 2px)",
+    boxSizing: "border-box",
+    isolation: "isolate",
+  };
 
   const hostStyle: React.CSSProperties = {
     position: "absolute",
@@ -3421,7 +3393,7 @@ export default function ScoreViewer({
     minWidth: 0,
   };
 
-  // ---------- Busy overlay ---------- 
+  // Busy overlay 
   const blockerStyle: React.CSSProperties = {
     position: "fixed",
     inset: 0,
@@ -3439,13 +3411,7 @@ export default function ScoreViewer({
   };
 
   return (
-    <div
-      ref={wrapRef}
-      data-viewer-wrapper="1"
-      data-viewer-probe="v10-pre"
-      className={className}
-      style={{ /* outline: "4px solid fuchsia", */ ...outerStyle, ...style }}
-    >
+    <div ref={wrapRef} style={outerStyle}>
       {/* OSMD host (SVG goes here) */}
       <div ref={svgHostRef} style={hostStyle} />
 
