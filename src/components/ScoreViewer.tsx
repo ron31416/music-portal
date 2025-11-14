@@ -2289,7 +2289,6 @@ export default function ScoreViewer({
 
     const prevFuncTag = outer.dataset.viewerFunc ?? "";
     outer.dataset.viewerFunc = "paginateViewer";
-    logStep("called by: " + prevFuncTag, { outer, caller: prevFuncTag });
 
     try {
       outer.dataset.viewerRecompute = String(Date.now());
