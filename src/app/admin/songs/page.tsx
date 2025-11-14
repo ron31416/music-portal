@@ -108,14 +108,84 @@ function extractFromMusicXml(xmlText: string, fallbackName: string): { title: st
     return { title, composer };
 }
 
+
+function stripPedalMarks(xmlText: string): string {
+    if (!xmlText || !xmlText.trim()) { return xmlText; }
+
+    try {
+        const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+        if (doc.getElementsByTagName("parsererror").length > 0) {
+            // If it isn't valid XML, don't touch it.
+            return xmlText;
+        }
+
+        const toRemove: Element[] = [];
+
+        // 1) <direction><direction-type><pedal .../></direction-type>...</direction>
+        const directionPedals = doc.querySelectorAll("direction > direction-type > pedal");
+        directionPedals.forEach((pedalEl) => {
+            const directionType = pedalEl.parentElement;
+            const direction = directionType?.parentElement;
+            if (direction && direction.tagName.toLowerCase() === "direction") {
+                if (direction.parentNode) {
+                    toRemove.push(direction);
+                }
+            } else if (pedalEl.parentNode) {
+                toRemove.push(pedalEl);
+            }
+        });
+
+        // 2) <notations><pedal .../></notations> (less common, but appears)
+        const notationPedals = doc.querySelectorAll("notations > pedal");
+        notationPedals.forEach((pedalEl) => {
+            if (pedalEl.parentNode) {
+                toRemove.push(pedalEl);
+            }
+        });
+
+        // 3) <sound pedal="on" ... /> or <sound pedal-change="yes" ... />
+        const soundNodes = doc.querySelectorAll("sound[pedal], sound[pedal-change]");
+        soundNodes.forEach((el) => {
+            if (el.hasAttribute("pedal")) {
+                el.removeAttribute("pedal");
+            }
+            if (el.hasAttribute("pedal-change")) {
+                el.removeAttribute("pedal-change");
+            }
+            if (!el.attributes.length && !el.textContent?.trim() && el.parentNode) {
+                toRemove.push(el);
+            }
+        });
+
+        // Actually remove everything we collected.
+        for (const el of toRemove) {
+            if (el.parentNode) {
+                el.parentNode.removeChild(el);
+            }
+        }
+
+        if (toRemove.length === 0 && soundNodes.length === 0) {
+            // Nothing changed; avoid rewriting formatting for no reason.
+            return xmlText;
+        }
+
+        return new XMLSerializer().serializeToString(doc);
+    } catch {
+        // If anything goes sideways, return the original text.
+        return xmlText;
+    }
+}
+
+
 async function extractMetadataAndXml(
     file: File,
     kind: { isMxl: boolean; isXml: boolean }
 ): Promise<{ title: string; composer: string; xmlText: string }> {
     if (kind.isXml) {
-        const xmlText = await file.text();
-        const meta = extractFromMusicXml(xmlText, file.name);
-        return { ...meta, xmlText };
+        const rawXmlText = await file.text();
+        const cleanedXml = stripPedalMarks(rawXmlText);
+        const meta = extractFromMusicXml(cleanedXml, file.name);
+        return { ...meta, xmlText: cleanedXml };
     }
     if (kind.isMxl) {
         const { unzip } = await import("unzipit");
@@ -126,12 +196,14 @@ async function extractMetadataAndXml(
         const rootPath = findRootfilePath(containerXml);
         const root = entries[rootPath];
         if (!root) { throw new Error(`MXL: rootfile missing in archive: ${rootPath}`); }
-        const xmlText = await root.text();
-        const meta = extractFromMusicXml(xmlText, file.name);
-        return { ...meta, xmlText };
+        const rawXmlText = await root.text();
+        const cleanedXml = stripPedalMarks(rawXmlText);
+        const meta = extractFromMusicXml(cleanedXml, file.name);
+        return { ...meta, xmlText: cleanedXml };
     }
     throw new Error("Unsupported file type");
 }
+
 
 // Build a .mxl (ZIP) from full XML text
 async function xmlToMxl(xmlText: string, innerNameHint: string): Promise<Uint8Array> {
