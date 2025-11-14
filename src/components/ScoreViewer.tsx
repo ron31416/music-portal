@@ -102,6 +102,13 @@ async function loadOSMD(
   type LoadInput = string | Document | ArrayBuffer | Uint8Array;
   type OSMDHasLoad = { load: (i: LoadInput) => void | Promise<unknown> };
 
+  const rules = osmd.EngravingRules;
+  rules.MinSkyBottomDistBetweenSystems *= 1.3;  // give more headroom between systems
+
+  if (isDiagOn()) {
+    logStep(`OSMD rules.MinSkyBottomDistBetweenSystems: ${rules.MinSkyBottomDistBetweenSystems}`, {});
+  }
+
   const o = osmd as unknown as OSMDHasLoad;
   await Promise.resolve(o.load(input));
 }
@@ -549,6 +556,10 @@ function validateBandSpacing(
 ): void {
   if (!bands.length) { return; }
 
+  const prevFuncTag = outer.dataset.viewerFunc ?? "";
+  outer.dataset.viewerFunc = "validateBandSpacing";
+
+
   let overlaps = 0;
   let tightGaps = 0;
 
@@ -561,8 +572,6 @@ function validateBandSpacing(
   }
 
   if (overlaps > 0 || tightGaps > 0) {
-    console.warn(`band-spacing check: overlaps=${overlaps} tightGaps(<${minGapAlertPx}px)=${tightGaps}`);
-
     if (isDiagOn()) {
       // Emit per-incident detail (kept short).
       for (let i = 0; i + 1 < bands.length; i++) {
@@ -572,17 +581,18 @@ function validateBandSpacing(
         if (gap < 0) {
           void logStep(
             `OVERLAP: bands[${i}] bottom=${Math.ceil(a.bottom)} > bands[${i + 1}] top=${Math.floor(b.top)} (delta ${gap})`,
-            { outer }
+            { outer, caller: prevFuncTag }
           );
         } else if (gap < minGapAlertPx) {
           void logStep(
             `TIGHT: bands[${i}]→[${i + 1}] gap=${gap}px (<${minGapAlertPx})`,
-            { outer }
+            { outer, caller: prevFuncTag }
           );
         }
       }
     }
   }
+  try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
 }
 
 
@@ -2662,6 +2672,7 @@ export default function ScoreViewer({
               { outer, caller: prevFuncTag });
           }
         );
+
         const { OpenSheetMusicDisplay: OSMDClass } =
           mod as typeof import("opensheetmusicdisplay");
 
@@ -2671,6 +2682,7 @@ export default function ScoreViewer({
           (osmdRef.current as { dispose?: () => void } | null)?.dispose?.();
           osmdRef.current = null;
         }
+
         const osmd = new OSMDClass(host, {
           backend: "svg" as const,
           autoResize: false,
@@ -2681,6 +2693,7 @@ export default function ScoreViewer({
           drawMeasureNumbers: false, // do not set to 'true' or it can cause bands to overlap
           measureNumberInterval: debugShowAllMeasureNumbers ? 1 : undefined,
         }) as OpenSheetMusicDisplay;
+
         osmdRef.current = osmd;
 
         await startSpinner({ message: DEFAULT_BUSY_MSG, gatePaint: true });
