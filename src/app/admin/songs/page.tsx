@@ -120,8 +120,10 @@ function stripPedalMarks(xmlText: string): string {
         }
 
         const toRemove: Element[] = [];
+        let changed = false;
 
-        // 1) <direction><direction-type><pedal .../></direction-type>...</direction>
+        // --- 1) Remove pedal directions (we already liked this part) ---
+
         const directionPedals = doc.querySelectorAll("direction > direction-type > pedal");
         directionPedals.forEach((pedalEl) => {
             const directionType = pedalEl.parentElement;
@@ -129,49 +131,93 @@ function stripPedalMarks(xmlText: string): string {
             if (direction && direction.tagName.toLowerCase() === "direction") {
                 if (direction.parentNode) {
                     toRemove.push(direction);
+                    changed = true;
                 }
             } else if (pedalEl.parentNode) {
                 toRemove.push(pedalEl);
+                changed = true;
             }
         });
 
-        // 2) <notations><pedal .../></notations> (less common, but appears)
-        const notationPedals = doc.querySelectorAll("notations > pedal");
-        notationPedals.forEach((pedalEl) => {
-            if (pedalEl.parentNode) {
-                toRemove.push(pedalEl);
+        // --- 2) Remove metronome (♩ = 164) directions, keep text like "Adagio" ---
+
+        const metronomeDirs = doc.querySelectorAll("direction");
+        metronomeDirs.forEach((dir) => {
+            const hasMetronome = dir.querySelector("direction-type > metronome") !== null;
+            if (hasMetronome && dir.parentNode) {
+                // Remove the whole direction (metronome mark + its spacing)
+                toRemove.push(dir);
+                changed = true;
             }
         });
 
-        // 3) <sound pedal="on" ... /> or <sound pedal-change="yes" ... />
-        const soundNodes = doc.querySelectorAll("sound[pedal], sound[pedal-change]");
+        // --- 3) Remove <sound> pedal/tempo attributes (cleanup) ---
+
+        const soundNodes = doc.querySelectorAll("sound");
         soundNodes.forEach((el) => {
+            let localChanged = false;
+
             if (el.hasAttribute("pedal")) {
                 el.removeAttribute("pedal");
+                localChanged = true;
             }
             if (el.hasAttribute("pedal-change")) {
                 el.removeAttribute("pedal-change");
+                localChanged = true;
             }
-            if (!el.attributes.length && !el.textContent?.trim() && el.parentNode) {
-                toRemove.push(el);
+            if (el.hasAttribute("tempo")) {
+                el.removeAttribute("tempo");
+                localChanged = true;
+            }
+
+            if (localChanged) {
+                changed = true;
+                if (!el.attributes.length && !el.textContent?.trim() && el.parentNode) {
+                    // A naked <sound/> with nothing left: drop it.
+                    toRemove.push(el);
+                }
             }
         });
 
-        // Actually remove everything we collected.
+        // --- 4) Remove fingering: <notations><technical><fingering>... ---
+
+        const fingeringNodes = doc.querySelectorAll("notations > technical > fingering");
+        fingeringNodes.forEach((fing) => {
+            const technical = fing.parentElement;
+            const notations = technical?.parentElement;
+
+            // Remove the fingering element itself
+            if (fing.parentNode) {
+                fing.parentNode.removeChild(fing);
+                changed = true;
+            }
+
+            // If <technical> is now empty, remove it
+            if (technical && !technical.querySelector("*") && technical.parentNode) {
+                technical.parentNode.removeChild(technical);
+            }
+
+            // If <notations> is now empty, remove it too
+            if (notations && !notations.querySelector("*") && notations.parentNode) {
+                notations.parentNode.removeChild(notations);
+            }
+        });
+
+        // Actually remove all elements we collected earlier (pedals, metronomes, dead sounds).
         for (const el of toRemove) {
             if (el.parentNode) {
                 el.parentNode.removeChild(el);
             }
         }
 
-        if (toRemove.length === 0 && soundNodes.length === 0) {
-            // Nothing changed; avoid rewriting formatting for no reason.
+        if (!changed && toRemove.length === 0) {
+            // Nothing changed; avoid rewriting XML formatting for no reason.
             return xmlText;
         }
 
         return new XMLSerializer().serializeToString(doc);
     } catch {
-        // If anything goes sideways, return the original text.
+        // Fail-safe: if anything explodes, use original XML.
         return xmlText;
     }
 }
