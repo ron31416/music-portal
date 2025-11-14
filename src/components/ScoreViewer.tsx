@@ -1512,7 +1512,7 @@ export default function ScoreViewer({
         svg.style.transformOrigin = "top left";
         svg.style.willChange = "transform";
 
-        if (isLogOn()) {
+        if (isDiagOn()) {
           drawBandGuides(svg, bands, startIndex, nextStartIndex);
         }
 
@@ -2678,8 +2678,7 @@ export default function ScoreViewer({
           drawSubtitle: true,
           drawComposer: true,
           drawLyricist: true,
-          // Dev aid: render numbers each measure if requested to verify continuity
-          drawMeasureNumbers: true,
+          drawMeasureNumbers: false, // do not set to 'true' or it can cause bands to overlap
           measureNumberInterval: debugShowAllMeasureNumbers ? 1 : undefined,
         }) as OpenSheetMusicDisplay;
         osmdRef.current = osmd;
