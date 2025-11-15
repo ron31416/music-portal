@@ -3068,6 +3068,7 @@ export default function ScoreViewer({
     let startX = 0;
     let startT = 0; // ← add
     let active = false;
+    let isMultiTouch = false;
 
     // Tunables for what counts as a "tap"
     const TAP_MAX_MS = 250;       // quick touch
@@ -3077,37 +3078,66 @@ export default function ScoreViewer({
       if (!readyRef.current || busyRef.current || e.touches.length === 0) {
         return;
       }
+
+      // If this starts as a multi-touch gesture, treat it as "not ours"
+      if (e.touches.length > 1) {
+        isMultiTouch = true;
+        active = false;
+        return;
+      }
+
+      isMultiTouch = false;
       active = true;
-      startY = e.touches[0]?.clientY ?? 0;
-      startX = e.touches[0]?.clientX ?? 0;
-      startT = performance.now();          // ← add
+      const t = e.touches[0];
+      startY = t?.clientY ?? 0;
+      startX = t?.clientX ?? 0;
+      startT = performance.now();
     };
 
-
     const onTouchMove = (e: TouchEvent) => {
+      // If this gesture is multi-touch (pinch), do not interfere
+      if (isMultiTouch || e.touches.length > 1) {
+        return;
+      }
+
       if (!active || !readyRef.current || busyRef.current) {
         return;
       }
+
+      // Single-finger swipe: prevent scroll and handle ourselves
       e.preventDefault();
     };
 
     const onTouchEnd = (e: TouchEvent) => {
+      // If this was a multi-touch gesture (pinch), ignore it completely
+      if (isMultiTouch) {
+        isMultiTouch = false;
+        active = false;
+        return;
+      }
+
       if (!active) {
         return;
       }
       active = false;
+
       if (busyRef.current) {
         return;
       }
+
       const t = e.changedTouches[0];
       if (!t) { return; }
 
       const dy = t.clientY - startY;
       const dx = t.clientX - startX;
-      const dt = performance.now() - startT;  // ← add
+      const dt = performance.now() - startT;
 
       // 1) Tap-to-advance (quick + tiny movement)
-      if (Math.abs(dx) <= TAP_MAX_MOVE_PX && Math.abs(dy) <= TAP_MAX_MOVE_PX && dt <= TAP_MAX_MS) {
+      if (
+        Math.abs(dx) <= TAP_MAX_MOVE_PX &&
+        Math.abs(dy) <= TAP_MAX_MOVE_PX &&
+        dt <= TAP_MAX_MS
+      ) {
         goNext();
         return;
       }
