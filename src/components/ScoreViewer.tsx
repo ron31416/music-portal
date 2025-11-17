@@ -870,12 +870,8 @@ function drawMeasureBoxes(
   if (isDiagOn()) {
     const keysSample = Array.from(geomIn.keys()).slice(0, 12);
     void logStep(
-      `diag: geomIn size=${(geomIn as ReadonlyMap<string, MeasureGeom>).size} sample=[${keysSample.join(", ")}]`,
-      { outer, caller: prevFuncTag }
-    );
+      `diag: geomIn size=${(geomIn as ReadonlyMap<string, MeasureGeom>).size} sample=[${keysSample.join(", ")}]`);
   }
-
-  // --- END DIAG ---
 
   // Now iterate tiles in order
   const lastTileIndex = seps.length - 2;
@@ -988,7 +984,7 @@ function drawMeasureBoxes(
         );
       }
 
-      // SVG draw
+      // SVG rect
       const r = createSvgEl("rect");
       r.setAttribute("x", String(x));
       r.setAttribute("y", String(y));
@@ -999,6 +995,35 @@ function drawMeasureBoxes(
       r.setAttribute("stroke-width", "1");
       r.setAttribute("vector-effect", "non-scaling-stroke");
       g.appendChild(r);
+
+      // --- NEW: loud diagnostic measure label ---
+      const measureNum = Number(m.id);
+
+      if (isDiagOn() && i === 0) {
+        // Log once per tile what we're trying to label
+        logStep(
+          `diag: label candidate m.id='${m.id}' num=${measureNum}`,
+          { outer, caller: prevFuncTag }
+        );
+      }
+
+      if (Number.isFinite(measureNum)) {
+        const textEl = createSvgEl("text");
+        textEl.textContent = String(measureNum);
+
+        // Big, obvious, and high-contrast so we *can't* miss it
+        const labelX = x + 2;
+        const labelY = y + 10;
+
+        textEl.setAttribute("x", String(labelX));
+        textEl.setAttribute("y", String(labelY));
+        textEl.setAttribute("font-size", "10");
+        textEl.setAttribute("fill", "red");
+        textEl.setAttribute("stroke", "black");
+        textEl.setAttribute("stroke-width", "0.5");
+
+        g.appendChild(textEl);
+      }
 
       drawnCount++;
     }
@@ -1154,6 +1179,73 @@ async function perfBlockAsync<T>(
   }
 }
 
+
+function rebuildMeasureToPageMapping(
+  bands: ReadonlyArray<Band>,                 // whatever your Band type is
+  starts: ReadonlyArray<number>,
+  geometry: ReadonlyMap<string, MeasureGeom>
+): number[] {
+  const bandCount = bands.length;
+  const geomSize = geometry.size;
+
+  if (bandCount === 0 || geomSize === 0) {
+    return [];
+  }
+
+  // 1) band → page
+  const bandToPage: number[] = new Array(bandCount).fill(-1);
+  for (let p = 0; p < starts.length; p++) {
+    const startBand = starts[p]!;
+    const endBand =
+      p + 1 < starts.length ? starts[p + 1]! : bandCount;
+    for (let b = startBand; b < endBand; b++) {
+      bandToPage[b] = p;
+    }
+  }
+
+  // 2) measure (by id) → page
+  const measureToPage: number[] = [];
+  for (const [id, geom] of geometry.entries()) {
+    const mNum = Number(id);        // your ids are "1", "2", ...
+    if (!Number.isFinite(mNum)) continue;
+
+    const bandIndex = geom.tileIndex;
+    const pageIndex = bandToPage[bandIndex] ?? -1;
+
+    measureToPage[mNum] = pageIndex;
+  }
+
+  return measureToPage;
+}
+
+
+/**
+ * Given a measure→page mapping and a target page index, choose
+ * an "anchor" measure on that page.
+ *
+ * Phase 1 implementation: choose the earliest (lowest measure number)
+ * on the given page.
+ *
+ * The name is intentionally generic so we can later change the strategy
+ * (e.g., choose the middle measure on that page).
+ */
+export function findAnchorMeasure(
+  measureToPage: ReadonlyArray<number>,
+  pageIndex: number
+): number | null {
+  let lowest = Number.POSITIVE_INFINITY;
+
+  // Scan for all measures that map to the given page.
+  for (let m = 0; m < measureToPage.length; m++) {
+    if (measureToPage[m] === pageIndex && m < lowest) {
+      lowest = m;
+    }
+  }
+
+  return Number.isFinite(lowest) ? lowest : null;
+}
+
+
 // Props for the score viewer; currently just the song source ID.
 interface Props {
   src: string;
@@ -1164,6 +1256,8 @@ interface Props {
 export default function ScoreViewer({
   src,
 }: Props) {
+
+  const measureToPageRef = useRef<number[]>([]);
 
   const topGutterPx = REFLOW.PAD_PX_BASE;
   const bottomGutterPx = REFLOW.PAD_PX_BASE;
@@ -1246,6 +1340,22 @@ export default function ScoreViewer({
       }
     }
   }, []);
+
+
+  function findFirstMeasureOnPage(
+    measureToPage: ReadonlyArray<number>,
+    pageIndex: number
+  ): number | null {
+    let best = Number.POSITIVE_INFINITY;
+
+    for (let m = 0; m < measureToPage.length; m++) {
+      if (measureToPage[m] === pageIndex && m < best) {
+        best = m;
+      }
+    }
+
+    return Number.isFinite(best) ? best : null;
+  }
 
 
   // --- WIDTH-SANDBOXED RENDER (safe) ---
@@ -1692,6 +1802,16 @@ export default function ScoreViewer({
     outer.dataset.viewerFunc = "layoutViewer";
     outer.dataset.viewerPhase = "render";
     await logStep("phase starting", { outer, caller: prevFuncTag });
+
+    const currentPageBeforeLayout = pageIdxRef.current ?? 0;
+
+    let anchorMeasure: number | null = null;
+    if (measureToPageRef.current.length > 0) {
+      anchorMeasure = findAnchorMeasure(
+        measureToPageRef.current,
+        currentPageBeforeLayout
+      );
+    }
 
     try {
       const ap = makeAfterPaint(outer);
@@ -2242,22 +2362,117 @@ export default function ScoreViewer({
         }
       );
 
+      const measureToPage = rebuildMeasureToPageMapping(
+        bands,
+        starts,
+        geometryRef.current ?? new Map<string, MeasureGeom>()
+      );
+      measureToPageRef.current = measureToPage;
+
+      // Optional diag
+      if (isDiagOn()) {
+        const sampleParts: string[] = [];
+        for (let m = 0; m < measureToPage.length && sampleParts.length < 20; m++) {
+          const pageIndex = measureToPage[m];
+          if (pageIndex == null || pageIndex < 0) continue;
+          sampleParts.push(`m${m}->p${pageIndex}`);
+        }
+        await logStep(`diag: measureToPageRef sample (first 20): ${sampleParts.join(", ")}`
+        );
+      }
+
+      // --- Build measure→page mapping for this layout ---
+      {
+        const bandCount = bands.length;
+        const geomSize = geometryRef.current.size;
+
+        if (bandCount === 0 || geomSize === 0) {
+          // Nothing to map in this layout
+          measureToPageRef.current = [];
+        } else {
+          // 1) band → page
+          const bandToPage: number[] = new Array(bandCount).fill(-1);
+          for (let p = 0; p < starts.length; p++) {
+            const startBand = starts[p]!;
+            const endBand =
+              p + 1 < starts.length ? starts[p + 1]! : bandCount;
+            for (let b = startBand; b < endBand; b++) {
+              bandToPage[b] = p;
+            }
+          }
+
+          // 2) measure (by id) → page
+          const measureToPage: number[] = [];
+          for (const [id, geom] of geometryRef.current.entries()) {
+            // Your current geometry ids are "1", "2", "3", ...
+            const mNum = Number(id);
+            if (!Number.isFinite(mNum)) continue;
+
+            const bandIndex = geom.tileIndex;
+            const pageIndex = bandToPage[bandIndex] ?? -1;
+
+            // It's fine if index 0 is unused; measures start at 1.
+            measureToPage[mNum] = pageIndex;
+          }
+
+          measureToPageRef.current = measureToPage;
+
+          // Optional diag: show a few entries
+          if (isDiagOn()) {
+            const sampleParts: string[] = [];
+            for (let m = 0; m < measureToPage.length && sampleParts.length < 20; m++) {
+              const pageIndex = measureToPage[m];
+              if (pageIndex == null || pageIndex < 0) continue;
+              sampleParts.push(`m${m}->p${pageIndex}`);
+            }
+            await logStep(`diag: measureToPageRef sample (first 20): ${sampleParts.join(", ")}`,
+              { outer, caller: prevFuncTag }
+            );
+          }
+        }
+      }
+
       await logStep("phase finished", { outer, caller: prevFuncTag });
       outer.dataset.viewerPhase = "apply";
       await logStep("phase starting", { outer, caller: prevFuncTag });
 
       pageStartIdxsRef.current = starts;
       systemBandsRef.current = bands;
-      pageIdxRef.current = 0;
+
+      // Decide which page to show after this layout.
+      // Default to 0 (initial load behavior).
+      let targetPageIndex = 0;
+
+      if (anchorMeasure != null) {
+        const map = measureToPageRef.current;
+        const mapped = map[anchorMeasure];
+
+        if (
+          mapped != null &&
+          mapped >= 0 &&
+          mapped < starts.length
+        ) {
+          targetPageIndex = mapped;
+        }
+      }
 
       await perfBlockAsync(
         nextPerfUID(outer.dataset.viewerRun),
         async () => {
-          applyPage(0);
-          await Promise.race([ap(gateLabel, gateMs), new Promise<void>((r) => setTimeout(r, gateMs))]);
-          if (doubleApply) { applyPage(0); }
+          applyPage(targetPageIndex);
+
+          await Promise.race([
+            ap(gateLabel, gateMs),
+            new Promise<void>((r) => setTimeout(r, gateMs)),
+          ]);
+
+          if (doubleApply) {
+            applyPage(targetPageIndex);
+          }
         },
-        (ms) => { void logStep(`applyPage() runtime: ${ms}ms`, { outer, caller: prevFuncTag }); }
+        (ms) => {
+          void logStep(`applyPage() runtime: ${ms}ms`, { outer, caller: prevFuncTag });
+        }
       );
 
       await logStep(`bands: ${bands.length} pages: ${starts.length}`, { outer, caller: prevFuncTag });
@@ -2274,6 +2489,18 @@ export default function ScoreViewer({
   const paginateViewer = useCallback((): void => {
     const outer = wrapRef.current;
     if (!outer) { return; }
+
+    // Determine which page we were on before this height-only repagination.
+    const currentPageBeforePaginate = pageIdxRef.current ?? 0;
+
+    // Optional anchor measure based on the previous pagination.
+    let anchorMeasure: number | null = null;
+    if (measureToPageRef.current.length > 0) {
+      anchorMeasure = findAnchorMeasure(
+        measureToPageRef.current,
+        currentPageBeforePaginate
+      );
+    }
 
     // Remove stale boxes; applyPage() will redraw them for the new page window
     try { clearMeasureBoxes(outer); } catch { }
@@ -2316,6 +2543,14 @@ export default function ScoreViewer({
       pageStartIdxsRef.current = starts;
       outer.dataset.viewerPages = String(starts.length);
 
+      // Rebuild measure→page mapping for this pagination
+      const measureToPage = rebuildMeasureToPageMapping(
+        bands,
+        starts,
+        geometryRef.current ?? new Map<string, MeasureGeom>()
+      );
+      measureToPageRef.current = measureToPage;
+
       // Optional diagnostics: compact page map
       if (isDiagOn()) {
         const lastBand = bands.length - 1;
@@ -2326,12 +2561,41 @@ export default function ScoreViewer({
           parts.push(`[p${p + 1} ${s}–${e}]`);
         }
         void logStep(`repag map: pages=${starts.length} ${parts.join(" ")}`, { outer, caller: prevFuncTag });
+
+        const sampleParts: string[] = [];
+        for (let m = 0; m < measureToPage.length && sampleParts.length < 20; m++) {
+          const pageIndex = measureToPage[m];
+          if (pageIndex == null || pageIndex < 0) continue;
+          sampleParts.push(`m${m}->p${pageIndex}`);
+        }
+        void logStep(
+          `repag measureToPage sample (first 20): ${sampleParts.join(", ")}`,
+          { outer, caller: prevFuncTag }
+        );
       }
 
-      // Always reset to page 1 after repagination
+      // Decide target page after repagination.
+      // Default to 0 (old behavior) and override if anchor maps cleanly.
+      let targetPageIndex = 0;
+
+      if (anchorMeasure != null) {
+        const mapped = measureToPage[anchorMeasure];
+        if (
+          mapped != null &&
+          mapped >= 0 &&
+          mapped < starts.length
+        ) {
+          targetPageIndex = mapped;
+        }
+      }
+
+      if (isDiagOn()) {
+        void logStep(`repag anchorMeasure=${anchorMeasure ?? -1} targetPageIndex=${targetPageIndex}`);
+      }
+
       perfBlock(
         nextPerfUID(outer.dataset.viewerRun),
-        () => { applyPage(0); },
+        () => { applyPage(targetPageIndex); },
         (ms) => { void logStep(`applyPage runtime: ${ms}ms`, { outer, caller: prevFuncTag }); }
       );
 
