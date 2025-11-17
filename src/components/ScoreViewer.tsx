@@ -1,4 +1,4 @@
-// src/components/ScoreViewer.tsx
+// src/components/ScoreViewer.tsx 
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -1207,7 +1207,7 @@ function rebuildMeasureToPageMapping(
   const measureToPage: number[] = [];
   for (const [id, geom] of geometry.entries()) {
     const mNum = Number(id);        // your ids are "1", "2", ...
-    if (!Number.isFinite(mNum)) continue;
+    if (!Number.isFinite(mNum)) { continue; }
 
     const bandIndex = geom.tileIndex;
     const pageIndex = bandToPage[bandIndex] ?? -1;
@@ -1340,22 +1340,6 @@ export default function ScoreViewer({
       }
     }
   }, []);
-
-
-  function findFirstMeasureOnPage(
-    measureToPage: ReadonlyArray<number>,
-    pageIndex: number
-  ): number | null {
-    let best = Number.POSITIVE_INFINITY;
-
-    for (let m = 0; m < measureToPage.length; m++) {
-      if (measureToPage[m] === pageIndex && m < best) {
-        best = m;
-      }
-    }
-
-    return Number.isFinite(best) ? best : null;
-  }
 
 
   // --- WIDTH-SANDBOXED RENDER (safe) ---
@@ -2374,7 +2358,7 @@ export default function ScoreViewer({
         const sampleParts: string[] = [];
         for (let m = 0; m < measureToPage.length && sampleParts.length < 20; m++) {
           const pageIndex = measureToPage[m];
-          if (pageIndex == null || pageIndex < 0) continue;
+          if (pageIndex === null || pageIndex === undefined || pageIndex < 0) { continue; }
           sampleParts.push(`m${m}->p${pageIndex}`);
         }
         await logStep(`diag: measureToPageRef sample (first 20): ${sampleParts.join(", ")}`
@@ -2406,7 +2390,7 @@ export default function ScoreViewer({
           for (const [id, geom] of geometryRef.current.entries()) {
             // Your current geometry ids are "1", "2", "3", ...
             const mNum = Number(id);
-            if (!Number.isFinite(mNum)) continue;
+            if (!Number.isFinite(mNum)) { continue; }
 
             const bandIndex = geom.tileIndex;
             const pageIndex = bandToPage[bandIndex] ?? -1;
@@ -2422,7 +2406,7 @@ export default function ScoreViewer({
             const sampleParts: string[] = [];
             for (let m = 0; m < measureToPage.length && sampleParts.length < 20; m++) {
               const pageIndex = measureToPage[m];
-              if (pageIndex == null || pageIndex < 0) continue;
+              if (pageIndex === null || pageIndex === undefined || pageIndex < 0) { continue; }
               sampleParts.push(`m${m}->p${pageIndex}`);
             }
             await logStep(`diag: measureToPageRef sample (first 20): ${sampleParts.join(", ")}`,
@@ -2441,14 +2425,14 @@ export default function ScoreViewer({
 
       // Decide which page to show after this layout.
       // Default to 0 (initial load behavior).
-      let targetPageIndex = 0;
+      let targetPageIndex = 0; // default to page 0 (page 1)
 
-      if (anchorMeasure != null) {
+      if (anchorMeasure !== null) {
         const map = measureToPageRef.current;
         const mapped = map[anchorMeasure];
 
         if (
-          mapped != null &&
+          typeof mapped === "number" &&
           mapped >= 0 &&
           mapped < starts.length
         ) {
@@ -2565,7 +2549,7 @@ export default function ScoreViewer({
         const sampleParts: string[] = [];
         for (let m = 0; m < measureToPage.length && sampleParts.length < 20; m++) {
           const pageIndex = measureToPage[m];
-          if (pageIndex == null || pageIndex < 0) continue;
+          if (pageIndex === null || pageIndex === undefined || pageIndex < 0) { continue; }
           sampleParts.push(`m${m}->p${pageIndex}`);
         }
         void logStep(
@@ -2578,10 +2562,12 @@ export default function ScoreViewer({
       // Default to 0 (old behavior) and override if anchor maps cleanly.
       let targetPageIndex = 0;
 
-      if (anchorMeasure != null) {
-        const mapped = measureToPage[anchorMeasure];
+      if (anchorMeasure !== null) {
+        const map = measureToPageRef.current;
+        const mapped = map[anchorMeasure];
+
         if (
-          mapped != null &&
+          typeof mapped === "number" &&
           mapped >= 0 &&
           mapped < starts.length
         ) {
