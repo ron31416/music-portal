@@ -1313,7 +1313,6 @@ export default function ScoreViewer({
   const baseScaleRef = useRef<number>(1);
   const zoomFactorRef = useRef<number>(1);
 
-  //TEST
   // Track user pinch-zoom within the viewer
   const pinchStateRef = useRef<{
     active: boolean;
@@ -1325,7 +1324,6 @@ export default function ScoreViewer({
   const lastTouchEndRef = useRef<number>(0);
 
   const clampZoom = (z: number) => Math.max(0.5, Math.min(3, z));
-  //TEST
 
   const computeZoomFactor = useCallback((): number => {
     const vv = typeof window !== "undefined" ? window.visualViewport : undefined;
@@ -1376,7 +1374,6 @@ export default function ScoreViewer({
       applyZoomFromRef();
       const zf = Math.min(3, Math.max(0.5, zoomFactorRef.current || 1));
 
-      //TEST
       const hostW = Math.max(1, Math.floor(outer.clientWidth));
       // For internal pinch-zoom, keep layout width tied to CSS width;
       // zoomFactor only affects osmd.Zoom now.
