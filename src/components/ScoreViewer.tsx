@@ -3398,7 +3398,7 @@ export default function ScoreViewer({
 
       // Active pinch: update zoom factor from distance ratio
       if (pinch?.active && e.touches.length === 2) {
-        e.preventDefault(); // prevent browser/page pinch zoom
+        e.preventDefault(); // try to prevent browser/page pinch zoom
 
         const [t0, t1] = [e.touches[0]!, e.touches[1]!];
         const dNow = dist(t0, t1);
@@ -3407,17 +3407,25 @@ export default function ScoreViewer({
         const rawScale = dNow / pinch.startDist;
         if (!Number.isFinite(rawScale) || rawScale <= 0) { return; }
 
+        // Ignore tiny "wiggles" so a two-finger tap doesn't trigger reflow
+        const SCALE_EPS = 0.05; // 5% change before we consider it a real pinch
+        if (Math.abs(rawScale - 1) < SCALE_EPS) {
+          return;
+        }
+
         const targetZoom = clampZoom(pinch.startZoom * rawScale);
 
         // Only bother if zoom actually changed a bit
-        if (Math.abs(targetZoom - (zoomFactorRef.current || 1)) < 0.003) {
+        const currentZoom = zoomFactorRef.current || 1;
+        if (Math.abs(targetZoom - currentZoom) < 0.01) {
           return;
         }
 
         zoomFactorRef.current = targetZoom;
 
         void logStep(
-          `pinch: startZoom=${pinch.startZoom.toFixed(3)} target=${targetZoom.toFixed(3)}`,
+          `pinch: startZoom=${pinch.startZoom.toFixed(3)} ` +
+          `rawScale=${rawScale.toFixed(3)} target=${targetZoom.toFixed(3)}`,
           { outer }
         );
 
