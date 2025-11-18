@@ -2796,27 +2796,15 @@ export default function ScoreViewer({
 
         void logStep(`debounced zf=${zoomFactorRef.current.toFixed(3)} reason=${why}`);
 
-        // Queue only; let our normal drain paths run it when safe
-        reflowAgainRef.current = "width";
+        // NOTE:
+        // We no longer trigger a reflow directly from zoom changes here.
+        // Browser zoom also fires visualViewport resize events, and the
+        // handleVVChange() effect already performs the width reflow based
+        // on wrapper/viewport dimensions. By only updating zoomFactorRef
+        // here, we avoid double reflows when scale + width change together
+        // (e.g. after an internal pinch followed by a browser zoom).
         reflowQueuedCauseRef.current = `zoom:${why}`;
-
-        if (reflowRunningRef.current || repaginationRunningRef.current || busyRef.current) {
-          void logStep("queued width reflow (guard busy)");
-          return;
-        }
-
-        // If we're idle, drain the queue ourselves on the next tick
-        window.setTimeout(() => {
-          if (
-            reflowAgainRef.current === "width" &&
-            !reflowRunningRef.current &&
-            !repaginationRunningRef.current &&
-            !busyRef.current
-          ) {
-            reflowAgainRef.current = "none";
-            reflowFnRef.current();
-          }
-        }, 0);
+        // No reflowAgainRef mutation and no direct call to reflowFnRef here.
       }, 220);
     };
 
