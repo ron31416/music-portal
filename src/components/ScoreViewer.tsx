@@ -1304,14 +1304,25 @@ export default function ScoreViewer({
   const handledHRef = useRef<number>(-1);
 
   // add near handledWRef/handledHRef
-  const reflowRunningRef = useRef(false);   // guards width reflow
+  const reflowRunningRef = useRef(false);            // guards width reflow
   const reflowAgainRef = useRef<"none" | "width" | "height">("none");
   const reflowQueuedCauseRef = useRef<string>("");   // ← remember why a reflow was queued
-  const repaginationRunningRef = useRef(false);    // guards height-only repagination
+  const repaginationRunningRef = useRef(false);      // guards height-only repagination
 
   // Track browser zoom relative to mount
   const baseScaleRef = useRef<number>(1);
   const zoomFactorRef = useRef<number>(1);
+
+  //TEST
+  // Track user pinch-zoom within the viewer
+  const pinchStateRef = useRef<{
+    active: boolean;
+    startDist: number;
+    startZoom: number;
+  } | null>(null);
+
+  const clampZoom = (z: number) => Math.max(0.5, Math.min(3, z));
+  //TEST
 
   const computeZoomFactor = useCallback((): number => {
     const vv = typeof window !== "undefined" ? window.visualViewport : undefined;
@@ -3309,52 +3320,153 @@ export default function ScoreViewer({
     };
   }, [applyPage, goNext, goPrev]);
 
-  // Touch swipe paging (disabled while busy)
+
+  // Touch swipe paging + two-finger pinch zoom (disabled while busy)
   useEffect(() => {
     const outer = wrapRef.current;
     if (!outer) { return; }
 
     let startY = 0;
     let startX = 0;
-    let startT = 0; // ← add
-    let active = false;
+    let startT = 0;
+    let swipeActive = false;
 
     // Tunables for what counts as a "tap"
     const TAP_MAX_MS = 250;       // quick touch
     const TAP_MAX_MOVE_PX = 12;   // little to no movement
 
+    const dist = (t0: Touch, t1: Touch) => {
+      const dx = t1.clientX - t0.clientX;
+      const dy = t1.clientY - t0.clientY;
+      return Math.hypot(dx, dy);
+    };
+
+    const queueWidthReflowFromPinch = () => {
+      // Mark that we want a width reflow
+      reflowAgainRef.current = "width";
+      reflowQueuedCauseRef.current = "pinch";
+
+      // If something heavy is already running, just leave it queued.
+      if (reflowRunningRef.current || repaginationRunningRef.current || busyRef.current) {
+        return;
+      }
+
+      // Otherwise, drain it on the next tick.
+      window.setTimeout(() => {
+        if (
+          reflowAgainRef.current === "width" &&
+          !reflowRunningRef.current &&
+          !repaginationRunningRef.current &&
+          !busyRef.current
+        ) {
+          reflowAgainRef.current = "none";
+          reflowQueuedCauseRef.current = "";
+          reflowFnRef.current();
+        }
+      }, 0);
+    };
+
     const onTouchStart = (e: TouchEvent) => {
       if (!readyRef.current || busyRef.current || e.touches.length === 0) {
         return;
       }
-      active = true;
+
+      // Two-finger start → begin pinch tracking
+      if (e.touches.length === 2) {
+        const [t0, t1] = [e.touches[0]!, e.touches[1]!];
+        const d0 = dist(t0, t1);
+        if (d0 <= 0) { return; }
+
+        pinchStateRef.current = {
+          active: true,
+          startDist: d0,
+          startZoom: zoomFactorRef.current || 1,
+        };
+
+        // While pinch is active, we don't want swipe/tap paging
+        swipeActive = false;
+        return;
+      }
+
+      // Single-finger start → normal tap/swipe path (if not pinching)
+      if (pinchStateRef.current?.active) {
+        // ignore single-finger events while pinch is active
+        return;
+      }
+
+      swipeActive = true;
       startY = e.touches[0]?.clientY ?? 0;
       startX = e.touches[0]?.clientX ?? 0;
-      startT = performance.now();          // ← add
+      startT = performance.now();
     };
 
-
     const onTouchMove = (e: TouchEvent) => {
-      if (!active || !readyRef.current || busyRef.current) {
+      if (!readyRef.current || busyRef.current) {
+        return;
+      }
+
+      const pinch = pinchStateRef.current;
+
+      // Active pinch: update zoom factor from distance ratio
+      if (pinch?.active && e.touches.length === 2) {
+        e.preventDefault(); // prevent browser/page pinch zoom
+
+        const [t0, t1] = [e.touches[0]!, e.touches[1]!];
+        const dNow = dist(t0, t1);
+        if (dNow <= 0 || !Number.isFinite(dNow)) { return; }
+
+        const rawScale = dNow / pinch.startDist;
+        if (!Number.isFinite(rawScale) || rawScale <= 0) { return; }
+
+        const targetZoom = clampZoom(pinch.startZoom * rawScale);
+
+        // Only bother if zoom actually changed a bit
+        if (Math.abs(targetZoom - (zoomFactorRef.current || 1)) < 0.003) {
+          return;
+        }
+
+        zoomFactorRef.current = targetZoom;
+
+        void logStep(
+          `pinch: startZoom=${pinch.startZoom.toFixed(3)} target=${targetZoom.toFixed(3)}`,
+          { outer }
+        );
+
+        queueWidthReflowFromPinch();
+        return;
+      }
+
+      // No pinch → preserve your existing behavior (just block scroll)
+      if (!swipeActive) {
         return;
       }
       e.preventDefault();
     };
 
     const onTouchEnd = (e: TouchEvent) => {
-      if (!active) {
+      const pinch = pinchStateRef.current;
+
+      // If a pinch was active and we lost one or both fingers, stop pinch and don't page.
+      if (pinch?.active) {
+        if (e.touches.length < 2) {
+          pinchStateRef.current = null;
+        }
         return;
       }
-      active = false;
-      if (busyRef.current) {
+
+      if (!swipeActive || busyRef.current || !readyRef.current) {
+        swipeActive = false;
         return;
       }
+
+      swipeActive = false;
+
       const t = e.changedTouches[0];
       if (!t) { return; }
 
       const dy = t.clientY - startY;
       const dx = t.clientX - startX;
-      const dt = performance.now() - startT;  // ← add
+      const dt = performance.now() - startT;
 
       // 1) Tap-to-advance (quick + tiny movement)
       if (Math.abs(dx) <= TAP_MAX_MOVE_PX && Math.abs(dy) <= TAP_MAX_MOVE_PX && dt <= TAP_MAX_MS) {
@@ -3387,6 +3499,7 @@ export default function ScoreViewer({
       cleanupOuter.removeEventListener("touchend", onTouchEnd);
     };
   }, [goNext, goPrev]);
+
 
   // Mouse single-click paging (disabled while busy)
   // NOTE: ignores double-click so we can reserve it for future edit mode
