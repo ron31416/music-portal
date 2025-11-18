@@ -3342,28 +3342,17 @@ export default function ScoreViewer({
     };
 
     const queueWidthReflowFromPinch = () => {
-      // Mark that we want a width reflow
-      reflowAgainRef.current = "width";
-      reflowQueuedCauseRef.current = "pinch";
-
-      // If something heavy is already running, just leave it queued.
+      // If heavy work is already in flight, just queue a follow-up and bail.
       if (reflowRunningRef.current || repaginationRunningRef.current || busyRef.current) {
+        reflowAgainRef.current = "width";
+        reflowQueuedCauseRef.current = "pinch";
         return;
       }
 
-      // Otherwise, drain it on the next tick.
-      window.setTimeout(() => {
-        if (
-          reflowAgainRef.current === "width" &&
-          !reflowRunningRef.current &&
-          !repaginationRunningRef.current &&
-          !busyRef.current
-        ) {
-          reflowAgainRef.current = "none";
-          reflowQueuedCauseRef.current = "";
-          reflowFnRef.current();
-        }
-      }, 0);
+      // We’re idle → run a width reflow *now*.
+      reflowAgainRef.current = "none";
+      reflowQueuedCauseRef.current = "";
+      reflowFnRef.current();
     };
 
     const onTouchStart = (e: TouchEvent) => {
