@@ -1321,6 +1321,9 @@ export default function ScoreViewer({
     startZoom: number;
   } | null>(null);
 
+  // Timestamp of the last touchend, used to suppress synthetic mouse events
+  const lastTouchEndRef = useRef<number>(0);
+
   const clampZoom = (z: number) => Math.max(0.5, Math.min(3, z));
   //TEST
 
@@ -3447,6 +3450,9 @@ export default function ScoreViewer({
     };
 
     const onTouchEnd = (e: TouchEvent) => {
+      // Mark the time of this touch gesture so we can ignore the follow-up mouse events
+      lastTouchEndRef.current = performance.now();
+
       const pinch = pinchStateRef.current;
 
       // If a pinch was active and we lost one or both fingers, stop pinch and don't page.
@@ -3461,7 +3467,6 @@ export default function ScoreViewer({
         swipeActive = false;
         return;
       }
-
       swipeActive = false;
 
       const t = e.changedTouches[0];
@@ -3522,6 +3527,13 @@ export default function ScoreViewer({
     const onMouseDown = (e: MouseEvent) => {
       if (!readyRef.current || busyRef.current) { return; }
       if (e.button !== 0) { return; }          // left click only
+
+      // Ignore synthetic mouse events that immediately follow a touch tap
+      // (common on mobile/tablet browsers)
+      if (performance.now() - lastTouchEndRef.current < 400) {
+        return;
+      }
+
       armed = true;
       downX = e.clientX;
       downY = e.clientY;
