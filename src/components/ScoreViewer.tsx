@@ -3360,11 +3360,14 @@ export default function ScoreViewer({
         return;
       }
 
-      // Two-finger start → begin pinch tracking
+      // Two-finger start → begin pinch tracking and block native pinch-zoom
       if (e.touches.length === 2) {
+        // IMPORTANT: this only works if touchstart is non-passive
+        e.preventDefault();
+
         const [t0, t1] = [e.touches[0]!, e.touches[1]!];
         const d0 = dist(t0, t1);
-        if (d0 <= 0) { return; }
+        if (d0 <= 0 || !Number.isFinite(d0)) { return; }
 
         pinchStateRef.current = {
           active: true,
@@ -3483,9 +3486,9 @@ export default function ScoreViewer({
       }
     };
 
-    outer.addEventListener("touchstart", onTouchStart, { passive: true });
+    outer.addEventListener("touchstart", onTouchStart, { passive: false });
     outer.addEventListener("touchmove", onTouchMove, { passive: false });
-    outer.addEventListener("touchend", onTouchEnd, { passive: true });
+    outer.addEventListener("touchend", onTouchEnd, { passive: false });
 
     outer.style.overscrollBehavior = "contain";
 
