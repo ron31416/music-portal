@@ -1373,8 +1373,11 @@ export default function ScoreViewer({
       applyZoomFromRef();
       const zf = Math.min(3, Math.max(0.5, zoomFactorRef.current || 1));
 
+      //TEST
       const hostW = Math.max(1, Math.floor(outer.clientWidth));
-      const rawLayoutW = Math.max(1, Math.floor(hostW / zf));
+      // For internal pinch-zoom, keep layout width tied to CSS width;
+      // zoomFactor only affects osmd.Zoom now.
+      const rawLayoutW = hostW;
 
       const widthNudge = REFLOW.WIDTH_NUDGE;
       const MAX_LAYOUT_W = REFLOW.MAX_LAYOUT_W;
