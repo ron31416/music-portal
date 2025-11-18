@@ -1801,6 +1801,21 @@ export default function ScoreViewer({
     outer.dataset.viewerPhase = "render";
     await logStep("phase starting", { outer, caller: prevFuncTag });
 
+    // Hide the SVG host for the entire layout so we never show an intermediate,
+    // unmasked OSMD render behind the translucent busy overlay. withHostHidden()
+    // still wraps renderViewer(), but this outer guard keeps the host invisible
+    // until applyPage() has finished.
+    const hostForLayout = svgHostRef.current;
+    let prevHostVis = "";
+    let prevHostCv = "";
+    if (hostForLayout) {
+      prevHostVis = hostForLayout.style.visibility || "";
+      prevHostCv = hostForLayout.style.getPropertyValue("content-visibility") || "";
+      hostForLayout.style.removeProperty("content-visibility");
+      hostForLayout.style.visibility = "hidden";
+      try { void hostForLayout.getBoundingClientRect().width; } catch { }
+    }
+
     const currentPageBeforeLayout = pageIdxRef.current ?? 0;
 
     let anchorMeasure: number | null = null;
@@ -2478,6 +2493,22 @@ export default function ScoreViewer({
       return { bands, starts };
 
     } finally {
+      // Restore host visibility / content-visibility to what they were before
+      const hostForLayout = svgHostRef.current;
+      if (hostForLayout) {
+        if (prevHostCv) {
+          hostForLayout.style.setProperty("content-visibility", prevHostCv);
+        } else {
+          hostForLayout.style.removeProperty("content-visibility");
+        }
+
+        if (prevHostVis) {
+          hostForLayout.style.visibility = prevHostVis;
+        } else {
+          hostForLayout.style.removeProperty("visibility");
+        }
+      }
+
       try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
     }
   }, [nextPerfUID, renderViewer, withHostHidden, applyPage, visiblePageHeight, topGutterPx, bottomGutterPx]);
