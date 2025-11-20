@@ -13,5 +13,9 @@
     {
       "mode": "auto"
     }
-  ]
+  ],
+  // 👇 New bits to force consistent 2-space indentation
+  "editor.detectIndentation": false,
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true
 }

@@ -1,5 +1,4 @@
 // src/app/page.tsx  (server component – NO "use client")
-import AdminFab from "@/components/AdminFab";
 import HomeClient from "./page.client";
 
 export default function Home() {

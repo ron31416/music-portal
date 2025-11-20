@@ -3,6 +3,7 @@
 
 import { useSearchParams } from "next/navigation";
 import ScoreViewer from "@/components/ScoreViewer";
+import { AnnotationsProvider } from "@/components/AnnotationsProvider";
 
 function isPositiveIntString(v: string | null): v is string {
   return v !== null && /^\d+$/.test(v);
@@ -23,6 +24,13 @@ export default function ViewerClient(): React.ReactElement {
     );
   }
 
+  // We already know `id` is a positive integer string here.
+  const songId = Number(id);
+
+  // TEMP: hard-code your dev user_id for now.
+  // Replace this with the real logged-in user's id once we wire auth in.
+  const userId = 1; // TODO: replace with actual user id for your account
+
   return (
     <div
       style={{
@@ -32,7 +40,9 @@ export default function ViewerClient(): React.ReactElement {
         minHeight: 0,
       }}
     >
-      <ScoreViewer src={src} />
+      <AnnotationsProvider songId={songId} userId={userId}>
+        <ScoreViewer src={src} />
+      </AnnotationsProvider>
     </div>
   );
 }
