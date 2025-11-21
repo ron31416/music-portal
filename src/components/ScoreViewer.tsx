@@ -674,7 +674,7 @@ function drawMeasureBoxes(
   svgRoot: SVGSVGElement,
   measuresIn: ReadonlyArray<{ id: string; rect: Rect }>,
   geomIn: ReadonlyMap<string, MeasureGeom>,
-  bands: Band[],
+  bands: readonly Band[], //TEST
   startIndex: number,
   nextStartIndex: number,            // -1 on last page
   ySnap: number,
@@ -1286,6 +1286,65 @@ export default function ScoreViewer({
   const busyRef = useRef(false);
   useEffect(() => { busyRef.current = busy; }, [busy]);
 
+
+  //TEST
+  const [isEditMode, setIsEditMode] = useState<boolean>(false);
+  const toggleEditMode = useCallback(() => {
+    setIsEditMode((v) => !v);
+  }, []);
+
+  const isEditModeRef = useRef<boolean>(false);
+
+  // Cache the last page's box-draw inputs so we can redraw boxes
+  // without repagination when edit mode toggles.
+  const lastBoxDrawArgsRef = useRef<{
+    outer: HTMLDivElement;
+    svgNN: SVGSVGElement;
+    measures: readonly { id: string; rect: Rect }[];
+    geometry: ReadonlyMap<string, MeasureGeom>;
+    bandsNN: readonly Band[];
+    startIndex: number;
+    nextStartIndex: number;
+    ySnap: number;
+    topGutterPx: number;
+    maskTopWithinMusicPx: number;
+  } | null>(null);
+
+  // When edit mode toggles, redraw the boxes for the current page
+  useEffect(() => {
+    // Keep ref in sync with latest state
+    isEditModeRef.current = isEditMode;
+
+    // If applyPage hasn't cached geometry yet, do nothing
+    const args = lastBoxDrawArgsRef.current;
+    if (!args) {
+      return;
+    }
+
+    try {
+      // Always clear boxes first
+      clearMeasureBoxes(args.outer);
+
+      // Draw boxes only if edit mode is ON
+      if (isEditMode) {
+        drawMeasureBoxes(
+          args.outer,
+          args.svgNN,
+          args.measures,
+          args.geometry,
+          args.bandsNN,
+          args.startIndex,
+          args.nextStartIndex,
+          args.ySnap,
+          args.topGutterPx,
+          args.maskTopWithinMusicPx
+        );
+      }
+    } catch { }
+  }, [isEditMode]);
+
+  //TEST
+
   // Stable per-instance ID (for perf marks), plus a monotonic per-run sequence elsewhere
   const instanceIdRef = useRef<string>(`viewer-${Math.random().toString(36).slice(2, 8)}`);
   const perfSeqRef = useRef(0);
@@ -1726,23 +1785,47 @@ export default function ScoreViewer({
         }
         topCutter.style.height = `${Math.max(0, topGutterPx)}px`;
 
+
+        //TEST       
         // --- Measure rectangles smoke-test overlay ---
         // Always redraw after pagination transform so outlines match what you see.
+        // Cache the args for edit-mode redraws (mode toggle)
+        lastBoxDrawArgsRef.current = {
+          outer,
+          svgNN,
+          measures: measuresRef.current ?? [],
+          geometry: geometryRef.current ?? new Map(),
+          bandsNN,
+          startIndex,
+          nextStartIndex,
+          ySnap,
+          topGutterPx: Math.max(0, topGutterPx),
+          maskTopWithinMusicPx,
+        };
+
         try {
+          // Always clear first (no stale rectangles between pages or modes)
           clearMeasureBoxes(outer);
-          drawMeasureBoxes(
-            outer,
-            svgNN,                                   // non-nullable alias
-            measuresRef.current ?? [],               // precomputed measures
-            geometryRef.current ?? new Map(),
-            bandsNN,                                 // non-nullable alias
-            startIndex,                              // this page's first system index
-            nextStartIndex,                          // -1 if last page
-            ySnap,                                   // ceil(top of start band)
-            Math.max(0, topGutterPx),
-            maskTopWithinMusicPx                     // page-local bottom cut for this page
-          );
-        } catch { }
+
+          // Draw only when edit mode is active
+          if (isEditModeRef.current) {
+            drawMeasureBoxes(
+              outer,
+              svgNN,                                   // non-nullable alias
+              measuresRef.current ?? [],               // precomputed measures
+              geometryRef.current ?? new Map(),
+              bandsNN,                                 // non-nullable alias
+              startIndex,                              // this page's first system index
+              nextStartIndex,                          // -1 if last page
+              ySnap,                                   // ceil(top of start band)
+              Math.max(0, topGutterPx),
+              maskTopWithinMusicPx                     // page-local bottom cut for this page
+            );
+          }
+        } catch {
+          // viewer should not die over overlay drawing
+        }
+        //TEST
 
         // Stop layer promotion after page is applied
         svg.style.willChange = "auto";
@@ -3805,7 +3888,13 @@ export default function ScoreViewer({
   };
 
   return (
-    <div ref={wrapRef} style={outerStyle}>
+    <div
+      ref={wrapRef}
+      style={{
+        ...outerStyle,
+        position: "relative", // <-- ensure absolute children anchor here
+      }}
+    >
       {/* OSMD host (SVG goes here) */}
       <div ref={svgHostRef} style={hostStyle} />
 
@@ -3859,6 +3948,42 @@ export default function ScoreViewer({
           </div>
         </div>
       </div>
+
+      {/* EDIT / DONE toggle hotspot TEST*/}
+      <button
+        type="button"
+        onPointerDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onPointerUp={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleEditMode();
+        }}
+        aria-pressed={isEditMode}
+        style={{
+          position: "absolute",
+          top: 8,
+          right: 8,
+          zIndex: 100,
+          padding: "6px 10px",
+          borderRadius: 8,
+          border: "1px solid #999",
+          background: isEditMode ? "#222" : "#f5f5f5",
+          color: isEditMode ? "#fff" : "#111",
+          fontSize: 14,
+          cursor: "pointer",
+          opacity: 0.9,
+          pointerEvents: "auto", // be explicit
+        }}
+      >
+        {isEditMode ? "Done" : "Edit"}
+      </button>
 
       <style>{`@keyframes viewer-spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }`}</style>
     </div>
