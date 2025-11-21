@@ -3295,9 +3295,42 @@ export default function ScoreViewer({
 
   // ---------- Paging helpers ----------
 
+  // Ignore page turns if the originating event target is inside a UI control.
+  const shouldIgnorePageTurn = (e?: unknown): boolean => {
+    if (!e) { return false; }
+
+    // React SyntheticEvent may wrap the native event.
+    const hasNativeEvent = (val: unknown): val is { nativeEvent: unknown } => {
+      return typeof val === "object" && val !== null && "nativeEvent" in val;
+    };
+
+    const getTarget = (val: unknown): EventTarget | null => {
+      if (typeof val === "object" && val !== null && "target" in val) {
+        const t = (val as { target?: unknown }).target;
+        if (t && (t instanceof EventTarget)) { return t; }
+      }
+      return null;
+    };
+
+    const baseEvent = hasNativeEvent(e) ? e.nativeEvent : e;
+    const target = getTarget(baseEvent);
+
+    if (!target) { return false; }
+
+    // Only Elements support closest()
+    if (target instanceof Element) {
+      return Boolean(target.closest('[data-ignore-page-turn="true"]'));
+    }
+
+    return false;
+  };
+
   // Core page-turn handler (goNext/goPrev). On rare layout shifts, retries next frame.
   const turnPage = useCallback(
-    (dir: 1 | -1) => {
+    (dir: 1 | -1, e?: unknown) => {
+      // If this was a touch/pen tap on a UI control, ignore it.
+      if (shouldIgnorePageTurn(e)) { return; }
+
       if (busyRef.current) { return; }
 
       const starts = pageStartIdxsRef.current;
@@ -3307,8 +3340,6 @@ export default function ScoreViewer({
       const beforePage = pageIdxRef.current;
 
       // Wrap-around paging:
-      // - last page + forward → page 1
-      // - first page + backward → last page
       let targetPage: number;
       if (dir === 1 && beforePage === pages - 1) {
         targetPage = 0;
@@ -3320,7 +3351,6 @@ export default function ScoreViewer({
 
       if (targetPage === beforePage) { return; }
 
-      // The start index we want to land on after any recompute
       const desiredStart = starts[targetPage] ?? starts[beforePage] ?? 0;
 
       const outer = wrapRef.current;
@@ -3332,10 +3362,8 @@ export default function ScoreViewer({
         if (outer) { outer.dataset.viewerFunc = prevTag; }
       }
 
-
-      // If we didn't actually move, rebuild page starts and retry *toward* desiredStart.
       window.requestAnimationFrame(() => {
-        if (pageIdxRef.current !== beforePage) { return; } // we moved – all good
+        if (pageIdxRef.current !== beforePage) { return; }
 
         const outer = wrapRef.current;
         if (!outer) { return; }
@@ -3351,7 +3379,6 @@ export default function ScoreViewer({
 
         pageStartIdxsRef.current = fresh;
 
-        // pick first start >= desiredStart (forward) or last start <= desiredStart (backward)
         let idx: number;
         if (dir === 1) {
           idx = fresh.findIndex((s) => s >= desiredStart);
@@ -3362,7 +3389,6 @@ export default function ScoreViewer({
           idx = Math.max(0, firstGreater - 1);
         }
 
-        //if (idx !== beforePage) { applyPage(idx); }
         if (idx !== beforePage) {
           const prevTag = outer.dataset.viewerFunc ?? "";
           outer.dataset.viewerFunc = "turnPage/raf";
@@ -3377,8 +3403,9 @@ export default function ScoreViewer({
     [applyPage, paginationHeight, topGutterPx, bottomGutterPx]
   );
 
-  const goNext = useCallback(() => turnPage(1), [turnPage]);
-  const goPrev = useCallback(() => turnPage(-1), [turnPage]);
+  // Allow callers to pass through the triggering event.
+  const goNext = useCallback((e?: unknown) => turnPage(1, e), [turnPage]);
+  const goPrev = useCallback((e?: unknown) => turnPage(-1, e), [turnPage]);
 
   // Wheel & keyboard paging (disabled while busy)
   useEffect(() => {
@@ -3391,9 +3418,9 @@ export default function ScoreViewer({
       }
       e.preventDefault();
       if (e.deltaY > 0) {
-        goNext();
+        goNext(e);
       } else {
-        goPrev();
+        goPrev(e);
       }
     };
 
@@ -3403,10 +3430,10 @@ export default function ScoreViewer({
       }
       if (["PageDown", "ArrowDown", " "].includes(e.key)) {
         e.preventDefault();
-        goNext();
+        goNext(e);
       } else if (["PageUp", "ArrowUp"].includes(e.key)) {
         e.preventDefault();
-        goPrev();
+        goPrev(e);
       } else if (e.key === "Home") {
         e.preventDefault();
         applyPage(0);
@@ -3577,7 +3604,7 @@ export default function ScoreViewer({
 
       // 1) Tap-to-advance (quick + tiny movement)
       if (Math.abs(dx) <= TAP_MAX_MOVE_PX && Math.abs(dy) <= TAP_MAX_MOVE_PX && dt <= TAP_MAX_MS) {
-        goNext();
+        goNext(e);
         return;
       }
 
@@ -3586,9 +3613,9 @@ export default function ScoreViewer({
       const H_RATIO = 0.6;
       if (Math.abs(dy) >= THRESH && Math.abs(dx) <= Math.abs(dy) * H_RATIO) {
         if (dy < 0) {
-          goNext();
+          goNext(e);
         } else {
-          goPrev();
+          goPrev(e);
         }
       }
     };
@@ -3655,7 +3682,7 @@ export default function ScoreViewer({
       const smallMove = Math.abs(dx) <= CLICK_MAX_MOVE_PX && Math.abs(dy) <= CLICK_MAX_MOVE_PX;
       if (smallMove && dt <= CLICK_MAX_MS) {
         e.preventDefault();
-        goNext();
+        goNext(e);
       }
     };
 
@@ -3952,6 +3979,22 @@ export default function ScoreViewer({
       {/* EDIT / DONE toggle hotspot TEST*/}
       <button
         type="button"
+        data-ignore-page-turn="true"
+        // Touch/pen only: stop parent page-turn handlers *early*
+        onPointerDownCapture={(e) => {
+          if (e.pointerType === "touch" || e.pointerType === "pen") {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
+        onPointerUpCapture={(e) => {
+          if (e.pointerType === "touch" || e.pointerType === "pen") {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
+
+        // Your ORIGINAL handlers (leave PC behavior untouched)
         onPointerDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -3980,11 +4023,11 @@ export default function ScoreViewer({
           cursor: "pointer",
           opacity: 0.9,
           pointerEvents: "auto", // be explicit
+          touchAction: "none",   // helps prevent gesture interpretation
         }}
       >
         {isEditMode ? "Done" : "Edit"}
       </button>
-
       <style>{`@keyframes viewer-spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }`}</style>
     </div>
   );
