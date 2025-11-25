@@ -666,66 +666,68 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
   }
 }
 
-// Draw/refresh a lightweight SVG overlay of measure rectangles (stroke-only),
-// snapping vertical bounds to per-system page separators so boxes tile cleanly.
-// STRICT TS SAFE (noUncheckedIndexedAccess compatible).
-function drawMeasureBoxes(
-  outer: HTMLDivElement,
-  svgRoot: SVGSVGElement,
+type MeasureBoxRect = {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  tileIndex: number;
+};
+
+// Pure geometry helper: computes the measure-box rectangles for the
+// *current page* using the same logic drawMeasureBoxes used before.
+// No DOM/side effects — just numbers we can reuse (e.g. for annotations).
+function computeMeasureBoxRectsForPage(
   measuresIn: ReadonlyArray<{ id: string; rect: Rect }>,
   geomIn: ReadonlyMap<string, MeasureGeom>,
-  bands: readonly Band[], //TEST
+  bands: readonly Band[],
   startIndex: number,
-  nextStartIndex: number,            // -1 on last page
+  nextStartIndex: number, // -1 on last page
   ySnap: number,
   topGutterPx: number,
   maskTopWithinMusicPx: number
-): void {
+): MeasureBoxRect[] {
+  const rects: MeasureBoxRect[] = [];
 
-  const prevFuncTag = outer.dataset.viewerFunc ?? "";
-  outer.dataset.viewerFunc = "drawMeasureBoxes";
-  let drawnCount = 0;
-
-  // Remove any previous layer
-  outer.querySelectorAll("[data-viewer-measureboxes='1']").forEach((n) => n.remove());
-
-  // Quick guards
-  if (!outer || !svgRoot || bands.length === 0) {
-    logStep("boxes: 0 (early-guard bands/svg/outer)", { outer, caller: prevFuncTag });
-    try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
-    return;
-  }
-
-  // 1) Use precomputed raw measure rects (captured pre-translate) and
-  //    adjust them by the same translateY we apply to the SVG in applyPage.
-  const srcMeasures = Array.isArray(measuresIn) ? measuresIn : [];
-  if (srcMeasures.length === 0) {
-    logStep("boxes: 0 (no measures-pre)", { outer, caller: prevFuncTag });
-    try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
-    return;
+  if (!measuresIn.length || !bands.length) {
+    return rects;
   }
 
   // Same translate applied to the score SVG in applyPage:
-  const pageTy = (-ySnap + Math.max(0, topGutterPx));
+  const pageTy = -ySnap + Math.max(0, topGutterPx);
 
-  // Shift Y into the current page-local coordinate space
-  const measures = srcMeasures.map(m => ({
+  // Shift measures into the current page-local coordinate space
+  const measures = measuresIn.map((m) => ({
     id: m.id,
-    rect: { x: m.rect.x, y: m.rect.y + pageTy, w: m.rect.w, h: m.rect.h }
+    rect: {
+      x: m.rect.x,
+      y: m.rect.y + pageTy,
+      w: m.rect.w,
+      h: m.rect.h,
+    },
   }));
 
-  // 2) Build page-local system separators: sep[0..N]
+  // --- Build seps[] exactly as in the original drawMeasureBoxes ---
+
   const seps: number[] = [];
   const topG = Math.max(0, topGutterPx);
 
-  // Clamp indices defensively (compute firstBand before any use)
-  const firstBand = Math.max(0, Math.min(startIndex | 0, Math.max(0, bands.length - 1)));
-  const lastBandInclRaw = (nextStartIndex >= 0 ? nextStartIndex : bands.length) - 1;
-  const lastBandIncl = Math.max(firstBand, Math.min(lastBandInclRaw, Math.max(0, bands.length - 1)));
+  const firstBand = Math.max(
+    0,
+    Math.min(startIndex | 0, Math.max(0, bands.length - 1))
+  );
+  const lastBandInclRaw =
+    (nextStartIndex >= 0 ? nextStartIndex : bands.length) - 1;
+  const lastBandIncl = Math.max(
+    firstBand,
+    Math.min(lastBandInclRaw, Math.max(0, bands.length - 1))
+  );
 
-  // Anchor first separator to the actual first band's top in page-local coords; fall back to topG
   const firstBandTopPL =
-    (bands[firstBand] ? Math.round(bands[firstBand]!.top) : 0) - Math.ceil(ySnap) + topG;
+    (bands[firstBand] ? Math.round(bands[firstBand]!.top) : 0) -
+    Math.ceil(ySnap) +
+    topG;
 
   seps.push(Math.max(topG, firstBandTopPL)); // sep[0]
 
@@ -733,7 +735,9 @@ function drawMeasureBoxes(
     for (let i = firstBand; i < lastBandIncl; i++) {
       const bCurr = bands[i];
       const bNext = bands[i + 1];
-      if (!bCurr || !bNext) { continue; }
+      if (!bCurr || !bNext) {
+        continue;
+      }
 
       // Convert to page-local coords
       const bottomCurr = Math.round(bCurr.bottom) - Math.ceil(ySnap) + topG;
@@ -753,7 +757,9 @@ function drawMeasureBoxes(
   for (let i = 1; i < seps.length; i++) {
     const prev = seps[i - 1]!;
     const curr = seps[i]!;
-    if (curr < prev) { seps[i] = prev; }
+    if (curr < prev) {
+      seps[i] = prev;
+    }
   }
 
   // Fallback: at least two separators
@@ -762,11 +768,241 @@ function drawMeasureBoxes(
     seps.push(topG, bottomLimit);
   }
 
-  // Page window for THIS page (in page-local coords)
   const pageTop = seps[0]!;
   const pageBottom = seps[seps.length - 1]!;
+  const lastTileIndex = seps.length - 2;
 
-  // 3) Build overlay SVG
+  // --- Bucket measures by tile (system) exactly the way you were doing it ---
+
+  type BucketItem = { m: (typeof measures)[number]; k: number };
+  const buckets = new Map<number, BucketItem[]>();
+
+  for (const m of measures) {
+    const rectTopPL = Math.round(m.rect.y);
+    const rectBotPL = Math.round(
+      m.rect.y + Math.max(1, Math.round(m.rect.h))
+    );
+
+    // Page filter by vertical overlap with the page window
+    const ovPage = Math.max(
+      0,
+      Math.min(rectBotPL, pageBottom) - Math.max(rectTopPL, pageTop)
+    );
+    if (ovPage <= 0) {
+      continue;
+    }
+
+    // Robust tile pick by vertical overlap against seps[]
+    let kBest = -1;
+    let bestOv = 0;
+
+    for (let t = 0; t <= lastTileIndex; t++) {
+      const y0 = seps[t];
+      const y1 = seps[t + 1];
+      if (y0 === undefined || y1 === undefined) {
+        continue;
+      }
+      const ov = Math.max(
+        0,
+        Math.min(rectBotPL, y1) - Math.max(rectTopPL, y0)
+      );
+      if (ov > bestOv) {
+        bestOv = ov;
+        kBest = t;
+      }
+    }
+
+    if (kBest < 0 || bestOv === 0) {
+      continue;
+    }
+
+    const arr = buckets.get(kBest);
+    const item: BucketItem = { m, k: kBest };
+    if (arr) {
+      arr.push(item);
+    } else {
+      buckets.set(kBest, [item]);
+    }
+  }
+
+  // --- Geometry lookup: same normalization strategy as before ---
+
+  const normKey = (id: string): string => {
+    // Accept "measure-12", "measure_12", "measure 12", or plain "12" → normalize to "measure-12"
+    const m = id.match(/measure[-_\s]?(\d+)/i) || id.match(/^(\d+)$/);
+    return m ? `measure-${m[1]}` : id;
+  };
+
+  const getGeom = (id: string): MeasureGeom | undefined => {
+    const idExact = id;
+    const idNorm = normKey(id);
+    if (geomIn.has(idExact)) {
+      return geomIn.get(idExact)!;
+    }
+    if (geomIn.has(idNorm)) {
+      return geomIn.get(idNorm)!;
+    }
+
+    const num = id.match(/\d+/)?.[0] ?? "";
+    if (num) {
+      const mk = `measure-${num}`;
+      if (geomIn.has(mk)) {
+        return geomIn.get(mk)!;
+      }
+      // LAST RESORT: scan for any key that contains that exact number token
+      for (const [k, v] of geomIn as Map<string, MeasureGeom>) {
+        if (new RegExp(`(^|\\D)${num}(\\D|$)`).test(k)) {
+          return v;
+        }
+      }
+    }
+    return undefined;
+  };
+
+  // --- Walk tiles in order, compute rects exactly as before ---
+
+  for (let k = 0; k <= lastTileIndex; k++) {
+    const items = buckets.get(k);
+    if (!items || items.length === 0) {
+      continue;
+    }
+
+    // Sort by OSMD measure id number, then x, same as the original
+    items.sort((a, b) => {
+      const an = a.m.id.match(/measure[-_\s]?(\d+)/i)?.[1];
+      const bn = b.m.id.match(/measure[-_\s]?(\d+)/i)?.[1];
+      const ai = an ? Number(an) : Number.POSITIVE_INFINITY;
+      const bi = bn ? Number(bn) : Number.POSITIVE_INFINITY;
+      if (ai !== bi) {
+        return ai - bi;
+      }
+      return a.m.rect.x - b.m.rect.x;
+    });
+
+    const bandTopK = seps[k]!;
+    const bandBotK = seps[k + 1]!;
+
+    for (let i = 0; i < items.length; i++) {
+      const { m } = items[i]!;
+      const g = getGeom(m.id);
+      if (!g) {
+        continue;
+      }
+
+      // Geometry is pre-translate; drawing is post-translate → shift to page-local
+      const mtDraw = g.top + pageTy;
+      const mbDraw = g.bottom + pageTy;
+
+      // Require overlap with this tile’s band window
+      if (mbDraw <= bandTopK || mtDraw >= bandBotK) {
+        continue;
+      }
+
+      // Horizontal (barline-derived)
+      const l = Math.round(g.interval.left) + 0.5;
+      const rEdge = Math.round(g.interval.right) + 0.5;
+      const x = Math.min(l, rEdge);
+      const w = Math.max(1, Math.round(Math.abs(rEdge - l)) - 1);
+
+      // Pads capped by headroom
+      const availTop = Math.max(0, mtDraw - bandTopK);
+      const availBot = Math.max(0, bandBotK - mbDraw);
+      const padTop = Math.min(REFLOW.PAD_PX_BASE, availTop);
+      const padBot = Math.min(REFLOW.PAD_PX_BASE, availBot);
+
+      const top = Math.max(bandTopK, Math.round(mtDraw - padTop));
+      const bot = Math.min(bandBotK, Math.round(mbDraw + padBot));
+
+      // Pixel-perfect y/h
+      const y = Math.round(Math.min(top, bot)) + 0.5;
+      const h = Math.max(1, Math.round(Math.abs(bot - top)) - 1);
+
+      rects.push({
+        id: m.id,
+        x,
+        y,
+        w,
+        h,
+        tileIndex: k,
+      });
+    }
+  }
+
+  return rects;
+}
+
+
+// Draw/refresh a lightweight SVG overlay of measure rectangles (stroke-only),
+// snapping vertical bounds to per-system page separators so boxes tile cleanly.
+// STRICT TS SAFE (noUncheckedIndexedAccess compatible).
+function drawMeasureBoxes(
+  outer: HTMLDivElement,
+  svgRoot: SVGSVGElement,
+  measuresIn: ReadonlyArray<{ id: string; rect: Rect }>,
+  geomIn: ReadonlyMap<string, MeasureGeom>,
+  bands: readonly Band[],
+  startIndex: number,
+  nextStartIndex: number, // -1 on last page
+  ySnap: number,
+  topGutterPx: number,
+  maskTopWithinMusicPx: number
+): void {
+  const prevFuncTag = outer.dataset.viewerFunc ?? "";
+  outer.dataset.viewerFunc = "drawMeasureBoxes";
+
+  // Remove any previous layer
+  outer
+    .querySelectorAll("[data-viewer-measureboxes='1']")
+    .forEach((n) => n.remove());
+
+  // Quick guards (same intent as before)
+  if (!outer || !svgRoot || bands.length === 0) {
+    logStep("boxes: 0 (early-guard bands/svg/outer)", {
+      outer,
+      caller: prevFuncTag,
+    });
+    try {
+      outer.dataset.viewerFunc = prevFuncTag;
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  if (!measuresIn.length) {
+    logStep("boxes: 0 (no measures-pre)", { outer, caller: prevFuncTag });
+    try {
+      outer.dataset.viewerFunc = prevFuncTag;
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  // Core geometry: same math as the original implementation,
+  // now factored into a shared helper.
+  const rects = computeMeasureBoxRectsForPage(
+    measuresIn,
+    geomIn,
+    bands,
+    startIndex,
+    nextStartIndex,
+    ySnap,
+    topGutterPx,
+    maskTopWithinMusicPx
+  );
+
+  if (!rects.length) {
+    logStep("boxes: 0 (no rects from helper)", { outer, caller: prevFuncTag });
+    try {
+      outer.dataset.viewerFunc = prevFuncTag;
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
+  // Build overlay SVG exactly as before
   const layer = createSvgEl("svg");
   layer.setAttribute("data-viewer-measureboxes", "1");
   layer.setAttribute("aria-hidden", "true");
@@ -786,254 +1022,54 @@ function drawMeasureBoxes(
   const g = createSvgEl("g");
   layer.appendChild(g);
 
-  // 4) Bucket measures by tile (system) and draw in left→right order per tile.
-  //    This guarantees monotonic interval selection and prevents overlap.
-  type BucketItem = { m: typeof measures[number]; k: number };
+  let drawnCount = 0;
 
-  // Build buckets keyed by tile index k
-  const buckets = new Map<number, BucketItem[]>();
+  for (let i = 0; i < rects.length; i++) {
+    const { id, x, y, w, h } = rects[i]!;
 
-  for (const m of measures) {
-    // 1) Page filter by vertical **overlap** with the page window (robust at boundaries)
-    const rectTopPL = Math.round(m.rect.y);
-    const rectBotPL = Math.round(m.rect.y + Math.max(1, Math.round(m.rect.h)));
-    const ovPage = Math.max(0, Math.min(rectBotPL, pageBottom) - Math.max(rectTopPL, pageTop));
-    if (ovPage <= 0) { continue; }
+    // SVG rect
+    const r = createSvgEl("rect");
+    r.setAttribute("x", String(x));
+    r.setAttribute("y", String(y));
+    r.setAttribute("width", String(w));
+    r.setAttribute("height", String(h));
+    r.setAttribute("fill", "none");
+    r.setAttribute("stroke", "rgba(0,0,0,0.7)");
+    r.setAttribute("stroke-width", "1");
+    r.setAttribute("vector-effect", "non-scaling-stroke");
+    g.appendChild(r);
 
-    // 2) Robust tile pick by vertical overlap against seps (within this page)
-    const lastIdx = seps.length - 2; // last valid tile
-    let k = -1;
-    let bestOv = 0;
+    // Diagnostic measure label (preserving your behaviour)
+    const measureNum = Number(id);
+    if (Number.isFinite(measureNum)) {
+      const textEl = createSvgEl("text");
+      textEl.textContent = String(measureNum);
 
-    for (let t = 0; t <= lastIdx; t++) {
-      const y0 = seps[t];
-      const y1 = seps[t + 1];
-      if (y0 === undefined || y1 === undefined) { continue; }
-      const ov = Math.max(0, Math.min(rectBotPL, y1) - Math.max(rectTopPL, y0));
-      if (ov > bestOv) { bestOv = ov; k = t; }
-    }
-    if (k < 0 || bestOv === 0) { continue; }
+      const labelX = x + 2;
+      const labelY = y + 10;
 
-    const arr = buckets.get(k);
-    const item: BucketItem = { m, k };
-    if (arr) { arr.push(item); } else { buckets.set(k, [item]); }
-  }
+      textEl.setAttribute("x", String(labelX));
+      textEl.setAttribute("y", String(labelY));
+      textEl.setAttribute("font-size", "10");
+      textEl.setAttribute("fill", "red");
+      textEl.setAttribute("stroke", "black");
+      textEl.setAttribute("stroke-width", "0.5");
 
-  // --- DIAG: page/tile coverage vs cached geometry (guarded) ---
-  if (isDiagOn()) {
-    // Which measures are actually in this page window?
-    const pageMeasureIds = measures
-      .filter(m => {
-        const rectTopPL = Math.round(m.rect.y);
-        const rectBotPL = Math.round(m.rect.y + Math.max(1, Math.round(m.rect.h)));
-        const ovPage = Math.max(0, Math.min(rectBotPL, pageBottom) - Math.max(rectTopPL, pageTop));
-        return ovPage > 0;
-      })
-      .map(m => m.id);
-
-    void logStep(
-      `diag: page window [${Math.round(pageTop)},${Math.round(pageBottom)}] measuresInWindow=${pageMeasureIds.length}`,
-      { outer, caller: prevFuncTag }
-    );
-
-    // For each tile on this page, compare bucketing vs cached geometry
-    for (let k = 0; k <= seps.length - 2; k++) {
-      const items = buckets.get(k) || [];
-
-      // Pair each bucketed measure with cached geometry
-      const paired = items.map(it => {
-        const g = geomIn.get(it.m.id);
-        return {
-          id: it.m.id,
-          hasGeom: !!g,
-          tileOk: g ? g.tileIndex === k : false,
-        };
-      });
-
-      const okCount = paired.filter(p => p.hasGeom && p.tileOk).length;
-      const missing = paired.filter(p => !p.hasGeom).map(p => p.id);
-      const tileMismatch = paired.filter(p => p.hasGeom && !p.tileOk).map(p => p.id);
-
-      const bandTop = Math.round(seps[k]!);
-      const bandBot = Math.round(seps[k + 1]!);
-
-      void logStep(
-        `diag: tile k=${k} band=[${bandTop},${bandBot}) items=${items.length} ok=${okCount}` +
-        (missing.length ? ` missingGeom=${missing.length} [${missing.slice(0, 6).join(",")}${missing.length > 6 ? "…" : ""}]` : "") +
-        (tileMismatch.length ? ` tileMismatch=${tileMismatch.length} [${tileMismatch.slice(0, 6).join(",")}${tileMismatch.length > 6 ? "…" : ""}]` : ""),
-        { outer, caller: prevFuncTag }
-      );
-    }
-  }
-
-  // --- DIAG: sample the geometry cache keys once (guarded) ---
-  if (isDiagOn()) {
-    const keysSample = Array.from(geomIn.keys()).slice(0, 12);
-    void logStep(
-      `diag: geomIn size=${(geomIn as ReadonlyMap<string, MeasureGeom>).size} sample=[${keysSample.join(", ")}]`);
-  }
-
-  // Now iterate tiles in order
-  const lastTileIndex = seps.length - 2;
-  for (let k = 0; k <= lastTileIndex; k++) {
-    const items = buckets.get(k);
-    if (!items || items.length === 0) { continue; }
-
-    // Sort by OSMD measure id number (stable)
-    items.sort((a, b) => {
-      const an = (a.m.id.match(/measure[-_\s]?(\d+)/i)?.[1]);
-      const bn = (b.m.id.match(/measure[-_\s]?(\d+)/i)?.[1]);
-      const ai = an ? Number(an) : Number.POSITIVE_INFINITY;
-      const bi = bn ? Number(bn) : Number.POSITIVE_INFINITY;
-      if (ai !== bi) { return ai - bi; }
-      return a.m.rect.x - b.m.rect.x;
-    });
-
-    // Pair measures in this tile with cached geometry entries (resilient id resolver; guard by vertical overlap)
-    const paired: Array<{ m: typeof measures[number]; iv: { left: number; right: number }; mt: number; mb: number }> = [];
-
-    const normKey = (id: string): string => {
-      // Accept "measure-12", "measure_12", "measure 12", or plain "12" → normalize to "measure-12"
-      const m = id.match(/measure[-_\s]?(\d+)/i) || id.match(/^(\d+)$/);
-      return m ? `measure-${m[1]}` : id;
-    };
-
-    const getGeom = (id: string): MeasureGeom | undefined => {
-      // Try exact, normalized, numeric-only-derived, and (last resort) numeric-containing key scan.
-      const idExact = id;
-      const idNorm = normKey(id);
-      if (geomIn.has(idExact)) { return geomIn.get(idExact)!; }
-      if (geomIn.has(idNorm)) { return geomIn.get(idNorm)!; }
-
-      const num = (id.match(/\d+/)?.[0]) ?? "";
-      if (num) {
-        const mk = `measure-${num}`;
-        if (geomIn.has(mk)) { return geomIn.get(mk)!; }
-        // LAST RESORT: scan for any key that contains that exact number token
-        // (kept cheap by early break; map is at most a few hundred entries)
-        for (const [k, v] of geomIn as Map<string, MeasureGeom>) {
-          if (new RegExp(`(^|\\D)${num}(\\D|$)`).test(k)) { return v; }
-        }
-      }
-      return undefined;
-    };
-
-    const bandTopK = seps[k]!;
-    const bandBotK = seps[k + 1]!;
-    for (let i = 0; i < items.length; i++) {
-      const { m } = items[i]!;
-      const g = getGeom(m.id);
-
-      if (!g) {
-        if (isDiagOn()) {
-          void logStep(`diag: cache miss after resolve id='${m.id}'`,
-            { outer, caller: prevFuncTag });
-        }
-        continue;
-      }
-
-      // Geometry is pre-translate; drawing is post-translate -> shift to page-local
-      const mtDraw = g.top + pageTy;
-      const mbDraw = g.bottom + pageTy;
-
-      // Require any vertical overlap with this tile’s band window to avoid accidental cross-tile draws
-      if (mbDraw <= bandTopK || mtDraw >= bandBotK) { continue; }
-
-      paired.push({ m, iv: g.interval, mt: g.top, mb: g.bottom });
+      g.appendChild(textEl);
     }
 
-    if (paired.length === 0) { continue; }
-
-    // Draw rectangles using cached per-measure verticals (clamped to tile seams)
-    for (let i = 0; i < paired.length; i++) {
-      const { m, iv, mt, mb } = paired[i]!;
-
-      // Horizontal (barline-derived)
-      const l = Math.round(iv.left) + 0.5;
-      const rEdge = Math.round(iv.right) + 0.5;
-      const x = Math.min(l, rEdge);
-      const w = Math.max(1, Math.round(Math.abs(rEdge - l)) - 1);
-
-      // Clamp band for this tile
-      const bandTop = seps[k]!;
-      const bandBot = seps[k + 1]!;
-
-      // mt/mb are pre-translate; drawing is post-translate
-      const mtDraw = mt + pageTy;
-      const mbDraw = mb + pageTy;
-
-      // Pads capped by headroom
-      const availTop = Math.max(0, mtDraw - bandTop);
-      const availBot = Math.max(0, bandBot - mbDraw);
-      const padTop = Math.min(REFLOW.PAD_PX_BASE, availTop);
-      const padBot = Math.min(REFLOW.PAD_PX_BASE, availBot);
-
-      const top = Math.max(bandTop, Math.round(mtDraw - padTop));
-      const bot = Math.min(bandBot, Math.round(mbDraw + padBot));
-
-      // Pixel-perfect y/h
-      const y = Math.round(Math.min(top, bot)) + 0.5;
-      const h = Math.max(1, Math.round(Math.abs(bot - top)) - 1);
-
-      if (isDiagOn() && i === 0) {
-        logStep(
-          `m=${m.id} mt=${Math.round(mtDraw)} mb=${Math.round(mbDraw)} ` +
-          `bandTop=${Math.round(bandTop)} bandBot=${Math.round(bandBot)} ` +
-          `y=${Math.round(y)} h=${h}`,
-          { outer, caller: prevFuncTag }
-        );
-      }
-
-      // SVG rect
-      const r = createSvgEl("rect");
-      r.setAttribute("x", String(x));
-      r.setAttribute("y", String(y));
-      r.setAttribute("width", String(w));
-      r.setAttribute("height", String(h));
-      r.setAttribute("fill", "none");
-      r.setAttribute("stroke", "rgba(0,0,0,0.7)");
-      r.setAttribute("stroke-width", "1");
-      r.setAttribute("vector-effect", "non-scaling-stroke");
-      g.appendChild(r);
-
-      // --- NEW: loud diagnostic measure label ---
-      const measureNum = Number(m.id);
-
-      if (isDiagOn() && i === 0) {
-        // Log once per tile what we're trying to label
-        logStep(
-          `diag: label candidate m.id='${m.id}' num=${measureNum}`,
-          { outer, caller: prevFuncTag }
-        );
-      }
-
-      if (Number.isFinite(measureNum)) {
-        const textEl = createSvgEl("text");
-        textEl.textContent = String(measureNum);
-
-        // Big, obvious, and high-contrast so we *can't* miss it
-        const labelX = x + 2;
-        const labelY = y + 10;
-
-        textEl.setAttribute("x", String(labelX));
-        textEl.setAttribute("y", String(labelY));
-        textEl.setAttribute("font-size", "10");
-        textEl.setAttribute("fill", "red");
-        textEl.setAttribute("stroke", "black");
-        textEl.setAttribute("stroke-width", "0.5");
-
-        g.appendChild(textEl);
-      }
-
-      drawnCount++;
-    }
+    drawnCount++;
   }
 
   // append the overlay once (after all tiles are drawn)
   outer.appendChild(layer);
 
-  logStep(`boxes: ${drawnCount} tiles: ${Math.max(0, seps.length - 1)}`, { outer, caller: prevFuncTag });
-  try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
+  logStep(`boxes: ${drawnCount}`, { outer, caller: prevFuncTag });
+  try {
+    outer.dataset.viewerFunc = prevFuncTag;
+  } catch {
+    // ignore
+  }
 }
 
 
