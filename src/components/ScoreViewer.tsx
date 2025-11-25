@@ -1417,6 +1417,9 @@ export default function ScoreViewer({
     isLoading: annotationsLoading,
   } = useAnnotations();
 
+  // True once the initial OSMD layout has finished at least once
+  const [layoutReady, setLayoutReady] = useState(false);
+
   const measureToPageRef = useRef<number[]>([]);
 
   const topGutterPx = REFLOW.PAD_PX_BASE;
@@ -2022,17 +2025,15 @@ export default function ScoreViewer({
   // When annotations finish loading or change, re-render the current page
   // so that drawAnnotationBoxes runs again with fresh annotation data.
   useEffect(() => {
-    if (annotationsLoading) {
+    // Only run once:
+    //  - annotations are finished loading
+    //  - we've successfully applied at least one page layout
+    if (annotationsLoading || !layoutReady) {
       return;
     }
 
     const outer = wrapRef.current;
     if (!outer) {
-      return;
-    }
-
-    // Layout must already exist
-    if (!systemBandsRef.current.length || !pageStartIdxsRef.current.length) {
       return;
     }
 
@@ -2052,7 +2053,7 @@ export default function ScoreViewer({
     } finally {
       outer.dataset.viewerFunc = prevFunc;
     }
-  }, [annotationsLoading, annotationsByMeasure, applyPage]);
+  }, [annotationsLoading, annotationsByMeasure, layoutReady, applyPage]);
 
 
   // Hide the SVG host while we do heavy work, then restore previous styles.
@@ -2776,6 +2777,11 @@ export default function ScoreViewer({
         async () => {
           applyPage(targetPageIndex);
 
+          // Mark that we've successfully laid out at least one page.
+          if (!layoutReady) {
+            setLayoutReady(true);
+          }
+
           await Promise.race([
             ap(gateLabel, gateMs),
             new Promise<void>((r) => setTimeout(r, gateMs)),
@@ -2813,7 +2819,7 @@ export default function ScoreViewer({
 
       try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
     }
-  }, [nextPerfUID, renderViewer, withHostHidden, applyPage, visiblePageHeight, topGutterPx, bottomGutterPx]);
+  }, [nextPerfUID, renderViewer, withHostHidden, applyPage, visiblePageHeight, topGutterPx, bottomGutterPx, layoutReady]);
 
 
   // --- HEIGHT-ONLY REPAGINATION (no OSMD re-init) ---
