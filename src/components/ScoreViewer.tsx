@@ -1079,6 +1079,60 @@ function clearMeasureBoxes(outer: HTMLDivElement): void {
 }
 
 
+// Filled annotation overlay (per-measure), using the exact same geometry
+// as measure boxes. Separate layer so we can style/clear independently.
+function drawAnnotationBoxes(
+  outer: HTMLDivElement,
+  rects: ReadonlyArray<MeasureBoxRect>
+): void {
+  if (!outer || !rects.length) {
+    return;
+  }
+
+  const layer = createSvgEl("svg");
+  layer.setAttribute("data-viewer-annotations", "1");
+  layer.setAttribute("aria-hidden", "true");
+  Object.assign(layer.style, {
+    position: "absolute",
+    inset: "0",
+    pointerEvents: "none",
+    zIndex: "18", // below measure boxes (20), above music
+  } as CSSStyleDeclaration);
+
+  const ow = outer.clientWidth || 0;
+  const oh = outer.clientHeight || 0;
+  layer.setAttribute("width", String(ow));
+  layer.setAttribute("height", String(oh));
+  layer.setAttribute("viewBox", `0 0 ${ow} ${oh}`);
+
+  const g = createSvgEl("g");
+  layer.appendChild(g);
+
+  for (const box of rects) {
+    const r = createSvgEl("rect");
+    r.setAttribute("x", String(box.x));
+    r.setAttribute("y", String(box.y));
+    r.setAttribute("width", String(box.w));
+    r.setAttribute("height", String(box.h));
+
+    // Filled region where annotations will live.
+    // You can tweak this later (color/opacity/etc.).
+    r.setAttribute("fill", "rgba(255, 215, 0, 0.35)"); // translucent gold-ish
+    r.setAttribute("stroke", "none");
+    r.setAttribute("vector-effect", "non-scaling-stroke");
+
+    g.appendChild(r);
+  }
+
+  outer.appendChild(layer);
+}
+
+// Remove the annotation overlay layer if present.
+function clearAnnotationBoxes(outer: HTMLDivElement): void {
+  outer.querySelectorAll("[data-viewer-annotations='1']").forEach((n) => n.remove());
+}
+
+
 // Deterministic page starts from measured system rectangles (strict, bottom-based).
 function computePageStarts(
   outer: HTMLDivElement,
@@ -1323,7 +1377,6 @@ export default function ScoreViewer({
   useEffect(() => { busyRef.current = busy; }, [busy]);
 
 
-  //TEST
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
   const toggleEditMode = useCallback(() => {
     setIsEditMode((v) => !v);
@@ -1650,6 +1703,7 @@ export default function ScoreViewer({
   const measuresRef = useRef<ReadonlyArray<{ id: string; rect: Rect }>>([]);
   const barCandsRef = useRef<ReadonlyArray<BarCand>>([]);
   const geometryRef = useRef<ReadonlyMap<string, MeasureGeom>>(new Map());
+  const pageMeasureRectsRef = useRef<MeasureBoxRect[]>([]);
 
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
   // May recompute page starts and re-apply to preserve whole systems; bounded recursion prevents oscillation.
@@ -1822,9 +1876,8 @@ export default function ScoreViewer({
         topCutter.style.height = `${Math.max(0, topGutterPx)}px`;
 
 
-        //TEST       
-        // --- Measure rectangles smoke-test overlay ---
-        // Always redraw after pagination transform so outlines match what you see.
+        // --- Measure rectangles + annotation overlay ---
+        // Always redraw after pagination transform so overlays match what you see.
         // Cache the args for edit-mode redraws (mode toggle)
         lastBoxDrawArgsRef.current = {
           outer,
@@ -1840,28 +1893,51 @@ export default function ScoreViewer({
         };
 
         try {
-          // Always clear first (no stale rectangles between pages or modes)
-          clearMeasureBoxes(outer);
+          const measuresForPage = measuresRef.current ?? [];
+          const geomForPage = geometryRef.current ?? new Map<string, MeasureGeom>();
 
-          // Draw only when edit mode is active
+          // Compute per-measure rects for THIS page using the shared helper.
+          // This is the exact same geometry that drawMeasureBoxes uses.
+          const rects = computeMeasureBoxRectsForPage(
+            measuresForPage,
+            geomForPage,
+            bandsNN,
+            startIndex,
+            nextStartIndex,
+            ySnap,
+            Math.max(0, topGutterPx),
+            maskTopWithinMusicPx
+          );
+
+          // Cache for future hit-testing / annotation logic
+          pageMeasureRectsRef.current = rects;
+
+          // 1) Draw annotation fill layer (always visible, read + edit mode)
+          clearAnnotationBoxes(outer);
+          if (rects.length) {
+            drawAnnotationBoxes(outer, rects);
+          }
+
+          // 2) Draw stroke-only measure boxes when edit mode is active
+          clearMeasureBoxes(outer);
           if (isEditModeRef.current) {
             drawMeasureBoxes(
               outer,
-              svgNN,                                   // non-nullable alias
-              measuresRef.current ?? [],               // precomputed measures
-              geometryRef.current ?? new Map(),
-              bandsNN,                                 // non-nullable alias
-              startIndex,                              // this page's first system index
-              nextStartIndex,                          // -1 if last page
-              ySnap,                                   // ceil(top of start band)
+              svgNN,
+              measuresForPage,
+              geomForPage,
+              bandsNN,
+              startIndex,
+              nextStartIndex,
+              ySnap,
               Math.max(0, topGutterPx),
-              maskTopWithinMusicPx                     // page-local bottom cut for this page
+              maskTopWithinMusicPx
             );
           }
         } catch {
           // viewer should not die over overlay drawing
+          pageMeasureRectsRef.current = [];
         }
-        //TEST
 
         // Stop layer promotion after page is applied
         svg.style.willChange = "auto";
@@ -4012,7 +4088,7 @@ export default function ScoreViewer({
         </div>
       </div>
 
-      {/* EDIT / DONE toggle hotspot TEST*/}
+      {/* EDIT / DONE toggle hotspot*/}
       <button
         type="button"
         data-ignore-page-turn="true"
