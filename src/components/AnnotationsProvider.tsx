@@ -12,16 +12,32 @@ import {
 } from "react";
 
 /**
+ * Front-end only shape of a single text annotation item inside a measure.
+ * This mirrors what ScoreViewer expects in its MeasureAnnotation type.
+ */
+export interface AnnotationTextItem {
+  kind: "text";
+  xRel: number;
+  yRel: number;
+  text: string;
+  style?: string;
+}
+
+/**
  * Front-end only shape of the annotation payload.
  * The DB just stores this as `jsonb`.
- *
- * You can tighten these types later once the structure is fully nailed down.
  */
 export interface AnnotationPayload {
+  // Optional list of text items for this measure
+  items?: AnnotationTextItem[];
+
+  // Other fields you may add later (boxes, fingerings, etc.)
   boxes?: unknown[];
   fingerings?: unknown[];
   text?: unknown[];
-  // Add more fields as needed (slurs, arrows, colors, etc.)
+
+  // Index signature so this is assignable to MeasureAnnotation
+  [key: string]: unknown;
 }
 
 export type MeasureNumber = number;
@@ -79,7 +95,8 @@ interface AnnotationsContextValue {
 
   annotationsByMeasure: AnnotationMap;
 
-  getAnnotationsForMeasure: (measureNumber: MeasureNumber) => AnnotationPayload | null;
+  // Return undefined when no annotation exists for this measure.
+  getAnnotationsForMeasure: (measureNumber: MeasureNumber) => AnnotationPayload | undefined;
 
   /**
    * Save (insert or update) the annotation payload for a single measure.
@@ -254,9 +271,10 @@ export function AnnotationsProvider({
   }, [ensureUserSongRow, songId, userId]);
 
   const getAnnotationsForMeasure = useCallback(
-    (measureNumber: MeasureNumber): AnnotationPayload | null => {
-      const payload = annotationsByMeasure[measureNumber];
-      return payload ?? null;
+    (measureNumber: MeasureNumber): AnnotationPayload | undefined => {
+      // If this measure has no entry, this will just be `undefined`,
+      // which matches the context type.
+      return annotationsByMeasure[measureNumber];
     },
     [annotationsByMeasure]
   );

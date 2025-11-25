@@ -3,6 +3,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
+import { useAnnotations } from "@/components/AnnotationsProvider";
+import type { AnnotationPayload } from "@/components/AnnotationsProvider";
 
 // ---------- Props & Types ----------
 
@@ -257,8 +259,8 @@ export async function logStep(
   const { outer = null, caller } = opts;
 
   // Fixed DevTools console column widths (tweak as needed)
-  const CALLER_COL = 16;
-  const FN_COL = 18;
+  const CALLER_COL = 20;
+  const FN_COL = 20;
   const PHASE_COL = 8;
 
   // Local helper: truncate to the column width and pad to that width.
@@ -672,8 +674,18 @@ type MeasureBoxRect = {
   y: number;
   w: number;
   h: number;
-  tileIndex: number;
+  // 1-based OSMD measure number, or -1 if we couldn't parse one
+  measureNumber: number;
 };
+
+// --- Annotation types ---
+
+// Payload we store per measure_number in annotations_json
+type MeasureAnnotation = AnnotationPayload;
+
+// Callback used by drawAnnotationBoxes to look up one measure’s annotation
+type GetAnnotationsForMeasure = (measureNumber: number) => MeasureAnnotation | undefined;
+
 
 // Pure geometry helper: computes the measure-box rectangles for the
 // *current page* using the same logic drawMeasureBoxes used before.
@@ -917,13 +929,22 @@ function computeMeasureBoxRectsForPage(
       const y = Math.round(Math.min(top, bot)) + 0.5;
       const h = Math.max(1, Math.round(Math.abs(bot - top)) - 1);
 
+      // NEW: parse a measureNumber from m.id
+      // Handles ids like "measure-12", "measure_12", "measure 12", or plain "12".
+      const matchFromMeasure = m.id.match(/measure[-_\s]?(\d+)/i);
+      const matchPlain = m.id.match(/^(\d+)$/);
+      const raw = matchFromMeasure?.[1] ?? matchPlain?.[1] ?? "";
+      const parsed = Number(raw);
+      const measureNumber =
+        Number.isFinite(parsed) && parsed > 0 ? parsed : -1;
+
       rects.push({
         id: m.id,
         x,
         y,
         w,
         h,
-        tileIndex: k,
+        measureNumber,
       });
     }
   }
@@ -1067,9 +1088,7 @@ function drawMeasureBoxes(
   logStep(`boxes: ${drawnCount}`, { outer, caller: prevFuncTag });
   try {
     outer.dataset.viewerFunc = prevFuncTag;
-  } catch {
-    // ignore
-  }
+  } catch { }
 }
 
 
@@ -1083,11 +1102,16 @@ function clearMeasureBoxes(outer: HTMLDivElement): void {
 // as measure boxes. Separate layer so we can style/clear independently.
 function drawAnnotationBoxes(
   outer: HTMLDivElement,
-  rects: ReadonlyArray<MeasureBoxRect>
+  rects: ReadonlyArray<MeasureBoxRect>,
+  getAnnotationsForMeasure: GetAnnotationsForMeasure
 ): void {
-  if (!outer || !rects.length) {
+  if (!outer || rects.length === 0) {
     return;
   }
+
+  const prevFuncTag = outer.dataset.viewerFunc ?? "";
+  outer.dataset.viewerFunc = "drawAnnotationBoxes";
+  logStep(`called`, { outer, caller: prevFuncTag });
 
   const layer = createSvgEl("svg");
   layer.setAttribute("data-viewer-annotations", "1");
@@ -1096,7 +1120,7 @@ function drawAnnotationBoxes(
     position: "absolute",
     inset: "0",
     pointerEvents: "none",
-    zIndex: "18", // below measure boxes (20), above music
+    zIndex: "18", // under measure boxes, over the score
   } as CSSStyleDeclaration);
 
   const ow = outer.clientWidth || 0;
@@ -1109,23 +1133,61 @@ function drawAnnotationBoxes(
   layer.appendChild(g);
 
   for (const box of rects) {
-    const r = createSvgEl("rect");
-    r.setAttribute("x", String(box.x));
-    r.setAttribute("y", String(box.y));
-    r.setAttribute("width", String(box.w));
-    r.setAttribute("height", String(box.h));
+    // --- Base fill that corresponds 1:1 with measure boxes ---
+    const base = createSvgEl("rect");
+    base.setAttribute("x", String(box.x));
+    base.setAttribute("y", String(box.y));
+    base.setAttribute("width", String(box.w));
+    base.setAttribute("height", String(box.h));
+    base.setAttribute("fill", "rgba(255, 215, 0, 0.25)"); // translucent gold
+    base.setAttribute("stroke", "none");
+    base.setAttribute("vector-effect", "non-scaling-stroke");
+    g.appendChild(base);
 
-    // Filled region where annotations will live.
-    // You can tweak this later (color/opacity/etc.).
-    r.setAttribute("fill", "rgba(255, 215, 0, 0.35)"); // translucent gold-ish
-    r.setAttribute("stroke", "none");
-    r.setAttribute("vector-effect", "non-scaling-stroke");
+    // --- Retrieve DB annotation (if any) ---
+    const annotation = getAnnotationsForMeasure(box.measureNumber);
+    if (!annotation) {
+      continue;
+    }
 
-    g.appendChild(r);
+    const items = Array.isArray(annotation.items) ? annotation.items : [];
+    if (!items.length) {
+      continue;
+    }
+
+    for (const item of items) {
+      if (item.kind !== "text") {
+        continue;
+      }
+
+      // Clamp to [0,1] in both directions
+      const xRel = Math.max(0, Math.min(1, item.xRel));
+      const yRel = Math.max(0, Math.min(1, item.yRel));
+
+      // Convert to page-local px coordinates
+      const pxX = box.x + xRel * box.w;
+      const pxY = box.y + yRel * box.h;
+
+      const t = createSvgEl("text");
+      t.textContent = item.text;
+      t.setAttribute("x", String(pxX));
+      t.setAttribute("y", String(pxY));
+      t.setAttribute("fill", "black");
+      t.setAttribute("font-size", "14");
+      t.setAttribute("font-family", "sans-serif");
+      t.setAttribute("dominant-baseline", "middle");
+      t.setAttribute("text-anchor", "middle");
+
+      g.appendChild(t);
+    }
   }
 
   outer.appendChild(layer);
+  try {
+    outer.dataset.viewerFunc = prevFuncTag;
+  } catch { }
 }
+
 
 // Remove the annotation overlay layer if present.
 function clearAnnotationBoxes(outer: HTMLDivElement): void {
@@ -1346,6 +1408,14 @@ interface Props {
 export default function ScoreViewer({
   src,
 }: Props) {
+
+  // Pull annotation helpers from the provider.
+  // This is the ONLY source of truth for annotation data.
+  const {
+    getAnnotationsForMeasure,
+    annotationsByMeasure,
+    isLoading: annotationsLoading,
+  } = useAnnotations();
 
   const measureToPageRef = useRef<number[]>([]);
 
@@ -1915,7 +1985,7 @@ export default function ScoreViewer({
           // 1) Draw annotation fill layer (always visible, read + edit mode)
           clearAnnotationBoxes(outer);
           if (rects.length) {
-            drawAnnotationBoxes(outer, rects);
+            drawAnnotationBoxes(outer, rects, getAnnotationsForMeasure);
           }
 
           // 2) Draw stroke-only measure boxes when edit mode is active
@@ -1945,8 +2015,45 @@ export default function ScoreViewer({
         try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
       }
     },
-    [visiblePageHeight, topGutterPx, bottomGutterPx]
+    [visiblePageHeight, topGutterPx, bottomGutterPx, getAnnotationsForMeasure]
   );
+
+
+  // When annotations finish loading or change, re-render the current page
+  // so that drawAnnotationBoxes runs again with fresh annotation data.
+  useEffect(() => {
+    if (annotationsLoading) {
+      return;
+    }
+
+    const outer = wrapRef.current;
+    if (!outer) {
+      return;
+    }
+
+    // Layout must already exist
+    if (!systemBandsRef.current.length || !pageStartIdxsRef.current.length) {
+      return;
+    }
+
+    const currentPage = Math.max(0, pageIdxRef.current || 0);
+
+    const prevFunc = outer.dataset.viewerFunc ?? "";
+    outer.dataset.viewerFunc = "annotationsChanged";
+
+    try {
+      void logStep(
+        `annotationsChanged: page=${currentPage} measures=${Object.keys(
+          annotationsByMeasure
+        ).length}`,
+        { outer }
+      );
+      applyPage(currentPage);
+    } finally {
+      outer.dataset.viewerFunc = prevFunc;
+    }
+  }, [annotationsLoading, annotationsByMeasure, applyPage]);
+
 
   // Hide the SVG host while we do heavy work, then restore previous styles.
   const withHostHidden = useCallback(async <T,>(
