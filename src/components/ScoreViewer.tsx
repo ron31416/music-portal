@@ -3849,6 +3849,24 @@ export default function ScoreViewer({
     };
   }, [applyPage, goNext, goPrev]);
 
+  //TEST
+  // Small "halo" so a tap right on the edge still counts
+  const MEASURE_HIT_TOLERANCE = 8; // tweak if you like
+
+  function pointInMeasureRect(
+    xPage: number,
+    yPage: number,
+    box: { x: number; y: number; w: number; h: number },
+    tol = MEASURE_HIT_TOLERANCE
+  ): boolean {
+    return (
+      xPage >= box.x - tol &&
+      xPage <= box.x + box.w + tol &&
+      yPage >= box.y - tol &&
+      yPage <= box.y + box.h + tol
+    );
+  }
+  //TEST
 
   // Touch swipe paging + two-finger pinch zoom (disabled while busy)
   useEffect(() => {
@@ -3999,11 +4017,45 @@ export default function ScoreViewer({
       const dx = t.clientX - startX;
       const dt = performance.now() - startT;
 
-      // 1) Tap-to-advance (quick + tiny movement)
+      //TEST
+      // 1) Tap-to-advance OR edit-tap (quick + tiny movement)
       if (Math.abs(dx) <= TAP_MAX_MOVE_PX && Math.abs(dy) <= TAP_MAX_MOVE_PX && dt <= TAP_MAX_MS) {
+        // If we're NOT in edit mode, behave exactly as before.
+        if (!isEditModeRef.current) {
+          goNext(e);
+          return;
+        }
+
+        // EDIT MODE: decide between "edit tap" and "page turn tap"
+        const outerBox = outer.getBoundingClientRect();
+        const xPage = t.clientX - outerBox.left;
+        const yPage = t.clientY - outerBox.top;
+
+        const rects = measureRectsRef.current;
+        if (rects && rects.length) {
+          for (const box of rects) {
+            if (pointInMeasureRect(xPage, yPage, box)) {
+              // Tap landed in a measure box → highlight, don't turn page.
+              e.preventDefault();
+              e.stopPropagation?.();
+
+              openMeasurePreview({
+                x: box.x,
+                y: box.y,
+                w: box.w,
+                h: box.h,
+              });
+
+              return;
+            }
+          }
+        }
+
+        // Tap was NOT inside any measure rect → still treat as page-turn tap.
         goNext(e);
         return;
       }
+      //TEST
 
       // 2) Your existing swipe logic
       const THRESH = 40;
@@ -4029,7 +4081,7 @@ export default function ScoreViewer({
       cleanupOuter.removeEventListener("touchmove", onTouchMove);
       cleanupOuter.removeEventListener("touchend", onTouchEnd);
     };
-  }, [goNext, goPrev]);
+  }, [goNext, goPrev, openMeasurePreview]);
 
 
   // Mouse single-click paging (disabled while busy)
