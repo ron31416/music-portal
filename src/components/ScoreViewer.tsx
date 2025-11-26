@@ -8,14 +8,12 @@ import type { AnnotationPayload } from "@/components/AnnotationsProvider";
 
 // ---------- Props & Types ----------
 
-//TEST
 // Extend the Window type without using `any`
 declare global {
   interface Window {
     debugShowMeasurePreview?: (x: number, y: number, w: number, h: number) => void;
   }
 }
-//TEST
 
 interface Band { top: number; bottom: number; height: number }
 
@@ -938,7 +936,7 @@ function computeMeasureBoxRectsForPage(
       const y = Math.round(Math.min(top, bot)) + 0.5;
       const h = Math.max(1, Math.round(Math.abs(bot - top)) - 1);
 
-      // NEW: parse a measureNumber from m.id
+      // parse a measureNumber from m.id
       // Handles ids like "measure-12", "measure_12", "measure 12", or plain "12".
       const matchFromMeasure = m.id.match(/measure[-_\s]?(\d+)/i);
       const matchPlain = m.id.match(/^(\d+)$/);
@@ -1369,16 +1367,14 @@ function rebuildMeasureToPageMapping(
 }
 
 
-/**
- * Given a measure→page mapping and a target page index, choose
- * an "anchor" measure on that page.
- *
- * Phase 1 implementation: choose the earliest (lowest measure number)
- * on the given page.
- *
- * The name is intentionally generic so we can later change the strategy
- * (e.g., choose the middle measure on that page).
- */
+// Given a measure→page mapping and a target page index, choose
+// an "anchor" measure on that page.
+// 
+// Phase 1 implementation: choose the earliest (lowest measure number)
+// on the given page.
+// 
+// The name is intentionally generic so we can later change the strategy
+// (e.g., choose the middle measure on that page).
 export function findAnchorMeasure(
   measureToPage: ReadonlyArray<number>,
   pageIndex: number
@@ -1418,7 +1414,6 @@ export default function ScoreViewer({
   // True once the initial OSMD layout has finished at least once
   const [layoutReady, setLayoutReady] = useState(false);
 
-  //TEST
   // ===== Measure preview popup state =====
   type SimpleRect = {
     x: number;
@@ -1549,9 +1544,8 @@ export default function ScoreViewer({
   // The measure rect we hit on pointer-down (if any).
   const pendingMeasureRectRef = useRef<SimpleRect | null>(null);
 
-  // NEW: if true, the *next click* should be suppressed (for touch devices)
+  // if true, the *next click* should be suppressed (for touch devices)
   const suppressClickRef = useRef(false);
-  //TEST
 
   const measureToPageRef = useRef<number[]>([]);
 
@@ -1604,7 +1598,6 @@ export default function ScoreViewer({
       return next;
     });
   }, [closeMeasurePreview]);
-  //TEST
 
   const isEditModeRef = useRef<boolean>(false);
 
@@ -1723,7 +1716,6 @@ export default function ScoreViewer({
     }
   }, []);
 
-  //TEST
   useEffect(() => {
     // Install debug function
     window.debugShowMeasurePreview = (x: number, y: number, w: number, h: number) => {
@@ -1735,7 +1727,6 @@ export default function ScoreViewer({
       delete window.debugShowMeasurePreview;
     };
   }, [openMeasurePreview]);
-  //TEST
 
   // --- WIDTH-SANDBOXED RENDER (safe) ---
   // Render OSMD at a computed “layout width” derived from wrapper width and current zoom.
@@ -1947,10 +1938,8 @@ export default function ScoreViewer({
       const outer = wrapRef.current;
       if (!outer) { return; }
 
-      //TEST
-      // NEW: clear any existing measure preview when we change pages
+      // clear any existing measure preview when we change pages
       closeMeasurePreview();
-      //TEST
 
       function bottomPeekPadPx(): number {
         return window.devicePixelRatio >= 2
@@ -2152,10 +2141,8 @@ export default function ScoreViewer({
           // Cache for future hit-testing / annotation logic
           pageMeasureRectsRef.current = rects;
 
-          //TEST
           // Keep the current page's rects for edit-mode hit-testing
           measureRectsRef.current = rects;
-          //TEST
 
           // 1) Draw annotation fill layer (always visible, read + edit mode)
           clearAnnotationBoxes(outer);
@@ -2344,7 +2331,7 @@ export default function ScoreViewer({
 
       validateBandSpacing(outer, bands, { minGapAlertPx: 2 });
 
-      // --- NEW: precompute measures & bar-cands once at unit scale (page-local px) ---
+      // --- precompute measures & bar-cands once at unit scale (page-local px) ---
       {
         const res = withSvgAtUnitScale(outer, (svg) => {
           const measuresPre = scanMeasuresPx(outer, svg) ?? [];
@@ -2405,7 +2392,7 @@ export default function ScoreViewer({
         measuresRef.current = res.measuresPre as ReadonlyArray<{ id: string; rect: Rect }>;
         barCandsRef.current = res.barCands as ReadonlyArray<BarCand>;
 
-        // --- NEW: compute per-measure geometry once (pre-translate, page-local px)
+        // --- compute per-measure geometry once (pre-translate, page-local px)
         const measuresPre = measuresRef.current;
         const barCands = barCandsRef.current;
 
@@ -2491,7 +2478,7 @@ export default function ScoreViewer({
           const BUCKETS = new Map<number, Span[]>();
           const put = (x: number, t: number, b: number): void => {
             const xr = Math.round(x);
-            if (xr < leftBoundPx) { return; }       // <<< NEW: ignore anything left of the music
+            if (xr < leftBoundPx) { return; }       // ignore anything left of the music
             const arr = BUCKETS.get(xr);
             const s: Span = { t, b };
             if (arr) { arr.push(s); } else { BUCKETS.set(xr, [s]); }
@@ -3849,7 +3836,6 @@ export default function ScoreViewer({
     };
   }, [applyPage, goNext, goPrev]);
 
-  //TEST
   // Small "halo" so a tap right on the edge still counts
   const MEASURE_HIT_TOLERANCE = 8; // tweak if you like
 
@@ -3866,7 +3852,6 @@ export default function ScoreViewer({
       yPage <= box.y + box.h + tol
     );
   }
-  //TEST
 
   // Touch swipe paging + two-finger pinch zoom (disabled while busy)
   useEffect(() => {
@@ -3990,6 +3975,9 @@ export default function ScoreViewer({
       e.preventDefault();
     };
 
+    // EDIT MODE: for short taps, decide between "edit tap" (inside measure → highlight)
+    // and "page-turn tap" (outside all measures → goNext).
+    // Non-edit: always treat as page-turn tap.
     const onTouchEnd = (e: TouchEvent) => {
       // Mark the time of this touch gesture so we can ignore the follow-up mouse events
       lastTouchEndRef.current = performance.now();
@@ -4017,7 +4005,6 @@ export default function ScoreViewer({
       const dx = t.clientX - startX;
       const dt = performance.now() - startT;
 
-      //TEST
       // 1) Tap-to-advance OR edit-tap (quick + tiny movement)
       if (Math.abs(dx) <= TAP_MAX_MOVE_PX && Math.abs(dy) <= TAP_MAX_MOVE_PX && dt <= TAP_MAX_MS) {
         // If we're NOT in edit mode, behave exactly as before.
@@ -4055,7 +4042,6 @@ export default function ScoreViewer({
         goNext(e);
         return;
       }
-      //TEST
 
       // 2) Your existing swipe logic
       const THRESH = 40;
@@ -4086,6 +4072,8 @@ export default function ScoreViewer({
 
   // Mouse single-click paging (disabled while busy)
   // NOTE: ignores double-click so we can reserve it for future edit mode
+  // NOTE: In edit mode, pointerdown inside a measure calls preventDefault,
+  // which suppresses these mouse events so we can show the measure overlay instead.
   useEffect(() => {
     const outer = wrapRef.current;
     if (!outer) { return; }
@@ -4366,11 +4354,9 @@ export default function ScoreViewer({
   return (
     <div
       ref={wrapRef}
-      //TEST
       onPointerDownCapture={handleViewerPointerDownCapture}
       onPointerUpCapture={handleViewerPointerUpCapture}
       onClickCapture={handleViewerClickCapture}
-      //TEST
       style={{
         ...outerStyle,
         position: "relative", // <-- ensure absolute children anchor here
@@ -4483,7 +4469,7 @@ export default function ScoreViewer({
         {isEditMode ? "Done" : "Edit"}
       </button>
 
-      {/* 🔍 DEBUG / preview root for cropped measure overlay TEST*/}
+      {/* DEBUG / preview root for cropped measure overlay*/}
       <div
         data-debug-measure-preview-root="1"
         style={{
@@ -4510,7 +4496,7 @@ export default function ScoreViewer({
             }}
           />
         )}
-      </div>{/*TEST*/}
+      </div>
       <style>{`@keyframes viewer-spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }`}</style>
     </div>
   );
