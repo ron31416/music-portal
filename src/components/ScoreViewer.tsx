@@ -1448,6 +1448,7 @@ export default function ScoreViewer({
       // Reset for this gesture
       suppressPageTurnRef.current = false;
       pendingMeasureRectRef.current = null;
+      suppressClickRef.current = false; // NEW
 
       if (!isEditModeRef.current) {
         return;
@@ -1471,6 +1472,7 @@ export default function ScoreViewer({
         if (withinX && withinY) {
           // This gesture started inside a measure → treat as "edit", not "turn page"
           suppressPageTurnRef.current = true;
+          suppressClickRef.current = true; // NEW: remember to kill the next click
           pendingMeasureRectRef.current = {
             x: box.x,
             y: box.y,
@@ -1517,6 +1519,26 @@ export default function ScoreViewer({
     [openMeasurePreview]
   );
 
+  const handleViewerClickCapture = useCallback(
+    (ev: React.MouseEvent<HTMLDivElement>): void => {
+      // Only care in edit mode
+      if (!isEditModeRef.current) {
+        return;
+      }
+
+      if (!suppressClickRef.current) {
+        // This click did not originate from a measure-hit gesture.
+        return;
+      }
+
+      // Consume this click so page-turn handlers never see it
+      suppressClickRef.current = false;
+      ev.preventDefault();
+      ev.stopPropagation();
+    },
+    []
+  );
+
   // Current page's measure rectangles (used for hit-testing in edit mode)
   const measureRectsRef = useRef<ReadonlyArray<MeasureBoxRect>>([]);
 
@@ -1526,6 +1548,8 @@ export default function ScoreViewer({
   // The measure rect we hit on pointer-down (if any).
   const pendingMeasureRectRef = useRef<SimpleRect | null>(null);
 
+  // NEW: if true, the *next click* should be suppressed (for touch devices)
+  const suppressClickRef = useRef(false);
   //TEST
 
   const measureToPageRef = useRef<number[]>([]);
@@ -1557,9 +1581,7 @@ export default function ScoreViewer({
   const busyRef = useRef(false);
   useEffect(() => { busyRef.current = busy; }, [busy]);
 
-
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
-  //TEST
   const toggleEditMode = useCallback((): void => {
     setIsEditMode((prev) => {
       const next = !prev;
@@ -2167,7 +2189,7 @@ export default function ScoreViewer({
         try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
       }
     },
-    [visiblePageHeight, topGutterPx, bottomGutterPx, getAnnotationsForMeasure, closeMeasurePreview] //TEST
+    [visiblePageHeight, topGutterPx, bottomGutterPx, getAnnotationsForMeasure, closeMeasurePreview]
   );
 
 
@@ -4294,6 +4316,7 @@ export default function ScoreViewer({
       //TEST
       onPointerDownCapture={handleViewerPointerDownCapture}
       onPointerUpCapture={handleViewerPointerUpCapture}
+      onClickCapture={handleViewerClickCapture}
       //TEST
       style={{
         ...outerStyle,
