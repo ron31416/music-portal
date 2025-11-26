@@ -8,6 +8,15 @@ import type { AnnotationPayload } from "@/components/AnnotationsProvider";
 
 // ---------- Props & Types ----------
 
+//TEST
+// Extend the Window type without using `any`
+declare global {
+  interface Window {
+    debugShowMeasurePreview?: (x: number, y: number, w: number, h: number) => void;
+  }
+}
+//TEST
+
 interface Band { top: number; bottom: number; height: number }
 
 // Viewer-space rectangle (left/top/width/height in px, relative to wrapper host)
@@ -1133,17 +1142,6 @@ function drawAnnotationBoxes(
   layer.appendChild(g);
 
   for (const box of rects) {
-    // --- Base fill that corresponds 1:1 with measure boxes ---
-    const base = createSvgEl("rect");
-    base.setAttribute("x", String(box.x));
-    base.setAttribute("y", String(box.y));
-    base.setAttribute("width", String(box.w));
-    base.setAttribute("height", String(box.h));
-    base.setAttribute("fill", "rgba(255, 215, 0, 0.25)"); // translucent gold
-    base.setAttribute("stroke", "none");
-    base.setAttribute("vector-effect", "non-scaling-stroke");
-    g.appendChild(base);
-
     // --- Retrieve DB annotation (if any) ---
     const annotation = getAnnotationsForMeasure(box.measureNumber);
     if (!annotation) {
@@ -1420,6 +1418,116 @@ export default function ScoreViewer({
   // True once the initial OSMD layout has finished at least once
   const [layoutReady, setLayoutReady] = useState(false);
 
+  //TEST
+  // ===== Measure preview popup state =====
+  type SimpleRect = {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  };
+
+  const [measurePreviewRect, setMeasurePreviewRect] = useState<SimpleRect | null>(null);
+  const measurePreviewHostRef = useRef<HTMLDivElement | null>(null);
+
+  const openMeasurePreview = useCallback(
+    (rect: SimpleRect): void => {
+      setMeasurePreviewRect(rect);
+      void logStep("openMeasurePreview: set rect");
+    },
+    []
+  );
+
+  const closeMeasurePreview = useCallback((): void => {
+    // Let React unmount the overlay; no manual DOM surgery.
+    setMeasurePreviewRect(null);
+  }, []);
+
+  const handleViewerPointerDownCapture = useCallback(
+    (ev: React.PointerEvent<HTMLDivElement>): void => {
+      // Reset for this gesture
+      suppressPageTurnRef.current = false;
+      pendingMeasureRectRef.current = null;
+
+      if (!isEditModeRef.current) {
+        return;
+      }
+
+      const rects = measureRectsRef.current;
+      const outer = wrapRef.current;
+
+      if (!outer || !rects.length) {
+        return;
+      }
+
+      const outerBox = outer.getBoundingClientRect();
+      const xPage = ev.clientX - outerBox.left;
+      const yPage = ev.clientY - outerBox.top;
+
+      for (const box of rects) {
+        const withinX = xPage >= box.x && xPage <= box.x + box.w;
+        const withinY = yPage >= box.y && yPage <= box.y + box.h;
+
+        if (withinX && withinY) {
+          // This gesture started inside a measure → treat as "edit", not "turn page"
+          suppressPageTurnRef.current = true;
+          pendingMeasureRectRef.current = {
+            x: box.x,
+            y: box.y,
+            w: box.w,
+            h: box.h,
+          };
+
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+      }
+    },
+    []
+  );
+
+  const handleViewerPointerUpCapture = useCallback(
+    (ev: React.PointerEvent<HTMLDivElement>): void => {
+      if (!isEditModeRef.current) {
+        return;
+      }
+
+      if (!suppressPageTurnRef.current) {
+        // Pointer-down didn’t hit a measure box → let normal page-turn logic run
+        return;
+      }
+
+      const rect = pendingMeasureRectRef.current;
+
+      // Clear flags for next gesture
+      suppressPageTurnRef.current = false;
+      pendingMeasureRectRef.current = null;
+
+      if (!rect) {
+        return;
+      }
+
+      // Eat this gesture so it does NOT become a click/page turn
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      openMeasurePreview(rect);
+    },
+    [openMeasurePreview]
+  );
+
+  // Current page's measure rectangles (used for hit-testing in edit mode)
+  const measureRectsRef = useRef<ReadonlyArray<MeasureBoxRect>>([]);
+
+  // When true, this pointer gesture should NOT trigger a page turn.
+  const suppressPageTurnRef = useRef(false);
+
+  // The measure rect we hit on pointer-down (if any).
+  const pendingMeasureRectRef = useRef<SimpleRect | null>(null);
+
+  //TEST
+
   const measureToPageRef = useRef<number[]>([]);
 
   const topGutterPx = REFLOW.PAD_PX_BASE;
@@ -1451,9 +1559,29 @@ export default function ScoreViewer({
 
 
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
-  const toggleEditMode = useCallback(() => {
-    setIsEditMode((v) => !v);
-  }, []);
+  //TEST
+  const toggleEditMode = useCallback((): void => {
+    setIsEditMode((prev) => {
+      const next = !prev;
+
+      // keep the ref in sync
+      isEditModeRef.current = next;
+
+      // reflect edit-mode state on the outer container (if present)
+      const outer = wrapRef.current;
+      if (outer) {
+        outer.dataset.viewerEdit = next ? "1" : "0";
+      }
+
+      // when leaving edit mode, clear any active measure-preview rectangle
+      if (!next) {
+        closeMeasurePreview();
+      }
+
+      return next;
+    });
+  }, [closeMeasurePreview]);
+  //TEST
 
   const isEditModeRef = useRef<boolean>(false);
 
@@ -1504,8 +1632,6 @@ export default function ScoreViewer({
       }
     } catch { }
   }, [isEditMode]);
-
-  //TEST
 
   // Stable per-instance ID (for perf marks), plus a monotonic per-run sequence elsewhere
   const instanceIdRef = useRef<string>(`viewer-${Math.random().toString(36).slice(2, 8)}`);
@@ -1574,6 +1700,19 @@ export default function ScoreViewer({
     }
   }, []);
 
+  //TEST
+  useEffect(() => {
+    // Install debug function
+    window.debugShowMeasurePreview = (x: number, y: number, w: number, h: number) => {
+      openMeasurePreview({ x, y, w, h });
+    };
+
+    return () => {
+      // Remove debug function safely
+      delete window.debugShowMeasurePreview;
+    };
+  }, [openMeasurePreview]);
+  //TEST
 
   // --- WIDTH-SANDBOXED RENDER (safe) ---
   // Render OSMD at a computed “layout width” derived from wrapper width and current zoom.
@@ -1785,6 +1924,11 @@ export default function ScoreViewer({
       const outer = wrapRef.current;
       if (!outer) { return; }
 
+      //TEST
+      // NEW: clear any existing measure preview when we change pages
+      closeMeasurePreview();
+      //TEST
+
       function bottomPeekPadPx(): number {
         return window.devicePixelRatio >= 2
           ? REFLOW.BOTTOM_PEEK_PAD_HI_DPR
@@ -1985,6 +2129,11 @@ export default function ScoreViewer({
           // Cache for future hit-testing / annotation logic
           pageMeasureRectsRef.current = rects;
 
+          //TEST
+          // Keep the current page's rects for edit-mode hit-testing
+          measureRectsRef.current = rects;
+          //TEST
+
           // 1) Draw annotation fill layer (always visible, read + edit mode)
           clearAnnotationBoxes(outer);
           if (rects.length) {
@@ -2018,7 +2167,7 @@ export default function ScoreViewer({
         try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
       }
     },
-    [visiblePageHeight, topGutterPx, bottomGutterPx, getAnnotationsForMeasure]
+    [visiblePageHeight, topGutterPx, bottomGutterPx, getAnnotationsForMeasure, closeMeasurePreview] //TEST
   );
 
 
@@ -4142,6 +4291,10 @@ export default function ScoreViewer({
   return (
     <div
       ref={wrapRef}
+      //TEST
+      onPointerDownCapture={handleViewerPointerDownCapture}
+      onPointerUpCapture={handleViewerPointerUpCapture}
+      //TEST
       style={{
         ...outerStyle,
         position: "relative", // <-- ensure absolute children anchor here
@@ -4253,6 +4406,35 @@ export default function ScoreViewer({
       >
         {isEditMode ? "Done" : "Edit"}
       </button>
+
+      {/* 🔍 DEBUG / preview root for cropped measure overlay TEST*/}
+      <div
+        data-debug-measure-preview-root="1"
+        style={{
+          position: "absolute",
+          inset: 0,
+          pointerEvents: "none",
+          zIndex: 50,
+        }}
+        ref={measurePreviewHostRef}
+      >
+        {measurePreviewRect && (
+          <div
+            style={{
+              position: "absolute",
+              left: measurePreviewRect.x,
+              top: measurePreviewRect.y,
+              width: measurePreviewRect.w,
+              height: measurePreviewRect.h,
+              border: "3px solid rgba(250, 50, 50, 0.8)",
+              borderRadius: "4px",
+              background: "rgba(255, 200, 200, 0.15)",
+              boxShadow: "0 0 10px rgba(255, 0, 0, 0.4)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
+      </div>{/*TEST*/}
       <style>{`@keyframes viewer-spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }`}</style>
     </div>
   );
