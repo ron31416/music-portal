@@ -1448,7 +1448,7 @@ export default function ScoreViewer({
       // Reset for this gesture
       suppressPageTurnRef.current = false;
       pendingMeasureRectRef.current = null;
-      suppressClickRef.current = false; // NEW
+      suppressClickRef.current = false;
 
       if (!isEditModeRef.current) {
         return;
@@ -1470,9 +1470,9 @@ export default function ScoreViewer({
         const withinY = yPage >= box.y && yPage <= box.y + box.h;
 
         if (withinX && withinY) {
-          // This gesture started inside a measure → treat as "edit", not "turn page"
+          // Gesture started inside a measure → edit, not page turn
           suppressPageTurnRef.current = true;
-          suppressClickRef.current = true; // NEW: remember to kill the next click
+          suppressClickRef.current = true; // ← important
           pendingMeasureRectRef.current = {
             x: box.x,
             y: box.y,
@@ -1496,13 +1496,13 @@ export default function ScoreViewer({
       }
 
       if (!suppressPageTurnRef.current) {
-        // Pointer-down didn’t hit a measure box → let normal page-turn logic run
+        // Pointer-down didn’t hit a measure box → normal page-turn
         return;
       }
 
       const rect = pendingMeasureRectRef.current;
 
-      // Clear flags for next gesture
+      // Clear pointer flags for next gesture
       suppressPageTurnRef.current = false;
       pendingMeasureRectRef.current = null;
 
@@ -1510,7 +1510,7 @@ export default function ScoreViewer({
         return;
       }
 
-      // Eat this gesture so it does NOT become a click/page turn
+      // Eat this gesture so it does NOT become a page turn via pointer events
       ev.preventDefault();
       ev.stopPropagation();
 
@@ -1521,17 +1521,18 @@ export default function ScoreViewer({
 
   const handleViewerClickCapture = useCallback(
     (ev: React.MouseEvent<HTMLDivElement>): void => {
-      // Only care in edit mode
       if (!isEditModeRef.current) {
         return;
       }
 
       if (!suppressClickRef.current) {
-        // This click did not originate from a measure-hit gesture.
+        // This click did not come from a measure-start gesture.
+        // Let it fall through to normal page-turn logic.
         return;
       }
 
-      // Consume this click so page-turn handlers never see it
+      // This click is the follow-up to a measure tap/click.
+      // Swallow it so the viewer's page-turn handler never sees it.
       suppressClickRef.current = false;
       ev.preventDefault();
       ev.stopPropagation();
