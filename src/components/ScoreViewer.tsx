@@ -675,6 +675,9 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
   }
 }
 
+
+// --- Annotation types ---
+
 type MeasureBoxRect = {
   id: string;
   x: number;
@@ -685,10 +688,21 @@ type MeasureBoxRect = {
   measureNumber: number;
 };
 
-// --- Annotation types ---
+//TEST
+// One text mark inside a measure, positioned relative to the box [0,1] × [0,1]
+type AnnotationTextItem = {
+  kind: "text";
+  xRel: number;
+  yRel: number;
+  text: string;
+};
 
-// Payload we store per measure_number in annotations_json
-type MeasureAnnotation = AnnotationPayload;
+// Viewer-side payload: everything from DB AnnotationPayload,
+// plus "items" which is what drawAnnotationBoxes reads.
+type MeasureAnnotation = AnnotationPayload & {
+  items?: AnnotationTextItem[];
+};
+//TEST
 
 // Callback used by drawAnnotationBoxes to look up one measure’s annotation
 type GetAnnotationsForMeasure = (measureNumber: number) => MeasureAnnotation | undefined;
@@ -1403,13 +1417,16 @@ export default function ScoreViewer({
   src,
 }: Props) {
 
+  //TEST
   // Pull annotation helpers from the provider.
   // This is the ONLY source of truth for annotation data.
   const {
     getAnnotationsForMeasure,
+    saveAnnotationsForMeasure,
     annotationsByMeasure,
     isLoading: annotationsLoading,
   } = useAnnotations();
+  //TEST
 
   // True once the initial OSMD layout has finished at least once
   const [layoutReady, setLayoutReady] = useState(false);
@@ -1422,8 +1439,20 @@ export default function ScoreViewer({
     h: number;
   };
 
+  // Normalized point inside a measure box (0..1 in both directions)
+  type PointRel = {
+    xRel: number;
+    yRel: number;
+  };
+
   const [measurePreviewRect, setMeasurePreviewRect] = useState<SimpleRect | null>(null);
   const measurePreviewHostRef = useRef<HTMLDivElement | null>(null);
+
+  //TEST
+  // Currently selected measure + tap position inside it (for upcoming annotation UI)
+  const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(null);
+  const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
+  //TEST
 
   const openMeasurePreview = useCallback(
     (rect: SimpleRect): void => {
@@ -1438,8 +1467,14 @@ export default function ScoreViewer({
     setMeasurePreviewRect(null);
   }, []);
 
+  //TEST
   const handleViewerPointerDownCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
+      // Mouse/pen only; touch is handled via touch events
+      if (ev.pointerType === "touch") {
+        return;
+      }
+
       // Reset for this gesture
       suppressPageTurnRef.current = false;
       pendingMeasureRectRef.current = null;
@@ -1461,13 +1496,15 @@ export default function ScoreViewer({
       const yPage = ev.clientY - outerBox.top;
 
       for (const box of rects) {
+        // Reuse whatever hit-test you’re currently using here.
         const withinX = xPage >= box.x && xPage <= box.x + box.w;
         const withinY = yPage >= box.y && yPage <= box.y + box.h;
 
         if (withinX && withinY) {
-          // Gesture started inside a measure → edit, not page turn
+          // This gesture started inside a measure → treat as "edit", not "turn page"
           suppressPageTurnRef.current = true;
-          suppressClickRef.current = true; // ← important
+          suppressClickRef.current = true;
+
           pendingMeasureRectRef.current = {
             x: box.x,
             y: box.y,
@@ -1475,14 +1512,32 @@ export default function ScoreViewer({
             h: box.h,
           };
 
+          // NEW: remember which measure and where inside it we clicked
+          const measureNumber = box.measureNumber;
+          if (measureNumber > 0 && Number.isFinite(measureNumber)) {
+            const xRel = clamp((xPage - box.x) / box.w, 0, 1);
+            const yRel = clamp((yPage - box.y) / box.h, 0, 1);
+
+            setSelectedMeasureNumber(measureNumber);
+            setSelectedPointRel({ xRel, yRel });
+          } else {
+            setSelectedMeasureNumber(null);
+            setSelectedPointRel(null);
+          }
+
           ev.preventDefault();
           ev.stopPropagation();
           return;
         }
       }
+
+      // Click started outside any measure
+      setSelectedMeasureNumber(null);
+      setSelectedPointRel(null);
     },
-    []
+    [setSelectedMeasureNumber, setSelectedPointRel]
   );
+  //TEST
 
   const handleViewerPointerUpCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
@@ -2214,6 +2269,66 @@ export default function ScoreViewer({
     }
   }, [annotationsLoading, annotationsByMeasure, layoutReady, applyPage]);
 
+  //TEST
+  // When a measure is selected in edit mode, prompt for annotation text.
+  // NOTE: This is the minimal debug UI; will be replaced with a popup palette later.
+  useEffect(() => {
+    if (!isEditMode) {
+      return;
+    }
+
+    if (
+      selectedMeasureNumber === null ||
+      selectedPointRel === null
+    ) {
+      return;
+    }
+
+    // Ask for text (debug, temporary)
+    const label = window.prompt("Annotation text (e.g. mf, p, f)?", "");
+    if (label === null) {
+      // User canceled
+      return;
+    }
+    const trimmed = label.trim();
+    if (trimmed.length === 0) {
+      return;
+    }
+
+    // Build new item
+    const newItem: AnnotationTextItem = {
+      kind: "text",
+      xRel: selectedPointRel.xRel,
+      yRel: selectedPointRel.yRel,
+      text: trimmed,
+    };
+
+    // Grab existing or empty
+    const existing = getAnnotationsForMeasure(selectedMeasureNumber);
+    const items = Array.isArray(existing?.items)
+      ? existing!.items
+      : [];
+
+    const nextPayload: MeasureAnnotation = {
+      ...existing,
+      items: [...items, newItem],
+    };
+
+    // Save (local optimistic update)
+    void saveAnnotationsForMeasure(selectedMeasureNumber, nextPayload);
+
+    // Clear selection so we don’t double-fire
+    setSelectedMeasureNumber(null);
+    setSelectedPointRel(null);
+  }, [
+    isEditMode,
+    selectedMeasureNumber,
+    selectedPointRel,
+    getAnnotationsForMeasure,
+    saveAnnotationsForMeasure,
+    setSelectedMeasureNumber,
+    setSelectedPointRel,
+  ]);
 
   // Hide the SVG host while we do heavy work, then restore previous styles.
   const withHostHidden = useCallback(async <T,>(
@@ -3839,6 +3954,13 @@ export default function ScoreViewer({
   // Small "halo" so a tap right on the edge still counts
   const MEASURE_HIT_TOLERANCE = 8; // tweak if you like
 
+  //TEST
+  // Clamp a number into the [min, max] interval
+  function clamp(value: number, min: number, max: number): number {
+    return value < min ? min : value > max ? max : value;
+  }
+  //TEST
+
   function pointInMeasureRect(
     xPage: number,
     yPage: number,
@@ -4005,6 +4127,7 @@ export default function ScoreViewer({
       const dx = t.clientX - startX;
       const dt = performance.now() - startT;
 
+      //TEST
       // 1) Tap-to-advance OR edit-tap (quick + tiny movement)
       if (Math.abs(dx) <= TAP_MAX_MOVE_PX && Math.abs(dy) <= TAP_MAX_MOVE_PX && dt <= TAP_MAX_MS) {
         // If we're NOT in edit mode, behave exactly as before.
@@ -4026,6 +4149,18 @@ export default function ScoreViewer({
               e.preventDefault();
               e.stopPropagation?.();
 
+              const measureNumber = box.measureNumber;
+              if (measureNumber > 0 && Number.isFinite(measureNumber)) {
+                const xRel = clamp((xPage - box.x) / box.w, 0, 1);
+                const yRel = clamp((yPage - box.y) / box.h, 0, 1);
+
+                setSelectedMeasureNumber(measureNumber);
+                setSelectedPointRel({ xRel, yRel });
+              } else {
+                setSelectedMeasureNumber(null);
+                setSelectedPointRel(null);
+              }
+
               openMeasurePreview({
                 x: box.x,
                 y: box.y,
@@ -4039,9 +4174,12 @@ export default function ScoreViewer({
         }
 
         // Tap was NOT inside any measure rect → still treat as page-turn tap.
+        setSelectedMeasureNumber(null);
+        setSelectedPointRel(null);
         goNext(e);
         return;
       }
+      //TEST
 
       // 2) Your existing swipe logic
       const THRESH = 40;
