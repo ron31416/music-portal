@@ -688,7 +688,6 @@ type MeasureBoxRect = {
   measureNumber: number;
 };
 
-//TEST
 // One text mark inside a measure, positioned relative to the box [0,1] × [0,1]
 type AnnotationTextItem = {
   kind: "text";
@@ -702,7 +701,6 @@ type AnnotationTextItem = {
 type MeasureAnnotation = AnnotationPayload & {
   items?: AnnotationTextItem[];
 };
-//TEST
 
 // Callback used by drawAnnotationBoxes to look up one measure’s annotation
 type GetAnnotationsForMeasure = (measureNumber: number) => MeasureAnnotation | undefined;
@@ -1417,7 +1415,6 @@ export default function ScoreViewer({
   src,
 }: Props) {
 
-  //TEST
   // Pull annotation helpers from the provider.
   // This is the ONLY source of truth for annotation data.
   const {
@@ -1426,7 +1423,6 @@ export default function ScoreViewer({
     annotationsByMeasure,
     isLoading: annotationsLoading,
   } = useAnnotations();
-  //TEST
 
   // True once the initial OSMD layout has finished at least once
   const [layoutReady, setLayoutReady] = useState(false);
@@ -1448,11 +1444,9 @@ export default function ScoreViewer({
   const [measurePreviewRect, setMeasurePreviewRect] = useState<SimpleRect | null>(null);
   const measurePreviewHostRef = useRef<HTMLDivElement | null>(null);
 
-  //TEST
   // Currently selected measure + tap position inside it (for upcoming annotation UI)
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(null);
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
-  //TEST
 
   const openMeasurePreview = useCallback(
     (rect: SimpleRect): void => {
@@ -1467,7 +1461,6 @@ export default function ScoreViewer({
     setMeasurePreviewRect(null);
   }, []);
 
-  //TEST
   const handleViewerPointerDownCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       // Mouse/pen only; touch is handled via touch events
@@ -1537,7 +1530,6 @@ export default function ScoreViewer({
     },
     [setSelectedMeasureNumber, setSelectedPointRel]
   );
-  //TEST
 
   const handleViewerPointerUpCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
@@ -2269,7 +2261,6 @@ export default function ScoreViewer({
     }
   }, [annotationsLoading, annotationsByMeasure, layoutReady, applyPage]);
 
-  //TEST
   // When a measure is selected in edit mode, prompt for annotation text.
   // NOTE: This is the minimal debug UI; will be replaced with a popup palette later.
   useEffect(() => {
@@ -3954,12 +3945,10 @@ export default function ScoreViewer({
   // Small "halo" so a tap right on the edge still counts
   const MEASURE_HIT_TOLERANCE = 8; // tweak if you like
 
-  //TEST
   // Clamp a number into the [min, max] interval
   function clamp(value: number, min: number, max: number): number {
     return value < min ? min : value > max ? max : value;
   }
-  //TEST
 
   function pointInMeasureRect(
     xPage: number,
@@ -4127,7 +4116,6 @@ export default function ScoreViewer({
       const dx = t.clientX - startX;
       const dt = performance.now() - startT;
 
-      //TEST
       // 1) Tap-to-advance OR edit-tap (quick + tiny movement)
       if (Math.abs(dx) <= TAP_MAX_MOVE_PX && Math.abs(dy) <= TAP_MAX_MOVE_PX && dt <= TAP_MAX_MS) {
         // If we're NOT in edit mode, behave exactly as before.
@@ -4179,7 +4167,6 @@ export default function ScoreViewer({
         goNext(e);
         return;
       }
-      //TEST
 
       // 2) Your existing swipe logic
       const THRESH = 40;

@@ -48,6 +48,20 @@ export type AnnotationMap = Record<MeasureNumber, AnnotationPayload>;
    API response types
    ========================= */
 
+// Request body for saving annotations for a single measure
+interface SaveAnnotationsRequestBody {
+  userId: number;
+  songId: number;
+  measureNumber: MeasureNumber;
+  annotations: AnnotationPayload;
+}
+
+// Minimal response we expect back from the API route
+interface SaveAnnotationsResponseBody {
+  ok: boolean;
+  error?: string;
+}
+
 type UserSongApiResponse = {
   ok: boolean;
   data:
@@ -286,30 +300,72 @@ export function AnnotationsProvider({
    */
   const saveAnnotationsForMeasure = useCallback(
     async (measureNumber: MeasureNumber, payload: AnnotationPayload): Promise<void> => {
-      if (userId === null || userId === undefined) {
-        // No user → silent no-op; caller can decide whether to block UI earlier.
+      // Require a logged-in user and a valid songId
+      if (!userId) {
+        console.warn("saveAnnotationsForMeasure: no userId; ignoring");
         return;
       }
+      if (!songId) {
+        console.warn("saveAnnotationsForMeasure: no songId; ignoring");
+        return;
+      }
+      if (!Number.isFinite(measureNumber) || measureNumber <= 0) {
+        console.warn("saveAnnotationsForMeasure: invalid measureNumber", measureNumber);
+        return;
+      }
+
+      // Optimistic update: update local state immediately so UI feels snappy.
+      setAnnotationsByMeasure((prev) => ({
+        ...prev,
+        [measureNumber]: payload,
+      }));
 
       setIsSaving(true);
       setErrorMessage(null);
 
-      // Optimistic local update only
-      setAnnotationsByMeasure((previous) => ({
-        ...previous,
-        [measureNumber]: payload,
-      }));
-
       try {
-        // TODO: Wire this to /api/user-song-measure (PUT) for real persistence.
-        console.warn(
-          "saveAnnotationsForMeasure: persistence not yet wired; local state only."
-        );
+        const body: SaveAnnotationsRequestBody = {
+          userId,
+          songId,
+          measureNumber,
+          annotations: payload,
+        };
+
+        const response = await fetch("/api/user-song-measure", {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          console.error("saveAnnotationsForMeasure: HTTP error", response.status, text);
+          setErrorMessage("Unable to save annotations; they may not persist after reload.");
+          return;
+        }
+
+        // Narrow the JSON to our expected shape
+        const data = (await response.json()) as SaveAnnotationsResponseBody;
+
+        if (!data.ok) {
+          console.error("saveAnnotationsForMeasure: API error", data.error);
+          setErrorMessage(
+            data.error ?? "Unable to save annotations; they may not persist after reload.",
+          );
+          return;
+        }
+
+        // Success: nothing else to do; optimistic state already matches.
+      } catch (err) {
+        console.error("saveAnnotationsForMeasure: network or parsing error", err);
+        setErrorMessage("Network error while saving annotations.");
       } finally {
         setIsSaving(false);
       }
     },
-    [userId]
+    [userId, songId, setAnnotationsByMeasure],
   );
 
   const contextValue: AnnotationsContextValue = useMemo(
