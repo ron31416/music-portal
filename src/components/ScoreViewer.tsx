@@ -1128,10 +1128,6 @@ function drawAnnotationBoxes(
     return;
   }
 
-  // *** simple counters for debugging
-  const totalBoxes = rects.length;
-  let boxesWithItems = 0;
-
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "drawAnnotationBoxes";
   logStep(`called`, { outer, caller: prevFuncTag });
@@ -1167,9 +1163,6 @@ function drawAnnotationBoxes(
       continue;
     }
 
-    // *** we have at least one item for this measure box
-    boxesWithItems += 1;
-
     for (const item of items) {
       if (item.kind !== "text") {
         continue;
@@ -1196,12 +1189,6 @@ function drawAnnotationBoxes(
       g.appendChild(t);
     }
   }
-
-  // *** log summary so we can see if the final draw actually had any annotations
-  console.log("[viewer] drawAnnotationBoxes: done", {
-    totalBoxes,
-    boxesWithItems,
-  });
 
   outer.appendChild(layer);
   try {
@@ -1998,12 +1985,6 @@ export default function ScoreViewer({
       const outer = wrapRef.current;
       if (!outer) { return; }
 
-      console.log("[viewer] applyPage: start", {
-        pageIdx,
-        layoutReady,
-        annotationsCount: Object.keys(annotationsByMeasure ?? {}).length,
-      });
-
       // clear any existing measure preview when we change pages
       closeMeasurePreview();
 
@@ -2210,21 +2191,10 @@ export default function ScoreViewer({
           // Keep the current page's rects for edit-mode hit-testing
           measureRectsRef.current = rects;
 
-          console.log("[viewer] applyPage: after-compute-rects", {
-            pageIdx,
-            rectCount: rects.length,
-          });
-
           // 1) Draw annotation fill layer (always visible, read + edit mode)
           clearAnnotationBoxes(outer);
           if (rects.length) {
-            console.log("[viewer] applyPage: calling-drawAnnotationBoxes", {
-              pageIdx,
-              rectCount: rects.length,
-            });
             drawAnnotationBoxes(outer, rects, getAnnotationsForMeasure);
-          } else {
-            console.log("[viewer] applyPage: no-rects-for-page", { pageIdx });
           }
 
           // 2) Draw stroke-only measure boxes when edit mode is active
@@ -2261,37 +2231,15 @@ export default function ScoreViewer({
   // When annotations finish loading or change, re-render the current page
   // so that drawAnnotationBoxes runs again with fresh annotation data.
   useEffect(() => {
-    // Diagnostics for slow devices / first-load race
-    void logStep(
-      `annotationsEffect: start ` +
-      `annotationsLoading=${annotationsLoading} ` +
-      `layoutReady=${layoutReady} ` +
-      `annotationsCount=${Object.keys(annotationsByMeasure ?? {}).length}`
-    );
-
-    // 1) If annotations are still loading, do nothing.
-    if (annotationsLoading) {
-      void logStep("annotationsEffect: bail: still-loading");
+    // Only run once:
+    //  - annotations are finished loading
+    //  - we've successfully applied at least one page layout
+    if (annotationsLoading || !layoutReady) {
       return;
     }
 
     const outer = wrapRef.current;
     if (!outer) {
-      void logStep("annotationsEffect: bail: no-outer");
-      return;
-    }
-
-    // 2) We also need geometry to be ready:
-    //    - systemBandsRef: bands for each page
-    //    - pageStartIdxsRef: mapping pageIdx -> band range
-    if (
-      !systemBandsRef.current.length ||
-      !pageStartIdxsRef.current.length
-    ) {
-      void logStep("annotationsEffect: bail: geometry-not-ready", {
-        bands: systemBandsRef.current.length,
-        starts: pageStartIdxsRef.current.length,
-      } as unknown as { caller?: string });
       return;
     }
 
@@ -2302,18 +2250,16 @@ export default function ScoreViewer({
 
     try {
       void logStep(
-        `annotationsEffect: calling-applyPage ` +
-        `page=${currentPage} ` +
-        `annotationsCount=${Object.keys(annotationsByMeasure ?? {}).length}`,
+        `annotationsChanged: page=${currentPage} measures=${Object.keys(
+          annotationsByMeasure
+        ).length}`,
         { outer }
       );
-
       applyPage(currentPage);
     } finally {
       outer.dataset.viewerFunc = prevFunc;
     }
   }, [annotationsLoading, annotationsByMeasure, layoutReady, applyPage]);
-
 
   // When a measure is selected in edit mode, prompt for annotation text.
   // NOTE: This is the minimal debug UI; will be replaced with a popup palette later.
