@@ -1985,6 +1985,12 @@ export default function ScoreViewer({
       const outer = wrapRef.current;
       if (!outer) { return; }
 
+      console.log("[viewer] applyPage: start", {
+        pageIdx,
+        layoutReady,
+        annotationsCount: Object.keys(annotationsByMeasure ?? {}).length,
+      });
+
       // clear any existing measure preview when we change pages
       closeMeasurePreview();
 
@@ -2191,10 +2197,21 @@ export default function ScoreViewer({
           // Keep the current page's rects for edit-mode hit-testing
           measureRectsRef.current = rects;
 
+          console.log("[viewer] applyPage: after-compute-rects", {
+            pageIdx,
+            rectCount: rects.length,
+          });
+
           // 1) Draw annotation fill layer (always visible, read + edit mode)
           clearAnnotationBoxes(outer);
           if (rects.length) {
+            console.log("[viewer] applyPage: calling-drawAnnotationBoxes", {
+              pageIdx,
+              rectCount: rects.length,
+            });
             drawAnnotationBoxes(outer, rects, getAnnotationsForMeasure);
+          } else {
+            console.log("[viewer] applyPage: no-rects-for-page", { pageIdx });
           }
 
           // 2) Draw stroke-only measure boxes when edit mode is active
@@ -2231,15 +2248,29 @@ export default function ScoreViewer({
   // When annotations finish loading or change, re-render the current page
   // so that drawAnnotationBoxes runs again with fresh annotation data.
   useEffect(() => {
+    // Diagnostics for slow devices / first-load race
+    void logStep(
+      `annotationsEffect: start ` +
+      `annotationsLoading=${annotationsLoading} ` +
+      `layoutReady=${layoutReady} ` +
+      `annotationsCount=${Object.keys(annotationsByMeasure ?? {}).length}`
+    );
+
     // Only run once:
     //  - annotations are finished loading
     //  - we've successfully applied at least one page layout
     if (annotationsLoading || !layoutReady) {
+      void logStep(
+        `annotationsEffect: bail: loading-or-layout ` +
+        `annotationsLoading=${annotationsLoading} ` +
+        `layoutReady=${layoutReady}`
+      );
       return;
     }
 
     const outer = wrapRef.current;
     if (!outer) {
+      void logStep("annotationsEffect: bail: no-outer");
       return;
     }
 
@@ -2250,11 +2281,12 @@ export default function ScoreViewer({
 
     try {
       void logStep(
-        `annotationsChanged: page=${currentPage} measures=${Object.keys(
-          annotationsByMeasure
-        ).length}`,
+        `annotationsEffect: calling-applyPage ` +
+        `page=${currentPage} ` +
+        `annotationsCount=${Object.keys(annotationsByMeasure ?? {}).length}`,
         { outer }
       );
+
       applyPage(currentPage);
     } finally {
       outer.dataset.viewerFunc = prevFunc;
