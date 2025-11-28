@@ -1424,6 +1424,18 @@ export default function ScoreViewer({
     isLoading: annotationsLoading,
   } = useAnnotations();
 
+  //TEST
+  // Always use the latest getAnnotationsForMeasure, even from stable callbacks / pipeline
+  const getAnnotationsForMeasureRef = useRef<GetAnnotationsForMeasure>(
+    // Default: no annotations
+    () => undefined
+  );
+
+  useEffect(() => {
+    getAnnotationsForMeasureRef.current = getAnnotationsForMeasure;
+  }, [getAnnotationsForMeasure]);
+  //TEST
+
   // True once the initial OSMD layout has finished at least once
   const [layoutReady, setLayoutReady] = useState(false);
 
@@ -2193,9 +2205,12 @@ export default function ScoreViewer({
 
           // 1) Draw annotation fill layer (always visible, read + edit mode)
           clearAnnotationBoxes(outer);
-          if (rects.length) {
-            drawAnnotationBoxes(outer, rects, getAnnotationsForMeasure);
+          //TEST
+          const getter = getAnnotationsForMeasureRef.current;
+          if (rects.length && getter) {
+            drawAnnotationBoxes(outer, rects, getter);
           }
+          //TEST
 
           // 2) Draw stroke-only measure boxes when edit mode is active
           clearMeasureBoxes(outer);
@@ -2224,7 +2239,7 @@ export default function ScoreViewer({
         try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
       }
     },
-    [visiblePageHeight, topGutterPx, bottomGutterPx, getAnnotationsForMeasure, closeMeasurePreview]
+    [visiblePageHeight, topGutterPx, bottomGutterPx, closeMeasurePreview]
   );
 
 
