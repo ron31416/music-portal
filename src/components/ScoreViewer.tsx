@@ -1128,6 +1128,10 @@ function drawAnnotationBoxes(
     return;
   }
 
+  // *** simple counters for debugging
+  const totalBoxes = rects.length;
+  let boxesWithItems = 0;
+
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "drawAnnotationBoxes";
   logStep(`called`, { outer, caller: prevFuncTag });
@@ -1163,6 +1167,9 @@ function drawAnnotationBoxes(
       continue;
     }
 
+    // *** we have at least one item for this measure box
+    boxesWithItems += 1;
+
     for (const item of items) {
       if (item.kind !== "text") {
         continue;
@@ -1189,6 +1196,12 @@ function drawAnnotationBoxes(
       g.appendChild(t);
     }
   }
+
+  // *** log summary so we can see if the final draw actually had any annotations
+  console.log("[viewer] drawAnnotationBoxes: done", {
+    totalBoxes,
+    boxesWithItems,
+  });
 
   outer.appendChild(layer);
   try {
@@ -2256,21 +2269,29 @@ export default function ScoreViewer({
       `annotationsCount=${Object.keys(annotationsByMeasure ?? {}).length}`
     );
 
-    // Only run once:
-    //  - annotations are finished loading
-    //  - we've successfully applied at least one page layout
-    if (annotationsLoading || !layoutReady) {
-      void logStep(
-        `annotationsEffect: bail: loading-or-layout ` +
-        `annotationsLoading=${annotationsLoading} ` +
-        `layoutReady=${layoutReady}`
-      );
+    // 1) If annotations are still loading, do nothing.
+    if (annotationsLoading) {
+      void logStep("annotationsEffect: bail: still-loading");
       return;
     }
 
     const outer = wrapRef.current;
     if (!outer) {
       void logStep("annotationsEffect: bail: no-outer");
+      return;
+    }
+
+    // 2) We also need geometry to be ready:
+    //    - systemBandsRef: bands for each page
+    //    - pageStartIdxsRef: mapping pageIdx -> band range
+    if (
+      !systemBandsRef.current.length ||
+      !pageStartIdxsRef.current.length
+    ) {
+      void logStep("annotationsEffect: bail: geometry-not-ready", {
+        bands: systemBandsRef.current.length,
+        starts: pageStartIdxsRef.current.length,
+      } as unknown as { caller?: string });
       return;
     }
 
@@ -2292,6 +2313,7 @@ export default function ScoreViewer({
       outer.dataset.viewerFunc = prevFunc;
     }
   }, [annotationsLoading, annotationsByMeasure, layoutReady, applyPage]);
+
 
   // When a measure is selected in edit mode, prompt for annotation text.
   // NOTE: This is the minimal debug UI; will be replaced with a popup palette later.
