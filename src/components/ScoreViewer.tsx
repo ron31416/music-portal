@@ -688,6 +688,31 @@ type MeasureBoxRect = {
   measureNumber: number;
 };
 
+// ===== Measure preview popup state =====
+type SimpleRect = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+// Normalized point inside a measure box (0..1 in both directions)
+type PointRel = {
+  xRel: number;
+  yRel: number;
+};
+
+//TEST
+// One rendered glyph (notehead, rest, etc.) in page-local coordinates
+type GlyphRect = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  debug?: string; // NEW
+};
+//TEST
+
 // One text mark inside a measure, positioned relative to the box [0,1] × [0,1]
 type AnnotationTextItem = {
   kind: "text";
@@ -1403,6 +1428,124 @@ export function findAnchorMeasure(
   return Number.isFinite(lowest) ? lowest : null;
 }
 
+//TEST
+function clamp01(v: number): number {
+  if (v < 0) {
+    return 0;
+  }
+  if (v > 1) {
+    return 1;
+  }
+  return v;
+}
+
+function hitsGlyphAt(
+  xPage: number,
+  yPage: number,
+  glyphs: readonly GlyphRect[]
+): boolean {
+  const PAD = 5; // a little breathing room around glyphs
+  for (const g of glyphs) {
+    const withinX = xPage >= g.x - PAD && xPage <= g.x + g.w + PAD;
+    const withinY = yPage >= g.y - PAD && yPage <= g.y + g.h + PAD;
+    if (withinX && withinY) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Given a tap inside a measure box, find a nearby point that does NOT land on
+// top of a glyph. Returns normalized coords, or null if no safe spot found.
+function findSafePointRelForTap(
+  box: MeasureBoxRect,
+  xPage: number,
+  yPage: number,
+  glyphs: readonly GlyphRect[]
+): PointRel | null {
+  // If we have no glyph data, accept as-is (nothing to avoid).
+  if (!glyphs.length) {
+    const xRel0 = clamp01((xPage - box.x) / box.w);
+    const yRel0 = clamp01((yPage - box.y) / box.h);
+    return { xRel: xRel0, yRel: yRel0 };
+  }
+
+  const boxLeft = box.x + 1;
+  const boxRight = box.x + box.w - 1;
+  const boxTop = box.y + 1;
+  const boxBottom = box.y + box.h - 1;
+
+  // Clamp starting point into the measure box
+  const startX = Math.max(boxLeft, Math.min(xPage, boxRight));
+  const startY = Math.max(boxTop, Math.min(yPage, boxBottom));
+
+  const toRel = (x: number, y: number): PointRel => ({
+    xRel: clamp01((x - box.x) / box.w),
+    yRel: clamp01((y - box.y) / box.h),
+  });
+
+  // Helper: point-in-rect for GlyphRect
+  const pointInRect = (x: number, y: number, r: GlyphRect): boolean =>
+    x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+
+  const pointHitsAnyGlyph = (x: number, y: number): boolean =>
+    hitsGlyphAt(x, y, glyphs);
+
+  // 1) If the original point is not inside any glyph, use it directly.
+  if (!pointHitsAnyGlyph(startX, startY)) {
+    return toRel(startX, startY);
+  }
+
+  // We're colliding with at least one glyph.
+  const collidingGlyphs = glyphs.filter((g) => pointInRect(startX, startY, g));
+
+  const AVOID_MARGIN_PX = 4;                     // how far above/below glyph we try first
+  const SEARCH_STEP_PX = 6;                     // step size for fallback vertical search
+  const MAX_OFFSET_PX = Math.max(12, box.h * 0.4); // don’t wander too far
+
+  // 2) For each colliding glyph, try directly above, then below that glyph
+  for (const g of collidingGlyphs) {
+    // Keep X near where the user clicked, but inside the box
+    const centerX = Math.max(boxLeft, Math.min(startX, boxRight));
+
+    // Just ABOVE this glyph
+    const aboveY = g.y - AVOID_MARGIN_PX;
+    if (aboveY >= boxTop && !pointHitsAnyGlyph(centerX, aboveY)) {
+      return toRel(centerX, aboveY);
+    }
+
+    // Just BELOW this glyph
+    const belowY = g.y + g.h + AVOID_MARGIN_PX;
+    if (belowY <= boxBottom && !pointHitsAnyGlyph(centerX, belowY)) {
+      return toRel(centerX, belowY);
+    }
+  }
+
+  // 3) Last resort: walk up/down from the original tap in small vertical steps.
+  for (
+    let offset = SEARCH_STEP_PX;
+    offset <= MAX_OFFSET_PX;
+    offset += SEARCH_STEP_PX
+  ) {
+    const candidates = [startY - offset, startY + offset];
+
+    for (const candY of candidates) {
+      if (candY < boxTop || candY > boxBottom) {
+        continue;
+      }
+      if (!pointHitsAnyGlyph(startX, candY)) {
+        return toRel(startX, candY);
+      }
+    }
+  }
+
+  // 4) If we never found a clear spot, fall back to the original point.
+  // (We prefer staying close, even if it overlaps a glyph, to teleporting
+  // to a far-off grid cell.)
+  return toRel(startX, startY);
+}
+//TEST
+
 
 // Props for the score viewer; currently just the song source ID.
 interface Props {
@@ -1424,34 +1567,25 @@ export default function ScoreViewer({
     isLoading: annotationsLoading,
   } = useAnnotations();
 
-  //TEST
   // Always use the latest getAnnotationsForMeasure, even from stable callbacks / pipeline
   const getAnnotationsForMeasureRef = useRef<GetAnnotationsForMeasure>(
     // Default: no annotations
     () => undefined
   );
-
   useEffect(() => {
     getAnnotationsForMeasureRef.current = getAnnotationsForMeasure;
   }, [getAnnotationsForMeasure]);
-  //TEST
+
+  const [showGlyphDebug, setShowGlyphDebug] = useState(false);
+  useEffect(() => {
+    // Run only on the client, after hydration
+    if (isDiagOn()) {
+      setShowGlyphDebug(true);
+    }
+  }, []);
 
   // True once the initial OSMD layout has finished at least once
   const [layoutReady, setLayoutReady] = useState(false);
-
-  // ===== Measure preview popup state =====
-  type SimpleRect = {
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  };
-
-  // Normalized point inside a measure box (0..1 in both directions)
-  type PointRel = {
-    xRel: number;
-    yRel: number;
-  };
 
   const [measurePreviewRect, setMeasurePreviewRect] = useState<SimpleRect | null>(null);
   const measurePreviewHostRef = useRef<HTMLDivElement | null>(null);
@@ -1501,7 +1635,6 @@ export default function ScoreViewer({
       const yPage = ev.clientY - outerBox.top;
 
       for (const box of rects) {
-        // Reuse whatever hit-test you’re currently using here.
         const withinX = xPage >= box.x && xPage <= box.x + box.w;
         const withinY = yPage >= box.y && yPage <= box.y + box.h;
 
@@ -1517,14 +1650,28 @@ export default function ScoreViewer({
             h: box.h,
           };
 
-          // NEW: remember which measure and where inside it we clicked
           const measureNumber = box.measureNumber;
           if (measureNumber > 0 && Number.isFinite(measureNumber)) {
-            const xRel = clamp((xPage - box.x) / box.w, 0, 1);
-            const yRel = clamp((yPage - box.y) / box.h, 0, 1);
+            // Look up glyph cloud for this measure
+            const glyphsForMeasure =
+              measureGlyphRectsRef.current[box.id] ?? [];
 
-            setSelectedMeasureNumber(measureNumber);
-            setSelectedPointRel({ xRel, yRel });
+            // Find a nearby non-glyph point inside this measure
+            const safe = findSafePointRelForTap(
+              box,
+              xPage,
+              yPage,
+              glyphsForMeasure
+            );
+
+            if (safe) {
+              setSelectedMeasureNumber(measureNumber);
+              setSelectedPointRel(safe);
+            } else {
+              // Everything nearby is congested; keep measure selected but no point yet.
+              setSelectedMeasureNumber(measureNumber);
+              setSelectedPointRel(null);
+            }
           } else {
             setSelectedMeasureNumber(null);
             setSelectedPointRel(null);
@@ -1540,7 +1687,7 @@ export default function ScoreViewer({
       setSelectedMeasureNumber(null);
       setSelectedPointRel(null);
     },
-    [setSelectedMeasureNumber, setSelectedPointRel]
+    [setSelectedMeasureNumber, setSelectedPointRel,]
   );
 
   const handleViewerPointerUpCapture = useCallback(
@@ -1596,6 +1743,11 @@ export default function ScoreViewer({
 
   // Current page's measure rectangles (used for hit-testing in edit mode)
   const measureRectsRef = useRef<ReadonlyArray<MeasureBoxRect>>([]);
+
+  //TEST
+  // Per-measure glyph “cloud” in page-local coordinates
+  const measureGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({});
+  //TEST
 
   // When true, this pointer gesture should NOT trigger a page turn.
   const suppressPageTurnRef = useRef(false);
@@ -1990,6 +2142,128 @@ export default function ScoreViewer({
   const geometryRef = useRef<ReadonlyMap<string, MeasureGeom>>(new Map());
   const pageMeasureRectsRef = useRef<MeasureBoxRect[]>([]);
 
+  //TEST
+  // Build a “glyph cloud” for the measures on the current page.
+  //
+  // For each visible SVG graphics element, we compute its page-local bounding box
+  // and associate it with every measure box it intersects. Results are cached in
+  // measureGlyphRectsRef by measureId.
+  function populateGlyphRectsForPage(
+    outer: HTMLDivElement,
+    rects: ReadonlyArray<MeasureBoxRect>
+  ): void {
+    if (!rects.length) {
+      return;
+    }
+
+    const svg = getSvg(outer);
+    if (!svg) {
+      return;
+    }
+
+    const outerRect = outer.getBoundingClientRect();
+
+    // Only track glyphs for measures that are actually on this page.
+    const perMeasure = new Map<string, GlyphRect[]>();
+    for (const box of rects) {
+      perMeasure.set(box.id, []);
+    }
+
+    // Back to "leaf" graphics only: no <g>, no <use>.
+    const SELECTORS = "path,rect,circle,ellipse,polygon,polyline,line,text";
+    const glyphNodes = svg.querySelectorAll<SVGGraphicsElement>(SELECTORS);
+
+    const pageW = outerRect.width || 1;
+    const pageH = outerRect.height || 1;
+
+    for (const el of glyphNodes) {
+      const r = el.getBoundingClientRect();
+
+      if (
+        !Number.isFinite(r.left) ||
+        !Number.isFinite(r.top) ||
+        !Number.isFinite(r.width) ||
+        !Number.isFinite(r.height)
+      ) {
+        continue;
+      }
+
+      const w = r.width;
+      const h = r.height;
+
+      // Keep anything that has *some* extent.
+      // (Stems: w ~ 0, h > 0; Staff lines: w > 0, h ~ 0.)
+      if (w <= 0 && h <= 0) {
+        continue;
+      }
+
+      // Give hairlines a minimum visible size so they don't collapse away.
+      const effW = w === 0 ? 1 : w;
+      const effH = h === 0 ? 1 : h;
+
+      const gx = r.left - outerRect.left;
+      const gy = r.top - outerRect.top;
+
+      // Heuristic: ignore any rect that basically covers the whole page;
+      // these are usually container artifacts we don't want for avoidance.
+      if (effW > pageW * 0.95 && effH > pageH * 0.95) {
+        continue;
+      }
+
+      const glyphRect: GlyphRect = {
+        x: gx,
+        y: gy,
+        w: effW,
+        h: effH,
+        // keep debug if you added it earlier:
+        // debug: debugLabelForElement(el),
+      };
+
+      // Associate this glyph with any measure it intersects on this page.
+      for (const box of rects) {
+        const intersects =
+          glyphRect.x + glyphRect.w > box.x &&
+          glyphRect.x < box.x + box.w &&
+          glyphRect.y + glyphRect.h > box.y &&
+          glyphRect.y < box.y + box.h;
+
+        if (intersects) {
+          const arr = perMeasure.get(box.id);
+          if (arr) {
+            arr.push(glyphRect);
+          }
+        }
+      }
+    }
+
+    // Commit to ref for later use (e.g., findSafePointRelForTap)
+    const next: Record<string, GlyphRect[]> = {
+      ...measureGlyphRectsRef.current,
+    };
+
+    for (const [measureId, glyphs] of perMeasure.entries()) {
+      if (glyphs.length) {
+        next[measureId] = glyphs;
+      }
+    }
+
+    measureGlyphRectsRef.current = next;
+
+    if (isDiagOn()) {
+      const summary = rects
+        .map((box) => {
+          const count = (perMeasure.get(box.id) ?? []).length;
+          return `${box.id}:${count}`;
+        })
+        .join(" ");
+      void logStep(`glyphRects: ${summary}`, {
+        outer,
+        caller: "populateGlyphRectsForPage",
+      });
+    }
+  }
+  //TEST
+
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
   // May recompute page starts and re-apply to preserve whole systems; bounded recursion prevents oscillation.
   const applyPage = useCallback(
@@ -2203,14 +2477,18 @@ export default function ScoreViewer({
           // Keep the current page's rects for edit-mode hit-testing
           measureRectsRef.current = rects;
 
+          //TEST
+          // NEW: build per-measure glyph “cloud” from the rendered SVG for this page.
+          // Proof-of-concept: this only populates measureGlyphRectsRef + logs when diag is on.
+          populateGlyphRectsForPage(outer, rects);
+          //TEST
+
           // 1) Draw annotation fill layer (always visible, read + edit mode)
           clearAnnotationBoxes(outer);
-          //TEST
           const getter = getAnnotationsForMeasureRef.current;
           if (rects.length && getter) {
             drawAnnotationBoxes(outer, rects, getter);
           }
-          //TEST
 
           // 2) Draw stroke-only measure boxes when edit mode is active
           clearMeasureBoxes(outer);
@@ -4502,6 +4780,35 @@ export default function ScoreViewer({
         position: "relative", // <-- ensure absolute children anchor here
       }}
     >
+      {showGlyphDebug && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: "none",
+            zIndex: 200,
+          }}
+        >
+          {Object.entries(measureGlyphRectsRef.current).flatMap(([measureId, rects]) =>
+            rects.map((r, i) => (
+              <div
+                key={measureId + ":" + i}
+                style={{
+                  position: "absolute",
+                  left: r.x,
+                  top: r.y,
+                  width: r.w,
+                  height: r.h,
+                  border: "1px solid rgba(0,0,255,0.5)",
+                  background: "rgba(0,0,255,0.15)",
+                  pointerEvents: "auto", // only matters in diag mode
+                }}
+              />
+            ))
+          )}
+        </div>
+      )}
+
       {/* OSMD host (SVG goes here) */}
       <div ref={svgHostRef} style={hostStyle} />
 
