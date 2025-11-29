@@ -1594,6 +1594,9 @@ export default function ScoreViewer({
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(null);
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
 
+  const [glyphDebugRects, setGlyphDebugRects] =
+    useState<Record<string, GlyphRect[]>>({});
+
   const openMeasurePreview = useCallback(
     (rect: SimpleRect): void => {
       setMeasurePreviewRect(rect);
@@ -2148,120 +2151,118 @@ export default function ScoreViewer({
   // For each visible SVG graphics element, we compute its page-local bounding box
   // and associate it with every measure box it intersects. Results are cached in
   // measureGlyphRectsRef by measureId.
-  function populateGlyphRectsForPage(
-    outer: HTMLDivElement,
-    rects: ReadonlyArray<MeasureBoxRect>
-  ): void {
-    if (!rects.length) {
-      return;
-    }
-
-    const svg = getSvg(outer);
-    if (!svg) {
-      return;
-    }
-
-    const outerRect = outer.getBoundingClientRect();
-
-    // Only track glyphs for measures that are actually on this page.
-    const perMeasure = new Map<string, GlyphRect[]>();
-    for (const box of rects) {
-      perMeasure.set(box.id, []);
-    }
-
-    // Back to "leaf" graphics only: no <g>, no <use>.
-    const SELECTORS = "path,rect,circle,ellipse,polygon,polyline,line,text";
-    const glyphNodes = svg.querySelectorAll<SVGGraphicsElement>(SELECTORS);
-
-    const pageW = outerRect.width || 1;
-    const pageH = outerRect.height || 1;
-
-    for (const el of glyphNodes) {
-      const r = el.getBoundingClientRect();
-
-      if (
-        !Number.isFinite(r.left) ||
-        !Number.isFinite(r.top) ||
-        !Number.isFinite(r.width) ||
-        !Number.isFinite(r.height)
-      ) {
-        continue;
+  const populateGlyphRectsForPage = useCallback(
+    (outer: HTMLDivElement, rects: ReadonlyArray<MeasureBoxRect>): void => {
+      if (!rects.length) {
+        // Clear when there are no measures on this page
+        measureGlyphRectsRef.current = {};
+        if (showGlyphDebug) {
+          setGlyphDebugRects({});
+        }
+        return;
       }
 
-      const w = r.width;
-      const h = r.height;
-
-      // Keep anything that has *some* extent.
-      // (Stems: w ~ 0, h > 0; Staff lines: w > 0, h ~ 0.)
-      if (w <= 0 && h <= 0) {
-        continue;
+      const svg = getSvg(outer);
+      if (!svg) {
+        measureGlyphRectsRef.current = {};
+        if (showGlyphDebug) {
+          setGlyphDebugRects({});
+        }
+        return;
       }
 
-      // Give hairlines a minimum visible size so they don't collapse away.
-      const effW = w === 0 ? 1 : w;
-      const effH = h === 0 ? 1 : h;
-
-      const gx = r.left - outerRect.left;
-      const gy = r.top - outerRect.top;
-
-      // Heuristic: ignore any rect that basically covers the whole page;
-      // these are usually container artifacts we don't want for avoidance.
-      if (effW > pageW * 0.95 && effH > pageH * 0.95) {
-        continue;
-      }
-
-      const glyphRect: GlyphRect = {
-        x: gx,
-        y: gy,
-        w: effW,
-        h: effH,
-        // keep debug if you added it earlier:
-        // debug: debugLabelForElement(el),
-      };
-
-      // Associate this glyph with any measure it intersects on this page.
+      const outerRect = outer.getBoundingClientRect();
+      const perMeasure = new Map<string, GlyphRect[]>();
       for (const box of rects) {
-        const intersects =
-          glyphRect.x + glyphRect.w > box.x &&
-          glyphRect.x < box.x + box.w &&
-          glyphRect.y + glyphRect.h > box.y &&
-          glyphRect.y < box.y + box.h;
+        perMeasure.set(box.id, []);
+      }
 
-        if (intersects) {
-          const arr = perMeasure.get(box.id);
-          if (arr) {
-            arr.push(glyphRect);
+      const SELECTORS = "path,rect,circle,ellipse,polygon,polyline,line,text";
+      const glyphNodes = svg.querySelectorAll<SVGGraphicsElement>(SELECTORS);
+
+      const pageW = outerRect.width || 1;
+      const pageH = outerRect.height || 1;
+
+      for (const el of glyphNodes) {
+        const r = el.getBoundingClientRect();
+
+        if (
+          !Number.isFinite(r.left) ||
+          !Number.isFinite(r.top) ||
+          !Number.isFinite(r.width) ||
+          !Number.isFinite(r.height)
+        ) {
+          continue;
+        }
+
+        const w = r.width;
+        const h = r.height;
+
+        if (w <= 0 && h <= 0) {
+          continue;
+        }
+
+        const effW = w === 0 ? 1 : w;
+        const effH = h === 0 ? 1 : h;
+
+        const gx = r.left - outerRect.left;
+        const gy = r.top - outerRect.top;
+
+        // Skip page-sized container boxes
+        if (effW > pageW * 0.95 && effH > pageH * 0.95) {
+          continue;
+        }
+
+        const glyphRect: GlyphRect = {
+          x: gx,
+          y: gy,
+          w: effW,
+          h: effH,
+        };
+
+        for (const box of rects) {
+          const intersects =
+            glyphRect.x + glyphRect.w > box.x &&
+            glyphRect.x < box.x + box.w &&
+            glyphRect.y + glyphRect.h > box.y &&
+            glyphRect.y < box.y + box.h;
+
+          if (intersects) {
+            const arr = perMeasure.get(box.id);
+            if (arr) {
+              arr.push(glyphRect);
+            }
           }
         }
       }
-    }
 
-    // Commit to ref for later use (e.g., findSafePointRelForTap)
-    const next: Record<string, GlyphRect[]> = {
-      ...measureGlyphRectsRef.current,
-    };
-
-    for (const [measureId, glyphs] of perMeasure.entries()) {
-      if (glyphs.length) {
-        next[measureId] = glyphs;
+      const next: Record<string, GlyphRect[]> = {};
+      for (const [measureId, glyphs] of perMeasure.entries()) {
+        if (glyphs.length) {
+          next[measureId] = glyphs;
+        }
       }
-    }
 
-    measureGlyphRectsRef.current = next;
+      measureGlyphRectsRef.current = next;
+      if (showGlyphDebug) {
+        setGlyphDebugRects(next);
+      }
 
-    if (isDiagOn()) {
-      const summary = rects
-        .map((box) => {
-          const count = (perMeasure.get(box.id) ?? []).length;
-          return `${box.id}:${count}`;
-        })
-        .join(" ");
-      void logStep(`glyphRects: ${summary}`, {
-        outer,
-        caller: "populateGlyphRectsForPage",
-      });
-    }
-  }
+      if (isDiagOn()) {
+        const summary = rects
+          .map((box) => {
+            const count = (perMeasure.get(box.id) ?? []).length;
+            return `${box.id}:${count}`;
+          })
+          .join(" ");
+        void logStep(`glyphRects: ${summary}`, {
+          outer,
+          caller: "populateGlyphRectsForPage",
+        });
+      }
+    },
+    [showGlyphDebug, setGlyphDebugRects]
+  );
   //TEST
 
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
@@ -2517,7 +2518,7 @@ export default function ScoreViewer({
         try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
       }
     },
-    [visiblePageHeight, topGutterPx, bottomGutterPx, closeMeasurePreview]
+    [visiblePageHeight, topGutterPx, bottomGutterPx, closeMeasurePreview, populateGlyphRectsForPage]
   );
 
 
@@ -4789,7 +4790,7 @@ export default function ScoreViewer({
             zIndex: 200,
           }}
         >
-          {Object.entries(measureGlyphRectsRef.current).flatMap(([measureId, rects]) =>
+          {Object.entries(glyphDebugRects).flatMap(([measureId, rects]) =>
             rects.map((r, i) => (
               <div
                 key={measureId + ":" + i}
