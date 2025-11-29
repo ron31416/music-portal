@@ -1147,7 +1147,8 @@ function clearMeasureBoxes(outer: HTMLDivElement): void {
 function drawAnnotationBoxes(
   outer: HTMLDivElement,
   rects: ReadonlyArray<MeasureBoxRect>,
-  getAnnotationsForMeasure: GetAnnotationsForMeasure
+  getAnnotationsForMeasure: GetAnnotationsForMeasure,
+  zoom = 1
 ): void {
   if (!outer || rects.length === 0) {
     return;
@@ -1201,12 +1202,15 @@ function drawAnnotationBoxes(
       const pxX = box.x + xRel * box.w;
       const pxY = box.y + yRel * box.h;
 
+      const BASE_FONT_PX = 14;
+      const fontPx = BASE_FONT_PX * zoom;
+
       const t = createSvgEl("text");
       t.textContent = item.text;
       t.setAttribute("x", String(pxX));
       t.setAttribute("y", String(pxY));
       t.setAttribute("fill", "black");
-      t.setAttribute("font-size", "14");
+      t.setAttribute("font-size", String(fontPx));
       t.setAttribute("font-family", "sans-serif");
       t.setAttribute("dominant-baseline", "middle");
       t.setAttribute("text-anchor", "middle");
@@ -1897,6 +1901,11 @@ export default function ScoreViewer({
     startZoom: number;
   } | null>(null);
 
+  //TEST
+  // 1 = OSMD's default zoom
+  const viewerZoomRef = useRef(1);
+  //TEST
+
   // Timestamp of the last touchend, used to suppress synthetic mouse events
   const lastTouchEndRef = useRef<number>(0);
 
@@ -1925,7 +1934,12 @@ export default function ScoreViewer({
     if (hasZoomProp(inst)) {
       const curr = inst.Zoom;
       if (!Number.isFinite(curr) || Math.abs(curr - clamped) > 0.001) {
-        try { inst.Zoom = clamped; } catch { }
+        try {
+          inst.Zoom = clamped;              // changes OSMD zoom
+          //TEST
+          viewerZoomRef.current = clamped;  // record annotation zoom
+          //TEST
+        } catch { }
       }
     }
   }, []);
@@ -2488,7 +2502,12 @@ export default function ScoreViewer({
           clearAnnotationBoxes(outer);
           const getter = getAnnotationsForMeasureRef.current;
           if (rects.length && getter) {
-            drawAnnotationBoxes(outer, rects, getter);
+            drawAnnotationBoxes(
+              outer,
+              rects,
+              getter,
+              viewerZoomRef.current
+            );
           }
 
           // 2) Draw stroke-only measure boxes when edit mode is active
