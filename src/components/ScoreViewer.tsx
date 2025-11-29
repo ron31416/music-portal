@@ -71,7 +71,7 @@ const REFLOW = {
   PAGE_FILL_SLOP_PX: 8,
 
   // Masking/peek guards between pages (don’t usually need to touch)
-  MASK_BOTTOM_SAFETY_PX: 12,
+  MASK_BOTTOM_SAFETY_PX: 14,
 
   // Fixed bottom cutter padding
   BOTTOM_PEEK_PAD_LO_DPR: 5,
