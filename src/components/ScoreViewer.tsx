@@ -1443,24 +1443,22 @@ function clamp01(v: number): number {
   return v;
 }
 
-function hitsGlyphAt(
-  xPage: number,
-  yPage: number,
-  glyphs: readonly GlyphRect[]
-): boolean {
-  const PAD = 5; // a little breathing room around glyphs
-  for (const g of glyphs) {
-    const withinX = xPage >= g.x - PAD && xPage <= g.x + g.w + PAD;
-    const withinY = yPage >= g.y - PAD && yPage <= g.y + g.h + PAD;
-    if (withinX && withinY) {
-      return true;
-    }
-  }
-  return false;
-}
-
 // Given a tap inside a measure box, find a nearby point that does NOT land on
 // top of a glyph. Returns normalized coords, or null if no safe spot found.
+// Given a tap inside a measure box, find a nearby point that does NOT land on
+// top of a *real* glyph (noteheads, rests, etc.). Very thin horizontal
+// staff lines are treated as "soft" and won't block placement, so we can
+// land between/among them. Returns normalized coords, or null if no safe spot found.
+// Given a tap inside a measure box, find a nearby point that does NOT land on
+// top of a "hard" glyph (noteheads, rests, etc.). Thin horizontal staff lines
+// are treated as *soft* constraints: we prefer positions that land between
+// them, but we don't block them outright. Returns normalized coords, or null
+// if no suitable spot found.
+// Given a tap inside a measure box, find a nearby point that does NOT land on
+// top of a "hard" glyph (noteheads, rests, stems, etc.). Thin horizontal staff
+// lines are treated as *soft* constraints: we prefer points that land between
+// them, but don't block them outright. Returns normalized coords, or falls
+// back to the original point if nothing better is found.
 function findSafePointRelForTap(
   box: MeasureBoxRect,
   xPage: number,
@@ -1488,64 +1486,118 @@ function findSafePointRelForTap(
     yRel: clamp01((y - box.y) / box.h),
   });
 
-  // Helper: point-in-rect for GlyphRect
   const pointInRect = (x: number, y: number, r: GlyphRect): boolean =>
     x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 
-  const pointHitsAnyGlyph = (x: number, y: number): boolean =>
-    hitsGlyphAt(x, y, glyphs);
+  // Slightly padded rect hit-test for "hard" glyphs (noteheads, stems, rests).
+  // This makes taps *near* a note count as "on" the note so we nudge away.
+  const pointInPaddedRect = (x: number, y: number, r: GlyphRect, pad: number): boolean =>
+    x >= r.x - pad &&
+    x <= r.x + r.w + pad &&
+    y >= r.y - pad &&
+    y <= r.y + r.h + pad;
 
-  // 1) If the original point is not inside any glyph, use it directly.
-  if (!pointHitsAnyGlyph(startX, startY)) {
-    return toRel(startX, startY);
-  }
 
-  // We're colliding with at least one glyph.
-  const collidingGlyphs = glyphs.filter((g) => pointInRect(startX, startY, g));
+  // Heuristic: detect very thin horizontal staff lines.
+  const isThinHorizontalStaffLine = (g: GlyphRect): boolean => {
+    const STAFF_LINE_MAX_H = 3;            // up to ~3px tall
+    const STAFF_LINE_MIN_W = box.w * 0.5;  // spans at least half the measure
+    return g.h <= STAFF_LINE_MAX_H && g.w >= STAFF_LINE_MIN_W;
+  };
 
-  const AVOID_MARGIN_PX = 4;                     // how far above/below glyph we try first
-  const SEARCH_STEP_PX = 6;                     // step size for fallback vertical search
-  const MAX_OFFSET_PX = Math.max(12, box.h * 0.4); // don’t wander too far
+  // "Hard" glyphs: noteheads, rests, stems, etc.
+  const hitsHardGlyph = (x: number, y: number): boolean => {
+    const HARD_GLYPH_PAD_PX = 3; // tweakable: how "near" counts as hitting the glyph
 
-  // 2) For each colliding glyph, try directly above, then below that glyph
+    for (const g of glyphs) {
+      if (isThinHorizontalStaffLine(g)) { continue; }
+      if (!pointInPaddedRect(x, y, g, HARD_GLYPH_PAD_PX)) { continue; }
+      return true;
+    }
+    return false;
+  };
+
+  // Count how many staff-line rects this point lies on.
+  const staffLineCountAt = (x: number, y: number): number => {
+    let count = 0;
+    for (const g of glyphs) {
+      if (!isThinHorizontalStaffLine(g)) { continue; }
+      if (pointInRect(x, y, g)) {
+        count++;
+      }
+    }
+    return count;
+  };
+
+  type Candidate = { x: number; y: number; staffLines: number; dy: number };
+
+  // Seed with a dummy value; we track separately whether we actually accepted
+  // any candidate that *doesn't* hit a hard glyph.
+  let best: Candidate = {
+    x: startX,
+    y: startY,
+    staffLines: 0,
+    dy: 0,
+  };
+
+  let foundBest = false;
+
+  const considerCandidate = (x: number, y: number): void => {
+    if (x < boxLeft || x > boxRight || y < boxTop || y > boxBottom) { return; }
+    if (hitsHardGlyph(x, y)) { return; }
+
+    const staffLines = staffLineCountAt(x, y);
+    const dy = Math.abs(y - startY);
+
+    if (
+      !foundBest ||
+      staffLines < best.staffLines ||
+      (staffLines === best.staffLines && dy < best.dy)
+    ) {
+      best = { x, y, staffLines, dy };
+      foundBest = true;
+    }
+  };
+
+  // 1) Consider the original point (but only if it doesn't hit a hard glyph).
+  considerCandidate(startX, startY);
+
+  // 2) If the original point hits a hard glyph, look at the specific glyphs it
+  //    collides with and try just above/below each one.
+  const collidingGlyphs = hitsHardGlyph(startX, startY)
+    ? glyphs.filter((g) => pointInRect(startX, startY, g))
+    : [];
+
+  const AVOID_MARGIN_PX = 8;                        // how far above/below glyph we try first
+  const SEARCH_STEP_PX = 3;                         // finer step to catch spaces between staff lines
+  const MAX_OFFSET_PX = Math.max(12, box.h * 0.4);  // don’t wander too far
+
   for (const g of collidingGlyphs) {
-    // Keep X near where the user clicked, but inside the box
     const centerX = Math.max(boxLeft, Math.min(startX, boxRight));
 
-    // Just ABOVE this glyph
     const aboveY = g.y - AVOID_MARGIN_PX;
-    if (aboveY >= boxTop && !pointHitsAnyGlyph(centerX, aboveY)) {
-      return toRel(centerX, aboveY);
-    }
+    considerCandidate(centerX, aboveY);
 
-    // Just BELOW this glyph
     const belowY = g.y + g.h + AVOID_MARGIN_PX;
-    if (belowY <= boxBottom && !pointHitsAnyGlyph(centerX, belowY)) {
-      return toRel(centerX, belowY);
-    }
+    considerCandidate(centerX, belowY);
   }
 
-  // 3) Last resort: walk up/down from the original tap in small vertical steps.
+  // 3) Vertical search: walk up/down from the original tap in small steps.
   for (
     let offset = SEARCH_STEP_PX;
     offset <= MAX_OFFSET_PX;
     offset += SEARCH_STEP_PX
   ) {
-    const candidates = [startY - offset, startY + offset];
-
-    for (const candY of candidates) {
-      if (candY < boxTop || candY > boxBottom) {
-        continue;
-      }
-      if (!pointHitsAnyGlyph(startX, candY)) {
-        return toRel(startX, candY);
-      }
-    }
+    considerCandidate(startX, startY - offset);
+    considerCandidate(startX, startY + offset);
   }
 
-  // 4) If we never found a clear spot, fall back to the original point.
-  // (We prefer staying close, even if it overlaps a glyph, to teleporting
-  // to a far-off grid cell.)
+  // 4) If we found any acceptable candidate, use the best one.
+  if (best !== null) {
+    return toRel(best!.x, best!.y);
+  }
+
+  // 5) Last resort: fall back to the original point.
   return toRel(startX, startY);
 }
 //TEST
