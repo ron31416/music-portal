@@ -1568,7 +1568,7 @@ function findSafePointRelForTap(
     ? glyphs.filter((g) => pointInRect(startX, startY, g))
     : [];
 
-  const AVOID_MARGIN_PX = 8;                        // how far above/below glyph we try first
+  const AVOID_MARGIN_PX = 20;                        // how far above/below glyph we try first
   const SEARCH_STEP_PX = 3;                         // finer step to catch spaces between staff lines
   const MAX_OFFSET_PX = Math.max(12, box.h * 0.4);  // don’t wander too far
 
