@@ -4258,11 +4258,6 @@ export default function ScoreViewer({
   // Small "halo" so a tap right on the edge still counts
   const MEASURE_HIT_TOLERANCE = 8; // tweak if you like
 
-  // Clamp a number into the [min, max] interval
-  function clamp(value: number, min: number, max: number): number {
-    return value < min ? min : value > max ? max : value;
-  }
-
   function pointInMeasureRect(
     xPage: number,
     yPage: number,
@@ -4452,11 +4447,26 @@ export default function ScoreViewer({
 
               const measureNumber = box.measureNumber;
               if (measureNumber > 0 && Number.isFinite(measureNumber)) {
-                const xRel = clamp((xPage - box.x) / box.w, 0, 1);
-                const yRel = clamp((yPage - box.y) / box.h, 0, 1);
+                // Look up glyph cloud for this measure (same as mouse/pen path)
+                const glyphsForMeasure =
+                  measureGlyphRectsRef.current[box.id] ?? [];
 
-                setSelectedMeasureNumber(measureNumber);
-                setSelectedPointRel({ xRel, yRel });
+                // Use the shared glyph-avoidance helper to find a safe point
+                const safe = findSafePointRelForTap(
+                  box,
+                  xPage,
+                  yPage,
+                  glyphsForMeasure
+                );
+
+                if (safe) {
+                  setSelectedMeasureNumber(measureNumber);
+                  setSelectedPointRel(safe);
+                } else {
+                  // Congested: keep measure selected but no point yet
+                  setSelectedMeasureNumber(measureNumber);
+                  setSelectedPointRel(null);
+                }
               } else {
                 setSelectedMeasureNumber(null);
                 setSelectedPointRel(null);
