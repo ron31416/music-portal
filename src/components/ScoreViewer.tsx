@@ -2351,21 +2351,60 @@ export default function ScoreViewer({
   const LEFT_PADDING_PX = 6;      // tunable
   const MIN_BOX_WIDTH_PX = 4;     // safety net to avoid degenerate boxes
 
-  function isContentGlyph(debug?: string): boolean {
-    if (!debug) {
+  // Treat clefs, key signatures, time signatures and system connectors as
+  // "preamble" glyphs that should NOT anchor the left edge of the measure box.
+  function isPreambleGlyph(tag?: string): boolean {
+    if (!tag) {
       return false;
     }
 
-    const s = debug.toLowerCase();
+    const s = tag.toLowerCase();
 
-    // Pretty safe bets for "real musical material"
-    if (s.includes("vf-stem") || s.includes("stem")) { return true; }
-    if (s.includes("vf-notehead") || s.includes("notehead")) { return true; }
-    if (s.includes("vf-rest") || s.includes("rest")) { return true; }
-    if (s.includes("vf-dot") || s.includes("dot")) { return true; }
+    // Clefs
+    if (s.includes("clef")) {
+      return true; // e.g. "vf-clef"
+    }
 
-    // You can extend this with more vf- classes once we see them in logs
+    // Key signatures
+    if (
+      s.includes("keysig") ||
+      s.includes("keysignature") ||
+      s.includes("key-signature") ||
+      s.includes("key_signature")
+    ) {
+      return true; // e.g. "vf-keysignature"
+    }
+
+    // Time signatures
+    if (
+      s.includes("timesig") ||
+      s.includes("timesignature") ||
+      s.includes("time-signature") ||
+      s.includes("time_signature")
+    ) {
+      return true; // e.g. "vf-timesignature"
+    }
+
+    // System connector (big barline/brace at left of the system)
+    if (s === "vf-connector") {
+      return true;
+    }
+
     return false;
+  }
+
+  // Very thin, wide horizontals: staff lines / measure stripes we don't want
+  // to treat as music content.
+  function isStaffStripe(g: GlyphRect): boolean {
+    const w = g.w;
+    const h = g.h;
+
+    if (!Number.isFinite(w) || !Number.isFinite(h)) {
+      return false;
+    }
+
+    // Staff lines are extremely thin and fairly wide.
+    return h <= 2 && w >= 20;
   }
 
 
@@ -2567,26 +2606,6 @@ export default function ScoreViewer({
           const geomForPage =
             geometryRef.current ?? new Map<string, MeasureGeom>();
 
-          // Consider clefs, key signatures, and time signatures as "preamble" glyphs
-          // that should NOT determine where the measure box starts.
-          const isPreambleGlyph = (kind?: string): boolean => {
-            if (!kind) { return false; }
-            const s = kind.toLowerCase();
-
-            if (s.includes("clef")) { return true; }           // vf-clef-...
-            if (s.includes("keysig") || s.includes("key_signature")) { return true; }
-            if (s.includes("timesig") || s.includes("time_signature")) { return true; }
-
-            // Also treat barlines, braces, and brackets as non-content "frame" glyphs
-            if (s.includes("barline")) { return true; }                // vf-barline
-            if (s.includes("brace")) { return true; }
-            if (s.includes("bracket")) { return true; }
-
-            // If this ends up catching some key-signature accidentals, that's acceptable;
-            // we prefer to exclude the preamble cluster even at that cost.
-            return false;
-          };
-
           // LOCAL helper: refine barline-to-barline boxes using per-measure glyph geometry.
           // For each measure:
           //   - Look at all glyphs we associated with this measure.
@@ -2602,48 +2621,6 @@ export default function ScoreViewer({
             if (!rawRects.length) {
               return [];
             }
-
-            // Helper: is this a staff line / measure-wide “stripe” we should ignore?
-            const isStaffStripe = (g: GlyphRect): boolean => {
-              const w = g.w;
-              const h = g.h;
-
-              if (!Number.isFinite(w) || !Number.isFinite(h)) {
-                return false;
-              }
-
-              // Very thin, very wide → almost certainly a staff line or measure-outline stripe.
-              if (h <= 2 && w >= 20) {
-                return true;
-              }
-
-              return false;
-            };
-
-            // Helper: OSMD/Vexflow semantic tag
-            const isPreambleGlyph = (tag?: string): boolean => {
-              if (!tag) {
-                return false;
-              }
-              const s = tag.toLowerCase();
-
-              // Clefs
-              if (s.includes("clef")) {
-                return true;
-              }
-
-              // Key signatures
-              if (s.includes("keysig") || s.includes("key-signature") || s.includes("key_signature")) {
-                return true;
-              }
-
-              // Time signatures
-              if (s.includes("timesig") || s.includes("time-signature") || s.includes("time_signature")) {
-                return true;
-              }
-
-              return false;
-            };
 
             const result: MeasureBoxRect[] = [];
 
@@ -2668,30 +2645,13 @@ export default function ScoreViewer({
                 continue;
               }
 
-              // 1) Drop staff stripes first (horizontal staff lines)
+              // 1) Drop staff stripes (stave lines / measure stripes)
               const nonStaff = glyphs.filter((g) => !isStaffStripe(g));
 
-              // 2) Drop clef/key/time *and* connectors/braces/barlines from the non-staff set
-              const contentCandidates = nonStaff.filter((g) => {
-                const tag = g.glyphTag ?? "";
-
-                // your existing preamble classification (clefs, key sig, time sig, etc.)
-                if (isPreambleGlyph(tag)) {
-                  return false;
-                }
-
-                // explicit extras that behave like "preamble" at the far left
-                if (
-                  tag.startsWith("vf-connector") || // system brace / bracket cluster
-                  tag.startsWith("vf-barline") ||
-                  tag.startsWith("vf-brace") ||
-                  tag.startsWith("vf-bracket")
-                ) {
-                  return false;
-                }
-
-                return true;
-              });
+              // 2) Drop clef/key/time/connector "preamble" from the non-staff set
+              const contentCandidates = nonStaff.filter(
+                (g) => !isPreambleGlyph(g.glyphTag)
+              );
 
               // 3) Fallback hierarchy:
               //    - Prefer non-staff, non-preamble content
@@ -2719,8 +2679,7 @@ export default function ScoreViewer({
               }
 
               // Proposed new left edge: padding to the left of the first content glyph
-              const proposedLeft = firstContentX - LEFT_PADDING_PX;
-              let newLeft = proposedLeft;
+              let newLeft = firstContentX - LEFT_PADDING_PX;
 
               // Clamp to the original barline envelope
               if (newLeft < barLeft) {
@@ -2731,36 +2690,6 @@ export default function ScoreViewer({
               }
 
               const newWidth = Math.max(MIN_BOX_WIDTH_PX, barRight - newLeft);
-
-              // Minimal debug: just measure 1, so we can verify connector is gone
-              if (raw.measureNumber === 1) {
-                const sortedAll = [...glyphs].sort((a, b) => a.x - b.x);
-                const sortedContent = [...effectiveContent].sort((a, b) => a.x - b.x);
-
-                console.log("[REFINE DEBUG]", {
-                  measureId: raw.id,
-                  measureNumber: raw.measureNumber,
-                  barLeft,
-                  barRight,
-                  glyphCount: glyphs.length,
-                  firstContentX,
-                  proposedLeft,
-                  finalLeft: newLeft,
-                  dxFromBar: newLeft - barLeft,
-                  allGlyphs: sortedAll.map((g) => ({
-                    x: g.x,
-                    w: g.w,
-                    h: g.h,
-                    tag: g.glyphTag,
-                  })),
-                  effectiveContent: sortedContent.map((g) => ({
-                    x: g.x,
-                    w: g.w,
-                    h: g.h,
-                    tag: g.glyphTag,
-                  })),
-                });
-              }
 
               result.push({
                 ...raw,
