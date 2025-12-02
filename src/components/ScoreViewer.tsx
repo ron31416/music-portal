@@ -1008,7 +1008,8 @@ function drawMeasureBoxes(
   nextStartIndex: number, // -1 on last page
   ySnap: number,
   topGutterPx: number,
-  maskTopWithinMusicPx: number
+  maskTopWithinMusicPx: number,
+  precomputedRects?: ReadonlyArray<MeasureBoxRect>   //TEST
 ): void {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "drawMeasureBoxes";
@@ -1044,16 +1045,21 @@ function drawMeasureBoxes(
 
   // Core geometry: same math as the original implementation,
   // now factored into a shared helper.
-  const rects = computeMeasureBoxRectsForPage(
-    measuresIn,
-    geomIn,
-    bands,
-    startIndex,
-    nextStartIndex,
-    ySnap,
-    topGutterPx,
-    maskTopWithinMusicPx
-  );
+  //TEST
+  // If refined rects are supplied, use them; otherwise, fall back to raw geometry
+  const rects: ReadonlyArray<MeasureBoxRect> =
+    precomputedRects ??
+    computeMeasureBoxRectsForPage(
+      measuresIn,
+      geomIn,
+      bands,
+      startIndex,
+      nextStartIndex,
+      ySnap,
+      topGutterPx,
+      maskTopWithinMusicPx
+    );
+  //TEST
 
   if (!rects.length) {
     logStep("boxes: 0 (no rects from helper)", { outer, caller: prevFuncTag });
@@ -1878,6 +1884,7 @@ export default function ScoreViewer({
     ySnap: number;
     topGutterPx: number;
     maskTopWithinMusicPx: number;
+    rects: ReadonlyArray<MeasureBoxRect>;  // TEST: refined rects for current page
   } | null>(null);
 
   // When edit mode toggles, redraw the boxes for the current page
@@ -1907,7 +1914,8 @@ export default function ScoreViewer({
           args.nextStartIndex,
           args.ySnap,
           args.topGutterPx,
-          args.maskTopWithinMusicPx
+          args.maskTopWithinMusicPx,
+          args.rects // <--- REFINED rects from applyPage  TEST
         );
       }
     } catch { }
@@ -2273,6 +2281,7 @@ export default function ScoreViewer({
           y: gy,
           w: effW,
           h: effH,
+          debug: el.getAttribute("class") ?? el.tagName.toLowerCase(),  //TEST
         };
 
         for (const box of rects) {
@@ -2320,12 +2329,59 @@ export default function ScoreViewer({
   );
 
 
+  const LEFT_PADDING_PX = 6;      // tunable
+  const MIN_BOX_WIDTH_PX = 4;     // safety net to avoid degenerate boxes
+
+  function isPreambleGlyph(debug?: string): boolean {
+    if (!debug) {
+      return false;
+    }
+
+    const s = debug.toLowerCase();
+
+    // Very conservative: treat anything clearly tagged as clef/key/time as preamble
+    if (s.includes("clef")) {
+      return true;
+    }
+
+    if (s.includes("keysig") || s.includes("key-signature") || s.includes("key_signature")) {
+      return true;
+    }
+
+    if (s.includes("timesig") || s.includes("time-signature") || s.includes("time_signature")) {
+      return true;
+    }
+
+    return false;
+  }
+
+
+  function isContentGlyph(debug?: string): boolean {
+    if (!debug) {
+      return false;
+    }
+
+    const s = debug.toLowerCase();
+
+    // Pretty safe bets for "real musical material"
+    if (s.includes("vf-stem") || s.includes("stem")) { return true; }
+    if (s.includes("vf-notehead") || s.includes("notehead")) { return true; }
+    if (s.includes("vf-rest") || s.includes("rest")) { return true; }
+    if (s.includes("vf-dot") || s.includes("dot")) { return true; }
+
+    // You can extend this with more vf- classes once we see them in logs
+    return false;
+  }
+
+
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
   // May recompute page starts and re-apply to preserve whole systems; bounded recursion prevents oscillation.
   const applyPage = useCallback(
     (pageIdx: number): void => {
       const outer = wrapRef.current;
-      if (!outer) { return; }
+      if (!outer) {
+        return;
+      }
 
       // clear any existing measure preview when we change pages
       closeMeasurePreview();
@@ -2357,7 +2413,9 @@ export default function ScoreViewer({
         const bands = systemBandsRef.current;
         const starts = pageStartIdxsRef.current;
 
-        if (!svg || !bands.length || !starts.length) { return; }
+        if (!svg || !bands.length || !starts.length) {
+          return;
+        }
 
         // TS strict: capture narrowed aliases so flow analysis stays stable below
         const svgNN: SVGSVGElement = svg;
@@ -2371,10 +2429,12 @@ export default function ScoreViewer({
         // Start band for this page
         const startIndex = starts[p] ?? 0;
         const startBand = bands[startIndex];
-        if (!startBand) { return; }
+        if (!startBand) {
+          return;
+        }
 
         // NEXT page start (or -1 on last page) — this fixes the “line disappears” issue
-        const nextStartIndex = (p + 1 < pages) ? starts[p + 1]! : -1;
+        const nextStartIndex = p + 1 < pages ? starts[p + 1]! : -1;
 
         // Align the music so the start band sits at the top gutter
         const ySnap = Math.ceil(startBand.top);
@@ -2394,14 +2454,18 @@ export default function ScoreViewer({
         );
 
         // Last band we want to *show* on this page (based only on starts[])
-        const lastIdxThisPage = nextStartIndex >= 0 ? nextStartIndex - 1 : (bands.length - 1);
+        const lastIdxThisPage =
+          nextStartIndex >= 0 ? nextStartIndex - 1 : bands.length - 1;
 
         // --- MASK: cut exactly at the next system’s top, or just past the last on final page
         let maskTopWithinMusicPx = PAGE_H_USABLE;
         if (nextStartIndex >= 0) {
           // Non-last page: stop just above the next system so nothing peeks
           const nextTopRel = bands[nextStartIndex]!.top - ySnap;
-          maskTopWithinMusicPx = Math.min(PAGE_H_USABLE, Math.max(0, Math.floor(nextTopRel) - 1));
+          maskTopWithinMusicPx = Math.min(
+            PAGE_H_USABLE,
+            Math.max(0, Math.floor(nextTopRel) - 1)
+          );
         } else {
           // Last page: allow a safety pad to avoid shaving hairpins/slurs
           const lastRel = bands[lastIdxThisPage]!.bottom - ySnap;
@@ -2417,10 +2481,9 @@ export default function ScoreViewer({
         outer.dataset.viewerH = String(PAGE_H_USABLE);
         outer.dataset.viewerMaskTop = String(maskTopWithinMusicPx);
         outer.dataset.viewerTy = String(-ySnap + Math.max(0, topGutterPx));
-        outer.dataset.viewerStarts = starts.slice(0, 12).join(',');
+        outer.dataset.viewerStarts = starts.slice(0, 12).join(",");
         outer.dataset.viewerTopGutter = String(Math.max(0, topGutterPx));
-        outer.dataset.viewerBotGutter = String(Math.max(0, bottomGutterPx));  // if you added bottomGutterPx
-
+        outer.dataset.viewerBotGutter = String(Math.max(0, bottomGutterPx));
 
         // Create/update mask & cutters
         let mask = outer.querySelector<HTMLDivElement>("[data-viewer-mask='1']");
@@ -2439,23 +2502,31 @@ export default function ScoreViewer({
           } as CSSStyleDeclaration);
           outer.appendChild(mask);
         }
-        mask.style.top = `${Math.max(0, topGutterPx) + maskTopWithinMusicPx}px`;
+        mask.style.top = `${Math.max(0, topGutterPx) + maskTopWithinMusicPx
+          }px`;
 
-        let bottomCutter = outer.querySelector<HTMLDivElement>("[data-viewer-bottomcutter='1']");
+        let bottomCutter = outer.querySelector<HTMLDivElement>(
+          "[data-viewer-bottomcutter='1']"
+        );
         const needsMask = maskTopWithinMusicPx < PAGE_H_USABLE;
 
-        const lastForLog = nextStartIndex >= 0 ? (nextStartIndex - 1) : (bands.length - 1);
+        const lastForLog =
+          nextStartIndex >= 0 ? nextStartIndex - 1 : bands.length - 1;
         if (isDiagOn()) {
           void logStep(
             `pages: ${p + 1}/${pages} startIndex: ${startIndex} lastForLog: ${lastForLog} ` +
-            `nextStartIndex: ${nextStartIndex >= 0 ? `${nextStartIndex}` : "end"} ` +
+            `nextStartIndex: ${nextStartIndex >= 0 ? `${nextStartIndex}` : "end"
+            } ` +
             `ySnap: ${ySnap} PAGE_H_USABLE: ${PAGE_H_USABLE} maskTopWithinMusicPx: ${maskTopWithinMusicPx} needsMask: ${needsMask}`,
             { outer, caller: prevFuncTag }
           );
         }
         const first = startIndex;
-        const last = lastForLog;     // use the same name you already use above
-        const list = Array.from({ length: last - first + 1 }, (_, j) => first + j).join(",");
+        const last = lastForLog;
+        const list = Array.from(
+          { length: last - first + 1 },
+          (_, j) => first + j
+        ).join(",");
         logStep(`pageBands: [${list}]`, { outer, caller: prevFuncTag });
 
         if (!bottomCutter) {
@@ -2472,11 +2543,12 @@ export default function ScoreViewer({
           } as CSSStyleDeclaration);
           outer.appendChild(bottomCutter);
         }
-        // Always render the bottom gutter visually
         bottomCutter.style.height = `${Math.max(0, bottomGutterPx)}px`;
         bottomCutter.style.display = "block";
 
-        let topCutter = outer.querySelector<HTMLDivElement>("[data-viewer-topcutter='1']");
+        let topCutter = outer.querySelector<HTMLDivElement>(
+          "[data-viewer-topcutter='1']"
+        );
         if (!topCutter) {
           topCutter = document.createElement("div");
           topCutter.dataset.viewerTopcutter = "1";
@@ -2493,30 +2565,107 @@ export default function ScoreViewer({
         }
         topCutter.style.height = `${Math.max(0, topGutterPx)}px`;
 
-
         // --- Measure rectangles + annotation overlay ---
         // Always redraw after pagination transform so overlays match what you see.
-        // Cache the args for edit-mode redraws (mode toggle)
-        lastBoxDrawArgsRef.current = {
-          outer,
-          svgNN,
-          measures: measuresRef.current ?? [],
-          geometry: geometryRef.current ?? new Map(),
-          bandsNN,
-          startIndex,
-          nextStartIndex,
-          ySnap,
-          topGutterPx: Math.max(0, topGutterPx),
-          maskTopWithinMusicPx,
-        };
-
         try {
           const measuresForPage = measuresRef.current ?? [];
-          const geomForPage = geometryRef.current ?? new Map<string, MeasureGeom>();
+          const geomForPage =
+            geometryRef.current ?? new Map<string, MeasureGeom>();
 
-          // Compute per-measure rects for THIS page using the shared helper.
-          // This is the exact same geometry that drawMeasureBoxes uses.
-          const rects = computeMeasureBoxRectsForPage(
+          // LOCAL helper: refine barline-to-barline boxes using per-measure glyph geometry.
+          const refineMeasureBoxRectsWithGlyphs = (
+            rawRects: ReadonlyArray<MeasureBoxRect>,
+            glyphsByMeasure: Record<string, GlyphRect[]> | undefined
+          ): MeasureBoxRect[] => {
+            if (!rawRects.length) {
+              return [];
+            }
+
+            const result: MeasureBoxRect[] = [];
+
+            for (const raw of rawRects) {
+              const barLeft = raw.x;
+              const barRight = raw.x + raw.w;
+
+              if (
+                !Number.isFinite(barLeft) ||
+                !Number.isFinite(barRight) ||
+                barRight <= barLeft
+              ) {
+                // Defensive: if something is off, just keep the original box
+                result.push(raw);
+                continue;
+              }
+
+              const glyphs = glyphsByMeasure?.[raw.id] ?? [];
+              if (!glyphs.length) {
+                // No glyphs recorded for this measure → fallback to original box
+                result.push(raw);
+                continue;
+              }
+
+              // 1) Prefer "positive" content glyphs (stems, noteheads, rests, dots)
+              const contentByType = glyphs.filter((g) => isContentGlyph(g.debug));
+
+              // 2) Fallback: if that yields nothing, use "everything except obvious preamble"
+              const contentByPreamble =
+                contentByType.length > 0
+                  ? contentByType
+                  : glyphs.filter((g) => !isPreambleGlyph(g.debug));
+
+              // 3) Final fallback: if even that fails, just use all glyphs
+              const effectiveContent =
+                contentByPreamble.length > 0 ? contentByPreamble : glyphs;
+
+              if (!effectiveContent.length) {
+                result.push(raw);
+                continue;
+              }
+
+              // Leftmost *effective* content glyph x in page-local coords
+              let firstContentX = effectiveContent[0]!.x;
+              for (let i = 1; i < effectiveContent.length; i++) {
+                const gx = effectiveContent[i]!.x;
+                if (gx < firstContentX) {
+                  firstContentX = gx;
+                }
+              }
+
+              let newLeft = firstContentX - LEFT_PADDING_PX;
+
+              // Clamp to the original barline envelope
+              if (newLeft < barLeft) {
+                newLeft = barLeft;
+              }
+              if (newLeft > barRight - MIN_BOX_WIDTH_PX) {
+                newLeft = barRight - MIN_BOX_WIDTH_PX;
+              }
+
+              const newWidth = Math.max(MIN_BOX_WIDTH_PX, barRight - newLeft);
+
+              // Optional minimal logging: only when something actually shifts
+              const dx = newLeft - barLeft;
+              if (Math.abs(dx) >= 1 && isDiagOn()) {
+                void logStep(
+                  `refineMeasureBoxRects ${raw.id} shifted by ${dx.toFixed(
+                    1
+                  )}px; contentCount=${effectiveContent.length}`,
+                  { caller: "refineMeasureBoxRectsWithGlyphs" }
+                );
+              }
+
+              result.push({
+                ...raw,
+                x: newLeft,
+                w: newWidth,
+              });
+            }
+
+            return result;
+          };
+
+          // 1) Compute barline-based "envelope" rects for THIS page
+          const rawRects = computeMeasureBoxRectsForPage(
             measuresForPage,
             geomForPage,
             bandsNN,
@@ -2527,17 +2676,37 @@ export default function ScoreViewer({
             maskTopWithinMusicPx
           );
 
-          // Cache for future hit-testing / annotation logic
-          pageMeasureRectsRef.current = rects;
+          // 2) Build per-measure glyph "cloud" from the rendered SVG for this page
+          //    (uses rawRects as envelopes to associate glyphs to measures)
+          populateGlyphRectsForPage(outer, rawRects);
 
-          // Keep the current page's rects for edit-mode hit-testing
+          // 3) Refine rects using glyphs: now boxes start near the first "real" glyph
+          const glyphsByMeasure = measureGlyphRectsRef.current;
+          const rects = refineMeasureBoxRectsWithGlyphs(
+            rawRects,
+            glyphsByMeasure
+          );
+
+          // 4) Cache REFined rects for hit-testing / annotation logic
+          pageMeasureRectsRef.current = rects;
           measureRectsRef.current = rects;
 
-          // build per-measure glyph “cloud” from the rendered SVG for this page.
-          // Proof-of-concept: this only populates measureGlyphRectsRef + logs when diag is on.
-          populateGlyphRectsForPage(outer, rects);
+          // 5) Cache args (including refined rects) for edit-mode redraws
+          lastBoxDrawArgsRef.current = {
+            outer,
+            svgNN,
+            measures: measuresForPage,
+            geometry: geomForPage,
+            bandsNN,
+            startIndex,
+            nextStartIndex,
+            ySnap,
+            topGutterPx: Math.max(0, topGutterPx),
+            maskTopWithinMusicPx,
+            rects, // refined measure boxes for this page
+          };
 
-          // 1) Draw annotation fill layer (always visible, read + edit mode)
+          // 6) Draw annotation fill layer (always visible, read + edit mode)
           clearAnnotationBoxes(outer);
           const getter = getAnnotationsForMeasureRef.current;
           if (rects.length && getter) {
@@ -2549,7 +2718,7 @@ export default function ScoreViewer({
             );
           }
 
-          // 2) Draw stroke-only measure boxes when edit mode is active
+          // 7) Draw stroke-only measure boxes when edit mode is active, using refined rects
           clearMeasureBoxes(outer);
           if (isEditModeRef.current) {
             drawMeasureBoxes(
@@ -2562,7 +2731,8 @@ export default function ScoreViewer({
               nextStartIndex,
               ySnap,
               Math.max(0, topGutterPx),
-              maskTopWithinMusicPx
+              maskTopWithinMusicPx,
+              rects
             );
           }
         } catch {
@@ -2573,10 +2743,20 @@ export default function ScoreViewer({
         // Stop layer promotion after page is applied
         svg.style.willChange = "auto";
       } finally {
-        try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
+        try {
+          outer.dataset.viewerFunc = prevFuncTag;
+        } catch {
+          // ignore
+        }
       }
     },
-    [visiblePageHeight, topGutterPx, bottomGutterPx, closeMeasurePreview, populateGlyphRectsForPage]
+    [
+      visiblePageHeight,
+      topGutterPx,
+      bottomGutterPx,
+      closeMeasurePreview,
+      populateGlyphRectsForPage,
+    ]
   );
 
 
