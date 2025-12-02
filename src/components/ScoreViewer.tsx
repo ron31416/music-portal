@@ -708,7 +708,7 @@ type GlyphRect = {
   y: number;
   w: number;
   h: number;
-  debug?: string;
+  glyphTag?: string;   // renamed from debug
 };
 
 // One text mark inside a measure, positioned relative to the box [0,1] × [0,1]
@@ -1009,7 +1009,7 @@ function drawMeasureBoxes(
   ySnap: number,
   topGutterPx: number,
   maskTopWithinMusicPx: number,
-  precomputedRects?: ReadonlyArray<MeasureBoxRect>   //TEST
+  precomputedRects?: ReadonlyArray<MeasureBoxRect>
 ): void {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "drawMeasureBoxes";
@@ -1045,7 +1045,6 @@ function drawMeasureBoxes(
 
   // Core geometry: same math as the original implementation,
   // now factored into a shared helper.
-  //TEST
   // If refined rects are supplied, use them; otherwise, fall back to raw geometry
   const rects: ReadonlyArray<MeasureBoxRect> =
     precomputedRects ??
@@ -1059,7 +1058,6 @@ function drawMeasureBoxes(
       topGutterPx,
       maskTopWithinMusicPx
     );
-  //TEST
 
   if (!rects.length) {
     logStep("boxes: 0 (no rects from helper)", { outer, caller: prevFuncTag });
@@ -1884,7 +1882,7 @@ export default function ScoreViewer({
     ySnap: number;
     topGutterPx: number;
     maskTopWithinMusicPx: number;
-    rects: ReadonlyArray<MeasureBoxRect>;  // TEST: refined rects for current page
+    rects: ReadonlyArray<MeasureBoxRect>;
   } | null>(null);
 
   // When edit mode toggles, redraw the boxes for the current page
@@ -1915,7 +1913,7 @@ export default function ScoreViewer({
           args.ySnap,
           args.topGutterPx,
           args.maskTopWithinMusicPx,
-          args.rects // <--- REFINED rects from applyPage  TEST
+          args.rects
         );
       }
     } catch { }
@@ -2281,7 +2279,7 @@ export default function ScoreViewer({
           y: gy,
           w: effW,
           h: effH,
-          debug: el.getAttribute("class") ?? el.tagName.toLowerCase(),  //TEST
+          glyphTag: el.getAttribute("class") ?? el.tagName.toLowerCase(),
         };
 
         for (const box of rects) {
@@ -2328,33 +2326,8 @@ export default function ScoreViewer({
     [showGlyphDebug, setGlyphDebugRects]
   );
 
-
   const LEFT_PADDING_PX = 6;      // tunable
   const MIN_BOX_WIDTH_PX = 4;     // safety net to avoid degenerate boxes
-
-  function isPreambleGlyph(debug?: string): boolean {
-    if (!debug) {
-      return false;
-    }
-
-    const s = debug.toLowerCase();
-
-    // Very conservative: treat anything clearly tagged as clef/key/time as preamble
-    if (s.includes("clef")) {
-      return true;
-    }
-
-    if (s.includes("keysig") || s.includes("key-signature") || s.includes("key_signature")) {
-      return true;
-    }
-
-    if (s.includes("timesig") || s.includes("time-signature") || s.includes("time_signature")) {
-      return true;
-    }
-
-    return false;
-  }
-
 
   function isContentGlyph(debug?: string): boolean {
     if (!debug) {
@@ -2592,32 +2565,27 @@ export default function ScoreViewer({
                 !Number.isFinite(barRight) ||
                 barRight <= barLeft
               ) {
-                // Defensive: if something is off, just keep the original box
+                // Defensive: keep original
                 result.push(raw);
                 continue;
               }
 
               const glyphs = glyphsByMeasure?.[raw.id] ?? [];
               if (!glyphs.length) {
-                // No glyphs recorded for this measure → fallback to original box
+                // No glyphs recorded → keep original
                 result.push(raw);
                 continue;
               }
 
               // 1) Prefer "positive" content glyphs (stems, noteheads, rests, dots)
-              const contentByType = glyphs.filter((g) => isContentGlyph(g.debug));
+              const contentByType = glyphs.filter((g) => isContentGlyph(g.glyphTag));
 
-              // 2) Fallback: if that yields nothing, use "everything except obvious preamble"
-              const contentByPreamble =
-                contentByType.length > 0
-                  ? contentByType
-                  : glyphs.filter((g) => !isPreambleGlyph(g.debug));
-
-              // 3) Final fallback: if even that fails, just use all glyphs
+              // 2) Fallback: if none of those found, just use all glyphs in the measure
               const effectiveContent =
-                contentByPreamble.length > 0 ? contentByPreamble : glyphs;
+                contentByType.length > 0 ? contentByType : glyphs;
 
               if (!effectiveContent.length) {
+                // Extremely defensive; in practice glyphs.length > 0 here
                 result.push(raw);
                 continue;
               }
@@ -2631,6 +2599,7 @@ export default function ScoreViewer({
                 }
               }
 
+              // Use your tunable padding constant
               let newLeft = firstContentX - LEFT_PADDING_PX;
 
               // Clamp to the original barline envelope
@@ -2642,17 +2611,6 @@ export default function ScoreViewer({
               }
 
               const newWidth = Math.max(MIN_BOX_WIDTH_PX, barRight - newLeft);
-
-              // Optional minimal logging: only when something actually shifts
-              const dx = newLeft - barLeft;
-              if (Math.abs(dx) >= 1 && isDiagOn()) {
-                void logStep(
-                  `refineMeasureBoxRects ${raw.id} shifted by ${dx.toFixed(
-                    1
-                  )}px; contentCount=${effectiveContent.length}`,
-                  { caller: "refineMeasureBoxRectsWithGlyphs" }
-                );
-              }
 
               result.push({
                 ...raw,
