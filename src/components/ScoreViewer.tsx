@@ -2351,62 +2351,6 @@ export default function ScoreViewer({
   const LEFT_PADDING_PX = 6;      // tunable
   const MIN_BOX_WIDTH_PX = 4;     // safety net to avoid degenerate boxes
 
-  // Treat clefs, key signatures, time signatures and system connectors as
-  // "preamble" glyphs that should NOT anchor the left edge of the measure box.
-  function isPreambleGlyph(tag?: string): boolean {
-    if (!tag) {
-      return false;
-    }
-
-    const s = tag.toLowerCase();
-
-    // Clefs
-    if (s.includes("clef")) {
-      return true; // e.g. "vf-clef"
-    }
-
-    // Key signatures
-    if (
-      s.includes("keysig") ||
-      s.includes("keysignature") ||
-      s.includes("key-signature") ||
-      s.includes("key_signature")
-    ) {
-      return true; // e.g. "vf-keysignature"
-    }
-
-    // Time signatures
-    if (
-      s.includes("timesig") ||
-      s.includes("timesignature") ||
-      s.includes("time-signature") ||
-      s.includes("time_signature")
-    ) {
-      return true; // e.g. "vf-timesignature"
-    }
-
-    // System connector (big barline/brace at left of the system)
-    if (s === "vf-connector") {
-      return true;
-    }
-
-    return false;
-  }
-
-  // Very thin, wide horizontals: staff lines / measure stripes we don't want
-  // to treat as music content.
-  function isStaffStripe(g: GlyphRect): boolean {
-    const w = g.w;
-    const h = g.h;
-
-    if (!Number.isFinite(w) || !Number.isFinite(h)) {
-      return false;
-    }
-
-    // Staff lines are extremely thin and fairly wide.
-    return h <= 2 && w >= 20;
-  }
-
 
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
   // May recompute page starts and re-apply to preserve whole systems; bounded recursion prevents oscillation.
@@ -2610,8 +2554,8 @@ export default function ScoreViewer({
           // For each measure:
           //   - Look at all glyphs we associated with this measure.
           //   - Drop obvious staff lines and measure-wide “envelope” paths.
-          //   - Drop obvious preamble (clef, key sig, time sig).
-          //   - Find the leftmost remaining glyph.
+          //   - Drop obvious preamble (clef, key sig, time sig, barlines, braces, etc.).
+          //   - Prefer noteheads + rests as “structural” anchors.
           //   - Position the box LEFT_PADDING_PX to the left of that glyph,
           //     clamped to the original barline envelope.
           const refineMeasureBoxRectsWithGlyphs = (
@@ -2621,6 +2565,56 @@ export default function ScoreViewer({
             if (!rawRects.length) {
               return [];
             }
+
+            // Single source of truth for "what can drive a measure box".
+            const isStructuralContentGlyph = (g: GlyphRect): boolean => {
+              const { w, h, glyphTag } = g;
+
+              // Geometry sanity
+              if (!Number.isFinite(w) || !Number.isFinite(h)) {
+                return false;
+              }
+
+              const tag = glyphTag?.toLowerCase() ?? "";
+
+              // ---- Hard rejects ------------------------------------------------------
+              // Staff stripes (thin & long)
+              if (h <= 2 && w >= 20) {
+                return false;
+              }
+
+              // Preamble / frame / connective junk
+              if (
+                tag.includes("clef") ||
+                tag.includes("keysig") ||
+                tag.includes("key_signature") ||
+                tag.includes("timesig") ||
+                tag.includes("time_signature") ||
+                tag.includes("barline") ||
+                tag.includes("brace") ||
+                tag.includes("bracket") ||
+                tag.includes("connector") ||
+                tag.includes("ledger") ||   // ties / extension lines etc.
+                tag.includes("measure")     // measure envelope path
+              ) {
+                return false;
+              }
+
+              // ---- Whitelist: genuine per-measure musical content -------------------
+              // Notes + rests
+              if (tag.includes("notehead")) { return true; }
+
+              // Note structure
+              if (tag.includes("stem")) { return true; }
+              if (tag.includes("beam")) { return true; }
+              if (tag.includes("flag")) { return true; }
+
+              // Accidentals, fermatas, etc.
+              if (tag.includes("modifiers")) { return true; }
+
+              // Everything else: ignore
+              return false;
+            };
 
             const result: MeasureBoxRect[] = [];
 
@@ -2633,55 +2627,38 @@ export default function ScoreViewer({
                 !Number.isFinite(barRight) ||
                 barRight <= barLeft
               ) {
-                // Defensive: keep original box if geometry is weird
+                // Defensive: leave this box alone
                 result.push(raw);
                 continue;
               }
 
               const glyphs = glyphsByMeasure?.[raw.id] ?? [];
               if (!glyphs.length) {
-                // No glyphs recorded → keep original
                 result.push(raw);
                 continue;
               }
 
-              // 1) Drop staff stripes (stave lines / measure stripes)
-              const nonStaff = glyphs.filter((g) => !isStaffStripe(g));
-
-              // 2) Drop clef/key/time/connector "preamble" from the non-staff set
-              const contentCandidates = nonStaff.filter(
-                (g) => !isPreambleGlyph(g.glyphTag)
-              );
-
-              // 3) Fallback hierarchy:
-              //    - Prefer non-staff, non-preamble content
-              //    - Then fall back to just non-staff
-              //    - Then, as a last resort, use everything
-              const effectiveContent =
-                contentCandidates.length > 0
-                  ? contentCandidates
-                  : nonStaff.length > 0
-                    ? nonStaff
-                    : glyphs;
-
-              if (!effectiveContent.length) {
+              // Only keep whitelisted “structural” glyphs
+              const structural = glyphs.filter(isStructuralContentGlyph);
+              if (!structural.length) {
+                // Nothing we trust → keep the original envelope box
                 result.push(raw);
                 continue;
               }
 
-              // Find leftmost *effective* glyph in page-local coords
-              let firstContentX = effectiveContent[0]!.x;
-              for (let i = 1; i < effectiveContent.length; i++) {
-                const g = effectiveContent[i]!;
-                if (g.x < firstContentX) {
-                  firstContentX = g.x;
+              // Leftmost structural glyph in page-local coords
+              let firstContentX = structural[0]!.x;
+              for (let i = 1; i < structural.length; i++) {
+                const gx = structural[i]!.x;
+                if (gx < firstContentX) {
+                  firstContentX = gx;
                 }
               }
 
-              // Proposed new left edge: padding to the left of the first content glyph
-              let newLeft = firstContentX - LEFT_PADDING_PX;
+              const proposedLeft = firstContentX - LEFT_PADDING_PX;
+              let newLeft = proposedLeft;
 
-              // Clamp to the original barline envelope
+              // Clamp to original barline envelope
               if (newLeft < barLeft) {
                 newLeft = barLeft;
               }
@@ -2690,6 +2667,26 @@ export default function ScoreViewer({
               }
 
               const newWidth = Math.max(MIN_BOX_WIDTH_PX, barRight - newLeft);
+
+              if (isDiagOn()) {
+                // eslint-disable-next-line no-console
+                console.log("[REFINE DEBUG]", {
+                  measureId: raw.id,
+                  measureNumber: raw.measureNumber,
+                  barLeft,
+                  barRight,
+                  glyphCount: glyphs.length,
+                  structuralCount: structural.length,
+                  firstContentX,
+                  proposedLeft,
+                  finalLeft: newLeft,
+                  dxFromBar: newLeft - barLeft,
+                  structural: structural
+                    .slice()
+                    .sort((a, b) => a.x - b.x)
+                    .map((g) => ({ x: g.x, w: g.w, h: g.h, tag: g.glyphTag })),
+                });
+              }
 
               result.push({
                 ...raw,
