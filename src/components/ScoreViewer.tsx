@@ -702,16 +702,14 @@ type PointRel = {
   yRel: number;
 };
 
-//TEST
 // One rendered glyph (notehead, rest, etc.) in page-local coordinates
 type GlyphRect = {
   x: number;
   y: number;
   w: number;
   h: number;
-  debug?: string; // NEW
+  debug?: string;
 };
-//TEST
 
 // One text mark inside a measure, positioned relative to the box [0,1] × [0,1]
 type AnnotationTextItem = {
@@ -1432,7 +1430,6 @@ export function findAnchorMeasure(
   return Number.isFinite(lowest) ? lowest : null;
 }
 
-//TEST
 function clamp01(v: number): number {
   if (v < 0) {
     return 0;
@@ -1600,7 +1597,6 @@ function findSafePointRelForTap(
   // 5) Last resort: fall back to the original point.
   return toRel(startX, startY);
 }
-//TEST
 
 
 // Props for the score viewer; currently just the song source ID.
@@ -1803,10 +1799,8 @@ export default function ScoreViewer({
   // Current page's measure rectangles (used for hit-testing in edit mode)
   const measureRectsRef = useRef<ReadonlyArray<MeasureBoxRect>>([]);
 
-  //TEST
   // Per-measure glyph “cloud” in page-local coordinates
   const measureGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({});
-  //TEST
 
   // When true, this pointer gesture should NOT trigger a page turn.
   const suppressPageTurnRef = useRef(false);
@@ -1953,10 +1947,8 @@ export default function ScoreViewer({
     startZoom: number;
   } | null>(null);
 
-  //TEST
   // 1 = OSMD's default zoom
   const viewerZoomRef = useRef(1);
-  //TEST
 
   // Timestamp of the last touchend, used to suppress synthetic mouse events
   const lastTouchEndRef = useRef<number>(0);
@@ -1988,9 +1980,7 @@ export default function ScoreViewer({
       if (!Number.isFinite(curr) || Math.abs(curr - clamped) > 0.001) {
         try {
           inst.Zoom = clamped;              // changes OSMD zoom
-          //TEST
           viewerZoomRef.current = clamped;  // record annotation zoom
-          //TEST
         } catch { }
       }
     }
@@ -2211,7 +2201,6 @@ export default function ScoreViewer({
   const geometryRef = useRef<ReadonlyMap<string, MeasureGeom>>(new Map());
   const pageMeasureRectsRef = useRef<MeasureBoxRect[]>([]);
 
-  //TEST
   // Build a “glyph cloud” for the measures on the current page.
   //
   // For each visible SVG graphics element, we compute its page-local bounding box
@@ -2329,7 +2318,7 @@ export default function ScoreViewer({
     },
     [showGlyphDebug, setGlyphDebugRects]
   );
-  //TEST
+
 
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
   // May recompute page starts and re-apply to preserve whole systems; bounded recursion prevents oscillation.
@@ -2544,11 +2533,9 @@ export default function ScoreViewer({
           // Keep the current page's rects for edit-mode hit-testing
           measureRectsRef.current = rects;
 
-          //TEST
-          // NEW: build per-measure glyph “cloud” from the rendered SVG for this page.
+          // build per-measure glyph “cloud” from the rendered SVG for this page.
           // Proof-of-concept: this only populates measureGlyphRectsRef + logs when diag is on.
           populateGlyphRectsForPage(outer, rects);
-          //TEST
 
           // 1) Draw annotation fill layer (always visible, read + edit mode)
           clearAnnotationBoxes(outer);
