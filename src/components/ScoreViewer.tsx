@@ -20,43 +20,6 @@ interface Band { top: number; bottom: number; height: number }
 // Viewer-space rectangle (left/top/width/height in px, relative to wrapper host)
 interface Rect { x: number; y: number; w: number; h: number }
 
-type BBox = { left: number; right: number; top: number; bottom: number; kind?: string };
-
-export function snapToClearRowY(
-  candidateY: number,
-  boxes: BBox[],
-  left: number,
-  right: number,
-  opts?: {
-    padX?: number;
-    padY?: number;
-    search?: number;
-    logTag?: string;
-  }
-): number {
-  const padX = opts?.padX ?? 2;
-  const padY = opts?.padY ?? 2;
-  const search = opts?.search ?? 3;
-
-  function hasInkAtY(y: number): boolean {
-    for (const b of boxes) {
-      if (b.right < left - padX) { continue; }
-      if (b.left > right + padX) { continue; }
-      if (y >= b.top - padY && y <= b.bottom + padY) { return true; }
-    }
-    return false;
-  }
-
-  if (!hasInkAtY(candidateY)) { return candidateY; }
-
-  for (let d = 1; d <= search; d++) {
-    if (!hasInkAtY(candidateY - d)) { return candidateY - d; }
-    if (!hasInkAtY(candidateY + d)) { return candidateY + d; }
-  }
-
-  return candidateY;
-}
-
 // Type: function stored in a ref
 type ReflowCallback = () => Promise<void>;
 
@@ -1372,7 +1335,7 @@ async function perfBlockAsync<T>(
 
 
 function rebuildMeasureToPageMapping(
-  bands: ReadonlyArray<Band>,                 // whatever your Band type is
+  bands: ReadonlyArray<Band>,
   starts: ReadonlyArray<number>,
   geometry: ReadonlyMap<string, MeasureGeom>
 ): number[] {
@@ -1397,7 +1360,7 @@ function rebuildMeasureToPageMapping(
   // 2) measure (by id) → page
   const measureToPage: number[] = [];
   for (const [id, geom] of geometry.entries()) {
-    const mNum = Number(id);        // your ids are "1", "2", ...
+    const mNum = Number(id);
     if (!Number.isFinite(mNum)) { continue; }
 
     const bandIndex = geom.tileIndex;
@@ -1444,17 +1407,7 @@ function clamp01(v: number): number {
   return v;
 }
 
-// Given a tap inside a measure box, find a nearby point that does NOT land on
-// top of a glyph. Returns normalized coords, or null if no safe spot found.
-// Given a tap inside a measure box, find a nearby point that does NOT land on
-// top of a *real* glyph (noteheads, rests, etc.). Very thin horizontal
-// staff lines are treated as "soft" and won't block placement, so we can
-// land between/among them. Returns normalized coords, or null if no safe spot found.
-// Given a tap inside a measure box, find a nearby point that does NOT land on
-// top of a "hard" glyph (noteheads, rests, etc.). Thin horizontal staff lines
-// are treated as *soft* constraints: we prefer positions that land between
-// them, but we don't block them outright. Returns normalized coords, or null
-// if no suitable spot found.
+
 // Given a tap inside a measure box, find a nearby point that does NOT land on
 // top of a "hard" glyph (noteheads, rests, stems, etc.). Thin horizontal staff
 // lines are treated as *soft* constraints: we prefer points that land between
@@ -2004,6 +1957,7 @@ export default function ScoreViewer({
     };
   }, [openMeasurePreview]);
 
+
   // --- WIDTH-SANDBOXED RENDER (safe) ---
   // Render OSMD at a computed “layout width” derived from wrapper width and current zoom.
   // We temporarily pin the inner host <div> to that width (the “sandbox”), invoke osmd.render(),
@@ -2202,6 +2156,7 @@ export default function ScoreViewer({
     [visiblePageHeight]
   );
 
+
   const measuresRef = useRef<ReadonlyArray<{ id: string; rect: Rect }>>([]);
   const barCandsRef = useRef<ReadonlyArray<BarCand>>([]);
   const geometryRef = useRef<ReadonlyMap<string, MeasureGeom>>(new Map());
@@ -2274,7 +2229,7 @@ export default function ScoreViewer({
           continue;
         }
 
-        // 🔴 NEW: climb up the DOM tree to find a vf-* class
+        // climb up the DOM tree to find a vf-* class
         let glyphKind: string | undefined;
         let node: Element | null = el;
         while (node) {

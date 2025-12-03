@@ -1,3 +1,4 @@
+// src/components/AnnotationsProvider.tsx 
 "use client";
 
 import {
