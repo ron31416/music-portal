@@ -13,113 +13,113 @@ import AuthHeaderClient from "@/components/auth/AuthHeaderClient";
 //                 First Last Title Level
 const GRID_COLS_PX = [140, 140, 260, 120] as const;
 const GRID_COLS: React.CSSProperties["gridTemplateColumns"] =
-    GRID_COLS_PX.map((n) => `${n}px`).join(" ");
+  GRID_COLS_PX.map((n) => `${n}px`).join(" ");
 const TABLE_MIN_PX = GRID_COLS_PX.reduce((a, b) => a + b, 0);
 const TABLE_ROW_PX = 40;
 const TABLE_ROW_COUNT = 12;
 
-const SONG_LIST_ENDPOINT = "/api/songlist";
+const SONG_LIST_ENDPOINT = "/api/song";
 
 // --- Types ---
 type SortDir = "asc" | "desc";
 
 // --- Component ---
 export default function HomeClient(): React.ReactElement {
-    // Data/state
-    const [rows, setRows] = React.useState<SongListItem[]>([]);
-    const [listLoading, setListLoading] = React.useState(false);
-    const [listError, setListError] = React.useState("");
+  // Data/state
+  const [rows, setRows] = React.useState<SongListItem[]>([]);
+  const [listLoading, setListLoading] = React.useState(false);
+  const [listError, setListError] = React.useState("");
 
-    // Server-side sorting (defaults from songCols)
-    const [sort, setSort] = React.useState<SongColToken | null>(DEFAULT_SORT);
-    const [sortDir, setSortDir] = React.useState<SortDir>(DEFAULT_DIR);
+  // Server-side sorting (defaults from songCols)
+  const [sort, setSort] = React.useState<SongColToken | null>(DEFAULT_SORT);
+  const [sortDir, setSortDir] = React.useState<SortDir>(DEFAULT_DIR);
 
-    // Fetch lifecycle management
-    const listAbortRef = React.useRef<AbortController | null>(null);
-    const listSeqRef = React.useRef(0);
+  // Fetch lifecycle management
+  const listAbortRef = React.useRef<AbortController | null>(null);
+  const listSeqRef = React.useRef(0);
 
-    const refreshSongList = React.useCallback(
-        async (
-            overrideSort?: SongColToken | null,
-            overrideDir?: SortDir,
-            showSpinner: boolean = true
-        ): Promise<void> => {
-            setListError("");
-            if (showSpinner) { setListLoading(true); }
+  const refreshSongList = React.useCallback(
+    async (
+      overrideSort?: SongColToken | null,
+      overrideDir?: SortDir,
+      showSpinner: boolean = true
+    ): Promise<void> => {
+      setListError("");
+      if (showSpinner) { setListLoading(true); }
 
-            if (listAbortRef.current !== null) { listAbortRef.current.abort(); }
+      if (listAbortRef.current !== null) { listAbortRef.current.abort(); }
 
-            const controller = new AbortController();
-            listAbortRef.current = controller;
-            const seq = listSeqRef.current + 1;
-            listSeqRef.current = seq;
+      const controller = new AbortController();
+      listAbortRef.current = controller;
+      const seq = listSeqRef.current + 1;
+      listSeqRef.current = seq;
 
-            try {
-                const effSort = overrideSort ?? sort;
-                const effDir: SortDir = overrideDir ?? sortDir;
+      try {
+        const effSort = overrideSort ?? sort;
+        const effDir: SortDir = overrideDir ?? sortDir;
 
-                const data = await fetchSongList(
-                    SONG_LIST_ENDPOINT,
-                    effSort,
-                    effDir,
-                    controller.signal
-                );
+        const data = await fetchSongList(
+          SONG_LIST_ENDPOINT,
+          effSort,
+          effDir,
+          controller.signal
+        );
 
-                if (seq !== listSeqRef.current) { return; }
+        if (seq !== listSeqRef.current) { return; }
 
-                setRows(data);
-            } catch (e: unknown) {
-                const name = (e as { name?: string } | null)?.name ?? "";
-                if (name !== "AbortError") {
-                    setListError(e instanceof Error ? e.message : String(e));
-                    setRows([]);
-                }
-            } finally {
-                if (seq === listSeqRef.current) { setListLoading(false); }
-            }
-        },
-        [sort, sortDir]
-    );
+        setRows(data);
+      } catch (e: unknown) {
+        const name = (e as { name?: string } | null)?.name ?? "";
+        if (name !== "AbortError") {
+          setListError(e instanceof Error ? e.message : String(e));
+          setRows([]);
+        }
+      } finally {
+        if (seq === listSeqRef.current) { setListLoading(false); }
+      }
+    },
+    [sort, sortDir]
+  );
 
-    React.useEffect(() => {
-        void refreshSongList();
-        return () => {
-            if (listAbortRef.current !== null) { listAbortRef.current.abort(); }
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    const toggleSort = (key: SongColToken): void => {
-        const nextDir: SortDir =
-            sort === key ? (sortDir === "asc" ? "desc" : "asc") : "asc";
-        setSort(key);
-        setSortDir(nextDir);
-        void refreshSongList(key, nextDir);
+  React.useEffect(() => {
+    void refreshSongList();
+    return () => {
+      if (listAbortRef.current !== null) { listAbortRef.current.abort(); }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    const openInNewTab = (id: number): void => {
-        const tabId = Date.now().toString(36);
-        window.open(`/viewer?tab=${tabId}&id=${id}`, "_blank", "noopener,noreferrer");
-    };
+  const toggleSort = (key: SongColToken): void => {
+    const nextDir: SortDir =
+      sort === key ? (sortDir === "asc" ? "desc" : "asc") : "asc";
+    setSort(key);
+    setSortDir(nextDir);
+    void refreshSongList(key, nextDir);
+  };
 
-    return (
-        <section>
-            {/* Auth header lives INSIDE the same layout as the table so it aligns perfectly */}
-            <AuthHeaderClient title="Music Portal" />
+  const openInNewTab = (id: number): void => {
+    const tabId = Date.now().toString(36);
+    window.open(`/viewer?tab=${tabId}&id=${id}`, "_blank", "noopener,noreferrer");
+  };
 
-            <SongListPanel
-                rows={rows}
-                listLoading={listLoading}
-                listError={listError}
-                sort={sort}
-                sortDir={sortDir}
-                onToggleSort={toggleSort}
-                onRowClick={(row) => { openInNewTab(row.song_id); }}
-                gridCols={GRID_COLS}
-                tableMinPx={TABLE_MIN_PX}
-                rowPx={TABLE_ROW_PX}
-                visibleRowCount={TABLE_ROW_COUNT}
-            />
-        </section>
-    );
+  return (
+    <section>
+      {/* Auth header lives INSIDE the same layout as the table so it aligns perfectly */}
+      <AuthHeaderClient title="Music Portal" />
+
+      <SongListPanel
+        rows={rows}
+        listLoading={listLoading}
+        listError={listError}
+        sort={sort}
+        sortDir={sortDir}
+        onToggleSort={toggleSort}
+        onRowClick={(row) => { openInNewTab(row.song_id); }}
+        gridCols={GRID_COLS}
+        tableMinPx={TABLE_MIN_PX}
+        rowPx={TABLE_ROW_PX}
+        visibleRowCount={TABLE_ROW_COUNT}
+      />
+    </section>
+  );
 }
