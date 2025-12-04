@@ -45,14 +45,25 @@ const REFLOW = {
 } as const;
 
 // --- Annotation handle geometry ---
-// === Annotation handle geometry (all in px) ===
-const HANDLE_WIDTH = 40;                    // total wrapper width
-const HANDLE_HEIGHT = 72;                   // total wrapper height
-const HANDLE_STEM_WIDTH = 26;               // "grab" capsule width
-const HANDLE_STEM_HEIGHT = 46;              // "grab" capsule height
+// Annotation handle geometry (caret-style)
+//
+// All measurements in px. These define the visual shape and also the math
+// that maps finger position → caret tip (the true annotation point).
+const HANDLE_STEM_WIDTH = 24;       // width of the draggable “pill”
+const HANDLE_STEM_HEIGHT = 48;      // height of the draggable stem
+const HANDLE_TIP_WIDTH = 10;        // half-width of the triangle at the base
+const HANDLE_TIP_HEIGHT = 14;       // height of the triangle tip
 
-// Vertical distance from caret *tip* to stem center
-const HANDLE_TIP_TO_STEM_CENTER = 32;
+// The total vertical distance from the caret tip to the *bottom* of the stem.
+// This is what we subtract from the finger position to get the tip position.
+const CARAT_TIP_TO_STEM_BOTTOM_PX = HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT;
+
+// Wrapper box around the whole caret; just big enough to contain tip+stem.
+const HANDLE_BOX_WIDTH = HANDLE_STEM_WIDTH;
+const HANDLE_BOX_HEIGHT = CARAT_TIP_TO_STEM_BOTTOM_PX;
+
+// Visual rounding for the stem.
+const HANDLE_BORDER_RADIUS = 9999;
 
 
 
@@ -2367,8 +2378,9 @@ export default function ScoreViewer({
   //TEST
   // Tracks the pointer currently dragging the annotation handle, if any.
   const dragPointerIdRef = useRef<number | null>(null);
-  // latest relative position during a drag (no re-renders)
-  const dragLatestRelRef = useRef<{ xRel: number; yRel: number } | null>(null);
+  // Cached layout info for the active drag.
+  const dragOuterBoxRef = useRef<DOMRect | null>(null);
+  const dragMeasureBoxRef = useRef<null | (typeof pageMeasureRectsRef.current[number])>(null);
   //TEST
 
   // Build a “glyph cloud” for the measures on the current page.
@@ -5175,16 +5187,22 @@ export default function ScoreViewer({
         return;
       }
 
-      dragPointerIdRef.current = ev.pointerId;
-
-      // Seed the drag ref with the current state value, if any
-      if (selectedPointRel) {
-        dragLatestRelRef.current = { ...selectedPointRel };
-      } else {
-        dragLatestRelRef.current = null;
+      // We only allow dragging if we actually have a selected measure.
+      if (selectedMeasureNumber === null) {
+        return;
       }
 
-      // Treat this as an "edit" gesture, not a page-turn
+      const outerBox = outer.getBoundingClientRect();
+      dragOuterBoxRef.current = outerBox;
+
+      const box = pageMeasureRectsRef.current.find(
+        (b) => b.measureNumber === selectedMeasureNumber
+      );
+      dragMeasureBoxRef.current = box ?? null;
+
+      dragPointerIdRef.current = ev.pointerId;
+
+      // Treat this as an "edit" gesture, not a page-turn.
       suppressPageTurnRef.current = true;
       suppressClickRef.current = true;
 
@@ -5197,18 +5215,22 @@ export default function ScoreViewer({
       ev.preventDefault();
       ev.stopPropagation();
     },
-    [selectedPointRel]
+    [selectedMeasureNumber]
   );
 
 
   const handleAnnotationHandlePointerUp = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
-      const dragId = dragPointerIdRef.current;
-      if (dragId === null || ev.pointerId !== dragId) {
+      if (dragPointerIdRef.current === null) {
+        return;
+      }
+      if (ev.pointerId !== dragPointerIdRef.current) {
         return;
       }
 
       dragPointerIdRef.current = null;
+      dragOuterBoxRef.current = null;
+      dragMeasureBoxRef.current = null;
 
       try {
         (ev.currentTarget as HTMLElement).releasePointerCapture(ev.pointerId);
@@ -5223,7 +5245,6 @@ export default function ScoreViewer({
       suppressPageTurnRef.current = false;
       suppressClickRef.current = false;
 
-      // If we ended the drag with a valid measure + point, save using that
       if (selectedMeasureNumber !== null && selectedPointRel !== null) {
         void promptAndSaveAnnotation(selectedMeasureNumber, selectedPointRel);
       }
@@ -5234,7 +5255,7 @@ export default function ScoreViewer({
 
   const handleViewerPointerMoveCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
-      // We now want this on both mouse and touch
+      // We handle both mouse and touch here (tablet needs this).
       const dragId = dragPointerIdRef.current;
       if (dragId === null || ev.pointerId !== dragId) {
         return;
@@ -5244,36 +5265,26 @@ export default function ScoreViewer({
         return;
       }
 
-      if (selectedMeasureNumber === null) {
+      const outerBox = dragOuterBoxRef.current;
+      const box = dragMeasureBoxRef.current;
+      if (!outerBox || !box) {
         return;
       }
 
-      const outer = wrapRef.current;
-      if (!outer) {
-        return;
-      }
+      // Finger/mouse position in page-local coordinates
+      const pointerX = ev.clientX - outerBox.left;
+      const pointerY = ev.clientY - outerBox.top;
 
-      const box = pageMeasureRectsRef.current.find(
-        (b) => b.measureNumber === selectedMeasureNumber
-      );
-      if (!box) {
-        return;
-      }
+      // We treat the finger as being at the *bottom of the stem*.
+      // So the caret tip is CARAT_TIP_TO_STEM_BOTTOM_PX px above that.
+      const desiredTipX = pointerX;
+      const desiredTipY = pointerY - CARAT_TIP_TO_STEM_BOTTOM_PX;
 
-      const outerBox = outer.getBoundingClientRect();
-      // Pointer is over the STEM center (circle center)
-      const pointerCenterX = ev.clientX - outerBox.left;
-      const pointerCenterY = ev.clientY - outerBox.top;
-
-      // From stem-center → desired tip position
-      const desiredTipX = pointerCenterX;
-      const desiredTipY = pointerCenterY - HANDLE_TIP_TO_STEM_CENTER;
-
-      // Clamp the TIP inside the measure box
+      // Clamp the TIP inside the measure box so the point of the caret
+      // never leaves the measure.
       const clampedTipX = Math.max(box.x, Math.min(desiredTipX, box.x + box.w));
       const clampedTipY = Math.max(box.y, Math.min(desiredTipY, box.y + box.h));
 
-      // Convert clamped tip → measure-relative coordinates
       const xRel = clamp01((clampedTipX - box.x) / box.w);
       const yRel = clamp01((clampedTipY - box.y) / box.h);
 
@@ -5282,7 +5293,7 @@ export default function ScoreViewer({
       ev.preventDefault();
       ev.stopPropagation();
     },
-    [selectedMeasureNumber, setSelectedPointRel]
+    [setSelectedPointRel]
   );
   //TEST
 
@@ -5487,16 +5498,38 @@ export default function ScoreViewer({
               data-annotation-handle="1"
               style={{
                 position: "absolute",
-                // Place wrapper so that its TOP CENTER is at the caret TIP:
-                left: handlePxX - HANDLE_WIDTH / 2,
+                // handlePxX / handlePxY represent the *tip* position in page-space.
+                left: handlePxX - HANDLE_BOX_WIDTH / 2,
                 top: handlePxY,
-                width: HANDLE_WIDTH,
-                height: HANDLE_HEIGHT,
-                pointerEvents: "none", // hit-testing only on the stem
+                width: HANDLE_BOX_WIDTH,
+                height: HANDLE_BOX_HEIGHT,
                 zIndex: 60,
+                pointerEvents: "none", // hit-testing only on the stem child
               }}
             >
-              {/* Triangle tip (annotation point) – pointing UP */}
+              {/* STEM (the thing you actually grab) */}
+              <div
+                data-annotation-handle-stem="1"
+                style={{
+                  position: "absolute",
+                  left: "50%",
+                  top: HANDLE_TIP_HEIGHT, // stem starts just below the tip
+                  transform: "translateX(-50%)",
+                  width: HANDLE_STEM_WIDTH,
+                  height: HANDLE_STEM_HEIGHT,
+                  borderRadius: HANDLE_BORDER_RADIUS,
+                  background: "rgba(0,0,0,0.85)",
+                  border: "2px solid #fff",
+                  boxShadow: "0 0 6px rgba(0,0,0,0.5)",
+                  pointerEvents: "auto",
+                  touchAction: "none",
+                  cursor: "grab",
+                }}
+                onPointerDownCapture={handleAnnotationHandlePointerDown}
+                onPointerUpCapture={handleAnnotationHandlePointerUp}
+              />
+
+              {/* Triangle tip — the true annotation point, pointing UP */}
               <div
                 style={{
                   position: "absolute",
@@ -5505,35 +5538,11 @@ export default function ScoreViewer({
                   transform: "translateX(-50%)",
                   width: 0,
                   height: 0,
-                  borderLeft: `${HANDLE_STEM_WIDTH / 2}px solid transparent`,
-                  borderRight: `${HANDLE_STEM_WIDTH / 2}px solid transparent`,
-                  borderBottom: "12px solid rgba(0,0,0,0.9)",
+                  borderLeft: `${HANDLE_TIP_WIDTH}px solid transparent`,
+                  borderRight: `${HANDLE_TIP_WIDTH}px solid transparent`,
+                  borderBottom: `${HANDLE_TIP_HEIGHT}px solid rgba(0,0,0,0.85)`,
                   pointerEvents: "none",
                 }}
-              />
-
-              {/* Stem / grab capsule – where the pointer “hand” sits */}
-              <div
-                data-annotation-handle-stem="1"
-                style={{
-                  position: "absolute",
-                  left: "50%",
-                  top: HANDLE_TIP_TO_STEM_CENTER - HANDLE_STEM_HEIGHT / 2,
-                  transform: "translateX(-50%)",
-                  width: HANDLE_STEM_WIDTH,
-                  height: HANDLE_STEM_HEIGHT,
-                  borderRadius: HANDLE_STEM_HEIGHT / 2,
-                  background: "rgba(0,0,0,0.9)",
-                  border: "2px solid #fff",
-                  boxShadow: "0 0 6px rgba(0,0,0,0.5)",
-                  pointerEvents: "auto",
-                  touchAction: "none",
-                  cursor: "grab",
-                  WebkitUserSelect: "none",
-                  userSelect: "none",
-                }}
-                onPointerDownCapture={handleAnnotationHandlePointerDown}
-                onPointerUpCapture={handleAnnotationHandlePointerUp}
               />
             </div>
           )}
