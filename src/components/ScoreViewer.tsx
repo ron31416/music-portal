@@ -44,7 +44,6 @@ const REFLOW = {
   PAD_PX_BASE: 12
 } as const;
 
-// --- Annotation handle geometry ---
 // Annotation handle geometry (caret-style)
 //
 // All measurements in px. These define the visual shape and also the math
@@ -53,21 +52,7 @@ const HANDLE_STEM_WIDTH = 24;       // width of the draggable “pill”
 const HANDLE_STEM_HEIGHT = 48;      // height of the draggable stem
 const HANDLE_TIP_WIDTH = 10;        // half-width of the triangle at the base
 const HANDLE_TIP_HEIGHT = 14;       // height of the triangle tip
-
-// Distance from the caret tip DOWN to the *center* of the stem.
-// Tip → stem top is HANDLE_TIP_HEIGHT,
-// then half the stem height down to reach its center.
-const STEM_CENTER_OFFSET = HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT / 2;
-// Where the finger/mouse grabs the handle: near the *bottom* of the stem
-const STEM_DRAG_ANCHOR_OFFSET = HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT;
-
-// Wrapper box around the whole caret; just big enough to contain tip+stem.
-const HANDLE_BOX_WIDTH = HANDLE_STEM_WIDTH;
-const HANDLE_BOX_HEIGHT = STEM_CENTER_OFFSET;
-
-// Visual rounding for the stem.
 const HANDLE_BORDER_RADIUS = 9999;
-
 
 
 async function withTimeout<T>(p: Promise<T>, ms: number, tag: string): Promise<T> {
@@ -5270,9 +5255,9 @@ export default function ScoreViewer({
       const pointerY = ev.clientY - outerBox.top;
 
       // Pointer is at the BOTTOM of the stem.
-      // Convert to desired TIP position by moving up by STEM_DRAG_ANCHOR_OFFSET.
+      // Convert to desired TIP position by moving up by HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT.
       const desiredTipX = pointerX;
-      const desiredTipY = pointerY - STEM_DRAG_ANCHOR_OFFSET;
+      const desiredTipY = pointerY - (HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT);
 
       // Clamp the TIP inside the measure box
       const clampedTipX = Math.max(box.x, Math.min(desiredTipX, box.x + box.w));
@@ -5492,16 +5477,10 @@ export default function ScoreViewer({
               ref={annotationHandleRef}
               style={{
                 position: "absolute",
-
-                // The *tip* of the caret is the logical annotation point.
-                // handlePxX/handlePxY are the tip's coordinates.
-                // The wrapper's top-left is centered horizontally on the tip,
-                // and vertically aligned so that the tip sits at (handlePxX, handlePxY).
-                left: handlePxX - HANDLE_BOX_WIDTH / 2,
+                left: handlePxX - HANDLE_STEM_WIDTH / 2,
                 top: handlePxY,
-
-                width: HANDLE_BOX_WIDTH,
-                height: HANDLE_BOX_HEIGHT,
+                width: HANDLE_STEM_WIDTH,
+                height: HANDLE_TIP_HEIGHT + (HANDLE_STEM_HEIGHT / 2),
                 zIndex: 60,
                 pointerEvents: "none", // hit-testing only on the stem child
               }}
@@ -5512,12 +5491,8 @@ export default function ScoreViewer({
                 style={{
                   position: "absolute",
                   left: "50%",
-                  // Put the stem so that its center is STEM_CENTER_OFFSET below the tip.
-                  // Since this wrapper's top is at (tipY - STEM_CENTER_OFFSET),
-                  // this means the stem center ends up exactly at handlePxY.
-                  top: STEM_CENTER_OFFSET - HANDLE_STEM_HEIGHT / 2,
+                  top: HANDLE_TIP_HEIGHT,
                   transform: "translateX(-50%)",
-
                   width: HANDLE_STEM_WIDTH,
                   height: HANDLE_STEM_HEIGHT,
                   borderRadius: HANDLE_BORDER_RADIUS,
