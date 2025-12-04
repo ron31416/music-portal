@@ -674,7 +674,6 @@ type GlyphRect = {
   glyphTag?: string;   // renamed from debug
 };
 
-//TEST
 type NoteAnchor = {
   id: string;   // stable within a measure, e.g. "measure-12-n0"
   x: number;    // notehead center X (page-local px)
@@ -689,7 +688,6 @@ type NoteAnchorRef = {
   dx: number;      // offset from note center X in page-local px
   dy: number;      // offset from note center Y in page-local px
 };
-//TEST
 
 // One text mark inside a measure, positioned relative to the box [0,1] × [0,1]
 type AnnotationTextItem = {
@@ -697,7 +695,7 @@ type AnnotationTextItem = {
   xRel: number;
   yRel: number;
   text: string;
-  anchor?: NoteAnchorRef;  // Nnote anchoring (optional)  TEST
+  anchor?: NoteAnchorRef;  // note anchoring (optional)
 };
 
 // Viewer-side payload: everything from DB AnnotationPayload,
@@ -1132,7 +1130,7 @@ function drawAnnotationBoxes(
   rects: ReadonlyArray<MeasureBoxRect>,
   getAnnotationsForMeasure: GetAnnotationsForMeasure,
   zoom = 1,
-  noteAnchorsByMeasure?: Record<string, NoteAnchor[]>   //TEST
+  noteAnchorsByMeasure?: Record<string, NoteAnchor[]>
 ): void {
   if (!outer || rects.length === 0) {
     return;
@@ -1182,7 +1180,6 @@ function drawAnnotationBoxes(
       const xRel = Math.max(0, Math.min(1, item.xRel));
       const yRel = Math.max(0, Math.min(1, item.yRel));
 
-      //TEST
       let pxX: number;
       let pxY: number;
 
@@ -1210,7 +1207,7 @@ function drawAnnotationBoxes(
         pxX = box.x + xRel * box.w;
         pxY = box.y + yRel * box.h;
       }
-      //TEST
+
       const BASE_FONT_PX = 14;
       const fontPx = BASE_FONT_PX * zoom;
 
@@ -1598,11 +1595,11 @@ function findSafePointRelForTap(
   // 5) Last resort: fall back to the original point.
   return toRel(startX, startY);
 }
-//TEST
+
 // ---- Note anchor helpers ----------------------------------------------------
 
 // Max distance (in px) to consider a tap “close enough” to a notehead
-const NOTE_ANCHOR_SNAP_RADIUS_PX = 22;
+//const NOTE_ANCHOR_SNAP_RADIUS_PX = 22;  TEST del
 
 // Build a stable list of note anchors for a given measure from its glyph cloud.
 // We treat any glyph whose tag contains "notehead" as a candidate.
@@ -1640,6 +1637,8 @@ function buildNoteAnchorsForMeasure(
   return anchors;
 }
 
+/*
+TEST
 // Given a set of note anchors and a page-local point (x,y), find the nearest
 // notehead within NOTE_ANCHOR_SNAP_RADIUS_PX. Returns undefined if nothing
 // is close enough.
@@ -1668,7 +1667,8 @@ function findNearestNoteAnchor(
   const maxDistSq = NOTE_ANCHOR_SNAP_RADIUS_PX * NOTE_ANCHOR_SNAP_RADIUS_PX;
   return best && bestDistSq <= maxDistSq ? best : undefined;
 }
-//TEST
+TEST
+*/
 
 // Props for the score viewer; currently just the song source ID.
 interface Props {
@@ -1718,9 +1718,60 @@ export default function ScoreViewer({
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
 
   //TEST
-  // If the tap was near a notehead, store note anchoring info here
-  const [selectedAnchorRef, setSelectedAnchorRef] = useState<NoteAnchorRef | null>(null);
+  // Prompt for content and save an annotation at a given measure + point.
+  // This replaces the old useEffect that auto-prompted whenever selection changed.
+  const promptAndSaveAnnotation = React.useCallback(
+    async (measureNumber: number, point: PointRel): Promise<void> => {
+      if (!isEditModeRef.current) {
+        return;
+      }
+
+      // Ask for text (debug, temporary)
+      const label = window.prompt("Annotation text (e.g. mf, p, f)?", "");
+      if (label === null) {
+        // User canceled
+        return;
+      }
+      const trimmed = label.trim();
+      if (trimmed.length === 0) {
+        return;
+      }
+
+      // Build new item
+      const newItem: AnnotationTextItem = {
+        kind: "text",
+        xRel: point.xRel,
+        yRel: point.yRel,
+        text: trimmed,
+      };
+
+      // Grab existing or empty
+      const existing = getAnnotationsForMeasure(measureNumber);
+      const items = Array.isArray(existing?.items) ? existing!.items : [];
+
+      const nextPayload: MeasureAnnotation = {
+        ...existing,
+        items: [...items, newItem],
+      };
+
+      // Save (local optimistic update + server)
+      void saveAnnotationsForMeasure(measureNumber, nextPayload);
+
+      // Clear selection so we don’t double-fire
+      setSelectedMeasureNumber(null);
+      setSelectedPointRel(null);
+    },
+    [
+      getAnnotationsForMeasure,
+      saveAnnotationsForMeasure,
+      setSelectedMeasureNumber,
+      setSelectedPointRel,
+    ]
+  );
   //TEST
+
+  // If the tap was near a notehead, store note anchoring info here
+  //const [selectedAnchorRef, setSelectedAnchorRef] = useState<NoteAnchorRef | null>(null);  TEST del
 
   const [glyphDebugRects, setGlyphDebugRects] =
     useState<Record<string, GlyphRect[]>>({});
@@ -1738,12 +1789,30 @@ export default function ScoreViewer({
     setMeasurePreviewRect(null);
   }, []);
 
+  //TEST change
   const handleViewerPointerDownCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       // Mouse/pen only; touch is handled via touch events
       if (ev.pointerType === "touch") {
         return;
       }
+
+      const target = ev.target as HTMLElement | null;
+      const isHandle =
+        !!target && !!target.closest("[data-annotation-handle='1']");
+
+      // If the pointer-down started on the draggable annotation handle,
+      // let the handle-specific logic take over. We ONLY mark this as an
+      // "edit" gesture so page-turn logic won’t fire, but we do NOT
+      // re-run hit-testing or swallow the event here.
+      if (isHandle) {
+        suppressPageTurnRef.current = true;
+        suppressClickRef.current = true;
+        // Don’t touch pendingMeasureRectRef or selection here.
+        return;
+      }
+
+      // --- Normal pointer-down path (not on the handle) ---
 
       // Reset for this gesture
       suppressPageTurnRef.current = false;
@@ -1784,8 +1853,7 @@ export default function ScoreViewer({
           const measureNumber = box.measureNumber;
           if (measureNumber > 0 && Number.isFinite(measureNumber)) {
             // Look up glyph cloud for this measure
-            const glyphsForMeasure =
-              measureGlyphRectsRef.current[box.id] ?? [];
+            const glyphsForMeasure = measureGlyphRectsRef.current[box.id] ?? [];
 
             // Find a nearby non-glyph point inside this measure
             const safe = findSafePointRelForTap(
@@ -1798,35 +1866,14 @@ export default function ScoreViewer({
             if (safe) {
               setSelectedMeasureNumber(measureNumber);
               setSelectedPointRel(safe);
-
-              // --- NEW: compute note anchor for this safe point, if near a notehead ---
-              const safePxX = box.x + safe.xRel * box.w;
-              const safePxY = box.y + safe.yRel * box.h;
-
-              const anchors = buildNoteAnchorsForMeasure(box.id, glyphsForMeasure);
-              const nearest = findNearestNoteAnchor(anchors, safePxX, safePxY);
-
-              if (nearest) {
-                setSelectedAnchorRef({
-                  type: "note",
-                  noteId: nearest.id,
-                  dx: safePxX - nearest.x,
-                  dy: safePxY - nearest.y,
-                });
-              } else {
-                // Safe point is not near any notehead → no anchor
-                setSelectedAnchorRef(null);
-              }
             } else {
               // Everything nearby is congested; keep measure selected but no point yet.
               setSelectedMeasureNumber(measureNumber);
               setSelectedPointRel(null);
-              setSelectedAnchorRef(null);
             }
           } else {
             setSelectedMeasureNumber(null);
             setSelectedPointRel(null);
-            setSelectedAnchorRef(null);
           }
 
           ev.preventDefault();
@@ -1838,10 +1885,10 @@ export default function ScoreViewer({
       // Click started outside any measure
       setSelectedMeasureNumber(null);
       setSelectedPointRel(null);
-      setSelectedAnchorRef(null);
     },
-    [setSelectedMeasureNumber, setSelectedPointRel, setSelectedAnchorRef]
+    [setSelectedMeasureNumber, setSelectedPointRel]
   );
+  //TEST
 
   const handleViewerPointerUpCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
@@ -2303,7 +2350,12 @@ export default function ScoreViewer({
   const geometryRef = useRef<ReadonlyMap<string, MeasureGeom>>(new Map());
   const pageMeasureRectsRef = useRef<MeasureBoxRect[]>([]);
   // Per-page cache of note anchors, keyed by measureId (same ids as measureGlyphRectsRef)
-  const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({}); //TEST
+  const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({});
+
+  //TEST
+  // Tracks the pointer currently dragging the annotation handle, if any.
+  const dragPointerIdRef = useRef<number | null>(null);
+  //TEST
 
   // Build a “glyph cloud” for the measures on the current page.
   // For each visible SVG graphics element, we compute its page-local bounding box
@@ -2315,7 +2367,7 @@ export default function ScoreViewer({
       if (!rects.length) {
         // Clear when there are no measures on this page
         measureGlyphRectsRef.current = {};
-        measureNoteAnchorsRef.current = {};   //TEST
+        measureNoteAnchorsRef.current = {};
         if (showGlyphDebug) {
           setGlyphDebugRects({});
         }
@@ -2325,7 +2377,7 @@ export default function ScoreViewer({
       const svg = getSvg(outer);
       if (!svg) {
         measureGlyphRectsRef.current = {};
-        measureNoteAnchorsRef.current = {};  //TEST
+        measureNoteAnchorsRef.current = {};
         if (showGlyphDebug) {
           setGlyphDebugRects({});
         }
@@ -2419,7 +2471,7 @@ export default function ScoreViewer({
           }
         }
       }
-      //TEST
+
       const next: Record<string, GlyphRect[]> = {};
       const nextAnchors: Record<string, NoteAnchor[]> = {};
 
@@ -2442,7 +2494,7 @@ export default function ScoreViewer({
       if (showGlyphDebug) {
         setGlyphDebugRects(next);
       }
-      //TEST
+
       if (isDiagOn()) {
         const summary = rects
           .map((box) => {
@@ -2687,30 +2739,7 @@ export default function ScoreViewer({
               }
 
               const tag = glyphTag?.toLowerCase() ?? "";
-              /*
-                            // ---- Hard rejects ------------------------------------------------------
-                            // Staff stripes (thin & long)
-                            if (h <= 2 && w >= 20) {
-                              return false;
-                            }
-              
-                            // Preamble / frame / connective junk
-                            if (
-                              tag.includes("clef") ||
-                              tag.includes("keysig") ||
-                              tag.includes("key_signature") ||
-                              tag.includes("timesig") ||
-                              tag.includes("time_signature") ||
-                              tag.includes("barline") ||
-                              tag.includes("brace") ||
-                              tag.includes("bracket") ||
-                              tag.includes("connector") ||
-                              tag.includes("ledger") ||   // ties / extension lines etc.
-                              tag.includes("measure")     // measure envelope path
-                            ) {
-                              return false;
-                            }
-              */
+
               // ---- Whitelist: genuine per-measure musical content -------------------
               // Notes + rests
               if (tag.includes("notehead")) { return true; }
@@ -2860,7 +2889,7 @@ export default function ScoreViewer({
               rects,
               getter,
               viewerZoomRef.current,
-              measureNoteAnchorsRef.current    // per-page note anchors  TEST
+              measureNoteAnchorsRef.current    // per-page note anchors
             );
           }
 
@@ -2938,70 +2967,6 @@ export default function ScoreViewer({
       outer.dataset.viewerFunc = prevFunc;
     }
   }, [annotationsLoading, annotationsByMeasure, layoutReady, applyPage]);
-
-  // When a measure is selected in edit mode, prompt for annotation text.
-  // NOTE: This is the minimal debug UI; will be replaced with a popup palette later.
-  useEffect(() => {
-    if (!isEditMode) {
-      return;
-    }
-
-    if (
-      selectedMeasureNumber === null ||
-      selectedPointRel === null
-    ) {
-      return;
-    }
-
-    // Ask for text (debug, temporary)
-    const label = window.prompt("Annotation text (e.g. mf, p, f)?", "");
-    if (label === null) {
-      // User canceled
-      return;
-    }
-    const trimmed = label.trim();
-    if (trimmed.length === 0) {
-      return;
-    }
-
-    // Build new item
-    const newItem: AnnotationTextItem = {
-      kind: "text",
-      xRel: selectedPointRel.xRel,
-      yRel: selectedPointRel.yRel,
-      text: trimmed,
-      anchor: selectedAnchorRef ?? undefined,  // TEST
-    };
-
-    // Grab existing or empty
-    const existing = getAnnotationsForMeasure(selectedMeasureNumber);
-    const items = Array.isArray(existing?.items)
-      ? existing!.items
-      : [];
-
-    const nextPayload: MeasureAnnotation = {
-      ...existing,
-      items: [...items, newItem],
-    };
-
-    // Save (local optimistic update)
-    void saveAnnotationsForMeasure(selectedMeasureNumber, nextPayload);
-
-    // Clear selection so we don’t double-fire
-    setSelectedMeasureNumber(null);
-    setSelectedPointRel(null);
-    setSelectedAnchorRef(null);  //TEST
-  }, [
-    isEditMode,
-    selectedMeasureNumber,
-    selectedPointRel,
-    selectedAnchorRef,          // TEST
-    getAnnotationsForMeasure,
-    saveAnnotationsForMeasure,
-    setSelectedMeasureNumber,
-    setSelectedPointRel,
-    setSelectedAnchorRef,       // TEST
-  ]);
 
 
   // Hide the SVG host while we do heavy work, then restore previous styles.
@@ -5169,11 +5134,151 @@ export default function ScoreViewer({
     e.stopPropagation();
   };
 
+
+  //TEST
+  // --- Annotation handle position (page-local px) ---
+  let handlePxX: number | null = null;
+  let handlePxY: number | null = null;
+
+  if (selectedMeasureNumber !== null && selectedPointRel !== null) {
+    const box = pageMeasureRectsRef.current.find(
+      (b) => b.measureNumber === selectedMeasureNumber
+    );
+    if (box) {
+      handlePxX = box.x + selectedPointRel.xRel * box.w;
+      handlePxY = box.y + selectedPointRel.yRel * box.h;
+    }
+  }
+
+  const handleAnnotationHandlePointerDown = useCallback(
+    (ev: React.PointerEvent<HTMLDivElement>): void => {
+      if (!isEditModeRef.current) {
+        return;
+      }
+
+      const outer = wrapRef.current;
+      if (!outer) {
+        return;
+      }
+
+      dragPointerIdRef.current = ev.pointerId;
+
+      // Treat this as an "edit" gesture, not a page-turn
+      suppressPageTurnRef.current = true;
+      suppressClickRef.current = true;
+
+      try {
+        (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+
+      ev.preventDefault();
+      ev.stopPropagation();
+    },
+    []
+  );
+
+
+  const handleAnnotationHandlePointerUp = useCallback(
+    (ev: React.PointerEvent<HTMLDivElement>): void => {
+      if (dragPointerIdRef.current === null) {
+        return;
+      }
+      if (ev.pointerId !== dragPointerIdRef.current) {
+        return;
+      }
+
+      dragPointerIdRef.current = null;
+
+      try {
+        (ev.currentTarget as HTMLElement).releasePointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      // Clear suppression for next gesture
+      suppressPageTurnRef.current = false;
+      suppressClickRef.current = false;
+
+      if (selectedMeasureNumber !== null && selectedPointRel !== null) {
+        void promptAndSaveAnnotation(selectedMeasureNumber, selectedPointRel);
+      }
+    },
+    [promptAndSaveAnnotation, selectedMeasureNumber, selectedPointRel]
+  );
+
+
+  const handleViewerPointerMoveCapture = useCallback(
+    (ev: React.PointerEvent<HTMLDivElement>): void => {
+      // Allow both mouse and touch now; we want drag on tablet too.
+      const dragId = dragPointerIdRef.current;
+      if (dragId === null || ev.pointerId !== dragId) {
+        return;
+      }
+
+      if (!isEditModeRef.current) {
+        return;
+      }
+
+      if (selectedMeasureNumber === null) {
+        return;
+      }
+
+      const outer = wrapRef.current;
+      if (!outer) {
+        return;
+      }
+
+      const box = pageMeasureRectsRef.current.find(
+        (b) => b.measureNumber === selectedMeasureNumber
+      );
+      if (!box) {
+        return;
+      }
+
+      const outerBox = outer.getBoundingClientRect();
+      const pointerX = ev.clientX - outerBox.left;
+      const pointerY = ev.clientY - outerBox.top;
+
+      // We treat the pointer as being over the STEM CENTER,
+      // and the true annotation point (caret tip) sits
+      // ANNOTATION_HANDLE_STEM_CENTER_OFFSET_Y px *above* that.
+      const desiredTipX = pointerX;
+      const desiredTipY = pointerY - ANNOTATION_HANDLE_STEM_CENTER_OFFSET_Y;
+
+      // Clamp the TIP inside the measure box
+      const clampedTipX = Math.max(box.x, Math.min(desiredTipX, box.x + box.w));
+      const clampedTipY = Math.max(box.y, Math.min(desiredTipY, box.y + box.h));
+
+      const xRel = clamp01((clampedTipX - box.x) / box.w);
+      const yRel = clamp01((clampedTipY - box.y) / box.h);
+
+      setSelectedPointRel({ xRel, yRel });
+
+      ev.preventDefault();
+      ev.stopPropagation();
+    },
+    [selectedMeasureNumber, setSelectedPointRel]
+  );
+
+  // --- Annotation handle visual size (caret-style) ---
+  const HANDLE_BOX_WIDTH = 28;
+  const HANDLE_BOX_HEIGHT = 40;
+  // Keep this in sync with the caret stem style (top: 10, height: 24 → center is 22px below tip)
+  const ANNOTATION_HANDLE_STEM_CENTER_OFFSET_Y = 22;
+
+  //TEST
+
   return (
     <div
       ref={wrapRef}
       onPointerDownCapture={handleViewerPointerDownCapture}
       onPointerUpCapture={handleViewerPointerUpCapture}
+      onPointerMoveCapture={handleViewerPointerMoveCapture} //TEST
       onClickCapture={handleViewerClickCapture}
       style={{
         ...outerStyle,
@@ -5343,6 +5448,68 @@ export default function ScoreViewer({
             }}
           />
         )}
+
+        {/* Draggable annotation placement handle (caret-style) TEST*/}
+        {isEditMode &&
+          selectedMeasureNumber !== null &&
+          selectedPointRel !== null &&
+          handlePxX !== null &&
+          handlePxY !== null && (
+            <div
+              data-annotation-handle="1"
+              style={{
+                position: "absolute",
+                // For an UP-pointing caret, the *tip* is at the TOP center.
+                // So we place the wrapper's top center at (handlePxX, handlePxY).
+                left: handlePxX - HANDLE_BOX_WIDTH / 2,
+                top: handlePxY,
+                width: HANDLE_BOX_WIDTH,
+                height: HANDLE_BOX_HEIGHT,
+                pointerEvents: "none", // hit-testing routed to children
+                zIndex: 60,
+                background: "transparent",
+              }}
+            >
+              {/* Stem (the part you actually grab with mouse/finger) */}
+              <div
+                data-annotation-handle-stem="1"
+                style={{
+                  position: "absolute",
+                  left: "50%",
+                  top: 10, // below the tip
+                  transform: "translateX(-50%)",
+                  width: 14,
+                  height: 24,
+                  borderRadius: 9999,
+                  background: "rgba(0,0,0,0.85)",
+                  border: "2px solid #fff",
+                  boxShadow: "0 0 6px rgba(0, 0, 0, 0.5)",
+                  pointerEvents: "auto",
+                  touchAction: "none",
+                  cursor: "grab",
+                }}
+                onPointerDownCapture={handleAnnotationHandlePointerDown}
+                onPointerUpCapture={handleAnnotationHandlePointerUp}
+              />
+
+              {/* Triangle tip — the true annotation point, pointing UP */}
+              <div
+                style={{
+                  position: "absolute",
+                  left: "50%",
+                  top: 0,
+                  transform: "translateX(-50%)",
+                  width: 0,
+                  height: 0,
+                  borderLeft: "7px solid transparent",
+                  borderRight: "7px solid transparent",
+                  borderBottom: "10px solid rgba(0,0,0,0.85)", // points UP
+                  pointerEvents: "none", // tip itself is not a hit target
+                }}
+              />
+            </div>
+          )}
+
       </div>
       <style>{`@keyframes viewer-spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }`}</style>
     </div>
