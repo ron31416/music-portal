@@ -2368,6 +2368,11 @@ export default function ScoreViewer({
   const dragPointerIdRef = useRef<number | null>(null);
   // Draggable annotation handle element (the caret wrapper)
   const annotationHandleRef = useRef<HTMLDivElement | null>(null);
+  // Tracks whether we are currently dragging the annotation handle
+  const isDraggingHandleRef = useRef(false);
+  // Live drag position in *relative* measure coordinates during a drag.
+  // When not dragging, this may be null.
+  const dragRelRef = useRef<{ xRel: number; yRel: number } | null>(null);
   //TEST
 
   // Build a “glyph cloud” for the measures on the current page.
@@ -5174,10 +5179,11 @@ export default function ScoreViewer({
         return;
       }
 
-      // Start a drag for this pointer
+      // Start a drag on this pointer
       dragPointerIdRef.current = ev.pointerId;
+      isDraggingHandleRef.current = true;
 
-      // This is an edit gesture, not a page-turn
+      // Treat this as an "edit" gesture, not a page-turn
       suppressPageTurnRef.current = true;
       suppressClickRef.current = true;
 
@@ -5187,6 +5193,7 @@ export default function ScoreViewer({
         // ignore
       }
 
+      // We do NOT compute positions here; that happens in pointermove.
       ev.preventDefault();
       ev.stopPropagation();
     },
@@ -5195,12 +5202,15 @@ export default function ScoreViewer({
 
   const handleAnnotationHandlePointerUp = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
-      const dragId = dragPointerIdRef.current;
-      if (dragId === null || ev.pointerId !== dragId) {
+      if (dragPointerIdRef.current === null) {
+        return;
+      }
+      if (ev.pointerId !== dragPointerIdRef.current) {
         return;
       }
 
       dragPointerIdRef.current = null;
+      isDraggingHandleRef.current = false;
 
       try {
         (ev.currentTarget as HTMLElement).releasePointerCapture(ev.pointerId);
@@ -5211,16 +5221,32 @@ export default function ScoreViewer({
       ev.preventDefault();
       ev.stopPropagation();
 
-      // Clear suppression for the *next* gesture
+      // Clear suppression for the next gesture
       suppressPageTurnRef.current = false;
       suppressClickRef.current = false;
 
-      // After drag finishes, prompt for the annotation content
-      if (selectedMeasureNumber !== null && selectedPointRel !== null) {
-        void promptAndSaveAnnotation(selectedMeasureNumber, selectedPointRel);
+      // Decide what final rel-position we should commit:
+      // - Prefer the dragRelRef if we were dragging
+      // - Otherwise fall back to whatever selectedPointRel already is
+      const finalRel = dragRelRef.current ?? selectedPointRel;
+
+      if (selectedMeasureNumber !== null && finalRel) {
+        // Commit the final rel position into React state
+        setSelectedPointRel(finalRel);
+
+        // Persist the annotation at that final rel position
+        void promptAndSaveAnnotation(selectedMeasureNumber, finalRel);
       }
+
+      // Clear the drag buffer
+      dragRelRef.current = null;
     },
-    [promptAndSaveAnnotation, selectedMeasureNumber, selectedPointRel]
+    [
+      promptAndSaveAnnotation,
+      selectedMeasureNumber,
+      selectedPointRel,
+      setSelectedPointRel,
+    ]
   );
 
   const handleViewerPointerMoveCapture = useCallback(
@@ -5251,27 +5277,43 @@ export default function ScoreViewer({
       }
 
       const outerBox = outer.getBoundingClientRect();
-      const pointerX = ev.clientX - outerBox.left;
-      const pointerY = ev.clientY - outerBox.top;
 
-      // Pointer is at the BOTTOM of the stem.
-      // Convert to desired TIP position by moving up by HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT.
-      const desiredTipX = pointerX;
-      const desiredTipY = pointerY - (HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT);
+      // Pointer position = where the finger/mouse is.
+      // We treat this as the *bottom of the stem* (drag anchor).
+      const anchorX = ev.clientX - outerBox.left;
+      const anchorY = ev.clientY - outerBox.top;
 
-      // Clamp the TIP inside the measure box
-      const clampedTipX = Math.max(box.x, Math.min(desiredTipX, box.x + box.w));
-      const clampedTipY = Math.max(box.y, Math.min(desiredTipY, box.y + box.h));
+      // Distance from caret tip UP to the drag anchor (bottom of stem)
+      const DRAG_ANCHOR_OFFSET = HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT;
 
+      // Compute the desired tip position from the anchor.
+      const tipX = anchorX;
+      const tipY = anchorY - DRAG_ANCHOR_OFFSET;
+
+      // Clamp the *tip* inside the measure box.
+      const clampedTipX = Math.max(box.x, Math.min(tipX, box.x + box.w));
+      const clampedTipY = Math.max(box.y, Math.min(tipY, box.y + box.h));
+
+      // Compute measure-relative coordinates from the clamped tip.
       const xRel = clamp01((clampedTipX - box.x) / box.w);
       const yRel = clamp01((clampedTipY - box.y) / box.h);
 
-      setSelectedPointRel({ xRel, yRel });
+      // Save live drag position for pointer-up.
+      dragRelRef.current = { xRel, yRel };
+
+      // Move the DOM handle directly so the drag feels snappy.
+      const handleEl = annotationHandleRef.current;
+      if (handleEl) {
+        // Wrapper is positioned so that its TOP sits at the tip,
+        // and its horizontal center is at the tip X.
+        handleEl.style.left = `${clampedTipX - HANDLE_STEM_WIDTH / 2}px`;
+        handleEl.style.top = `${clampedTipY}px`;
+      }
 
       ev.preventDefault();
       ev.stopPropagation();
     },
-    [selectedMeasureNumber, setSelectedPointRel]
+    [selectedMeasureNumber]
   );
   //TEST
 
