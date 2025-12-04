@@ -5181,28 +5181,25 @@ export default function ScoreViewer({
         return;
       }
 
+      // Mark this pointer as the active drag pointer
       dragPointerIdRef.current = ev.pointerId;
 
-      // Treat this as an "edit" gesture, not a page-turn
-      suppressPageTurnRef.current = true;
-      suppressClickRef.current = true;
-
-      // Remember which box we’re dragging within
+      // Cache the current measure box so we don’t search on every move
       if (selectedMeasureNumber !== null) {
-        const box = pageMeasureRectsRef.current.find(
-          (b) => b.measureNumber === selectedMeasureNumber
-        );
-        dragMeasureBoxRef.current = box ?? null;
+        dragMeasureBoxRef.current =
+          pageMeasureRectsRef.current.find(
+            (b) => b.measureNumber === selectedMeasureNumber
+          ) ?? null;
       } else {
         dragMeasureBoxRef.current = null;
       }
 
-      // Start dragRelRef from current logical point (if any)
-      if (selectedPointRel) {
-        dragRelRef.current = { ...selectedPointRel };
-      } else {
-        dragRelRef.current = null;
-      }
+      // Live rel-coords will be filled by move handler
+      dragRelRef.current = null;
+
+      // Treat this as an "edit" gesture, not a page-turn
+      suppressPageTurnRef.current = true;
+      suppressClickRef.current = true;
 
       try {
         (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
@@ -5213,15 +5210,13 @@ export default function ScoreViewer({
       ev.preventDefault();
       ev.stopPropagation();
     },
-    [selectedMeasureNumber, selectedPointRel]
+    [selectedMeasureNumber]
   );
 
   const handleAnnotationHandlePointerUp = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
-      if (dragPointerIdRef.current === null) {
-        return;
-      }
-      if (ev.pointerId !== dragPointerIdRef.current) {
+      const dragId = dragPointerIdRef.current;
+      if (dragId === null || ev.pointerId !== dragId) {
         return;
       }
 
@@ -5240,25 +5235,37 @@ export default function ScoreViewer({
       suppressPageTurnRef.current = false;
       suppressClickRef.current = false;
 
-      // Use the *dragged* position if we have one; fall back to existing state otherwise
-      const finalRel = dragRelRef.current ?? selectedPointRel;
+      const measureNumber = selectedMeasureNumber;
+      const dragRel = dragRelRef.current;
+      const box = dragMeasureBoxRef.current;
+
+      // Reset drag-specific refs
       dragRelRef.current = null;
       dragMeasureBoxRef.current = null;
 
-      if (selectedMeasureNumber !== null && finalRel) {
-        // Sync logical state to where the handle actually ended up
-        setSelectedPointRel(finalRel);
-
-        // And now prompt + save using that same point
-        void promptAndSaveAnnotation(selectedMeasureNumber, finalRel);
+      if (
+        measureNumber === null ||
+        !dragRel ||
+        !box
+      ) {
+        return;
       }
+
+      const { xRel, yRel } = dragRel;
+
+      // Clamp again defensively, just in case
+      const clampedXRel = clamp01(xRel);
+      const clampedYRel = clamp01(yRel);
+
+      const finalRel = { xRel: clampedXRel, yRel: clampedYRel };
+
+      // Commit into React state once
+      setSelectedPointRel(finalRel);
+
+      // And run your existing save flow
+      void promptAndSaveAnnotation(measureNumber, finalRel);
     },
-    [
-      selectedMeasureNumber,
-      selectedPointRel,
-      setSelectedPointRel,
-      promptAndSaveAnnotation,
-    ]
+    [promptAndSaveAnnotation, selectedMeasureNumber, setSelectedPointRel]
   );
 
   const handleViewerPointerMoveCapture = useCallback(
@@ -5273,56 +5280,46 @@ export default function ScoreViewer({
       }
 
       const outer = wrapRef.current;
-      if (!outer) {
-        return;
-      }
+      const box = dragMeasureBoxRef.current;
+      const handleNode = annotationHandleRef.current;
 
-      const box =
-        dragMeasureBoxRef.current ??
-        (selectedMeasureNumber !== null
-          ? pageMeasureRectsRef.current.find(
-            (b) => b.measureNumber === selectedMeasureNumber
-          ) ?? null
-          : null);
-
-      if (!box) {
+      if (!outer || !box || !handleNode) {
         return;
       }
 
       const outerBox = outer.getBoundingClientRect();
+
+      // Pointer position in "page" coords (viewer-local)
       const pointerX = ev.clientX - outerBox.left;
       const pointerY = ev.clientY - outerBox.top;
 
-      // Geometry: finger is at the *bottom* of the stem.
-      // Tip is above that by HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT.
-      const dragAnchorOffset = HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT;
+      // We treat the pointer as being at the *bottom* of the stem.
+      // Caret tip is above by HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT.
+      const DRAG_ANCHOR_OFFSET = HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT;
 
-      // Raw tip position from this pointer
       let tipX = pointerX;
-      let tipY = pointerY - dragAnchorOffset;
+      let tipY = pointerY - DRAG_ANCHOR_OFFSET;
 
-      // Clamp the *tip* inside the measure box
-      tipX = Math.max(box.x, Math.min(tipX, box.x + box.w));
-      tipY = Math.max(box.y, Math.min(tipY, box.y + box.h));
+      // Clamp tip inside the measure box
+      if (tipX < box.x) { tipX = box.x; }
+      else if (tipX > box.x + box.w) { tipX = box.x + box.w; }
 
-      // Compute relative coords of the tip (annotation point)
-      const xRel = clamp01((tipX - box.x) / box.w);
-      const yRel = clamp01((tipY - box.y) / box.h);
+      if (tipY < box.y) { tipY = box.y; }
+      else if (tipY > box.y + box.h) { tipY = box.y + box.h; }
 
-      // Store for pointer-up; do NOT re-render during drag
+      // Store rel coords for use on pointer-up
+      const xRel = (tipX - box.x) / box.w;
+      const yRel = (tipY - box.y) / box.h;
       dragRelRef.current = { xRel, yRel };
 
-      // Move the handle visually via direct DOM writes
-      const handleEl = annotationHandleRef.current;
-      if (handleEl) {
-        handleEl.style.left = `${tipX - HANDLE_STEM_WIDTH / 2}px`;
-        handleEl.style.top = `${tipY}px`;
-      }
+      // Move the handle wrapper so that the caret tip is at (tipX, tipY)
+      handleNode.style.left = `${tipX - HANDLE_STEM_WIDTH / 2}px`;
+      handleNode.style.top = `${tipY}px`;
 
       ev.preventDefault();
       ev.stopPropagation();
     },
-    [selectedMeasureNumber]
+    []
   );
   //TEST
 
