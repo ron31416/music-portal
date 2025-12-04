@@ -5280,6 +5280,7 @@ export default function ScoreViewer({
       onPointerUpCapture={handleViewerPointerUpCapture}
       onPointerMoveCapture={handleViewerPointerMoveCapture} //TEST
       onClickCapture={handleViewerClickCapture}
+      onContextMenu={stopEvent}  // <-- prevent long-press menus (tablet)  TEST
       style={{
         ...outerStyle,
         position: "relative", // <-- ensure absolute children anchor here
