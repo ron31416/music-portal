@@ -12,22 +12,26 @@ import {
   ReactElement,
 } from "react";
 
-/**
- * Front-end only shape of a single text annotation item inside a measure.
- * This mirrors what ScoreViewer expects in its MeasureAnnotation type.
- */
+// Front-end only shape of a single text annotation item inside a measure.
+// This mirrors what ScoreViewer expects in its MeasureAnnotation type.
 export interface AnnotationTextItem {
   kind: "text";
   xRel: number;
   yRel: number;
   text: string;
   style?: string;
+  //TEST
+  anchor?: {
+    type: "note";
+    noteId: string;
+    dx: number;
+    dy: number;
+  };
+  //TEST
 }
 
-/**
- * Front-end only shape of the annotation payload.
- * The DB just stores this as `jsonb`.
- */
+// Front-end only shape of the annotation payload.
+// The DB just stores this as `jsonb`.
 export interface AnnotationPayload {
   // Optional list of text items for this measure
   items?: AnnotationTextItem[];
@@ -45,9 +49,9 @@ export type MeasureNumber = number;
 
 export type AnnotationMap = Record<MeasureNumber, AnnotationPayload>;
 
-/* =========================
-   API response types
-   ========================= */
+// =========================
+// API response types
+// =========================
 
 // Request body for saving annotations for a single measure
 interface SaveAnnotationsRequestBody {
@@ -92,20 +96,18 @@ type UserSongMeasureApiResponse = {
   message?: string;
 };
 
-/* =========================
-   Context types
-   ========================= */
+// =========================
+// Context types
+// =========================
 
 interface AnnotationsContextValue {
   isLoading: boolean;
   isSaving: boolean;
   errorMessage: string | null;
 
-  /**
-   * True once a `user_song` row exists for (user, song).
-   * We can use this in the UI to decide whether to show
-   * "Add to My Songs" / enable editing, etc.
-   */
+  // True once a `user_song` row exists for (user, song).
+  // We can use this in the UI to decide whether to show
+  // "Add to My Songs" / enable editing, etc.
   hasUserSongRow: boolean;
 
   annotationsByMeasure: AnnotationMap;
@@ -113,11 +115,9 @@ interface AnnotationsContextValue {
   // Return undefined when no annotation exists for this measure.
   getAnnotationsForMeasure: (measureNumber: MeasureNumber) => AnnotationPayload | undefined;
 
-  /**
-   * Save (insert or update) the annotation payload for a single measure.
-   * For now this only performs an optimistic local update; the server-side
-   * persistence will be wired up via /api/user-song-measure (PUT) later.
-   */
+  // Save (insert or update) the annotation payload for a single measure.
+  // For now this only performs an optimistic local update; the server-side
+  // persistence will be wired up via /api/user-song-measure (PUT) later.
   saveAnnotationsForMeasure: (
     measureNumber: MeasureNumber,
     payload: AnnotationPayload
@@ -132,19 +132,15 @@ interface AnnotationsProviderProps {
   children: ReactNode;
 }
 
-/* =========================
-   Provider
-   ========================= */
+// =========================
+// Provider
+// =========================
 
-/**
- * Top-level provider for all annotations of a given song for a given user.
- *
- * Usage (already wired in ViewerClient):
- *
- *   <AnnotationsProvider songId={songId} userId={userId}>
- *     <ScoreViewer src={src} />
- *   </AnnotationsProvider>
- */
+// Top-level provider for all annotations of a given song for a given user.
+// Usage (already wired in ViewerClient):
+//   <AnnotationsProvider songId={songId} userId={userId}>
+//     <ScoreViewer src={src} />
+//   </AnnotationsProvider>
 export function AnnotationsProvider({
   songId,
   userId,
@@ -156,14 +152,11 @@ export function AnnotationsProvider({
   const [hasUserSongRow, setHasUserSongRow] = useState<boolean>(false);
   const [annotationsByMeasure, setAnnotationsByMeasure] = useState<AnnotationMap>({});
 
-  /**
-   * Internal helper: consult /api/user-song to see whether a user_song row exists
-   * for (userId, songId). For now, this does NOT create the row if it is missing;
-   * it simply flips hasUserSongRow on if it exists.
-   *
-   * Later, if we want "ensure row exists" semantics, we can extend the route to
-   * insert as needed and keep this helper unchanged.
-   */
+  // Internal helper: consult /api/user-song to see whether a user_song row exists
+  // for (userId, songId). For now, this does NOT create the row if it is missing;
+  // it simply flips hasUserSongRow on if it exists.
+  // Later, if we want "ensure row exists" semantics, we can extend the route to
+  // insert as needed and keep this helper unchanged.
   const ensureUserSongRow = useCallback(
     async (effectiveUserId: number): Promise<void> => {
       if (hasUserSongRow) {
@@ -199,13 +192,11 @@ export function AnnotationsProvider({
     [hasUserSongRow, songId]
   );
 
-  /**
-   * Initial load:
-   *   - If no user → just mark as not loading; annotations remain empty.
-   *   - If user exists:
-   *       1. Check for user_song row via /api/user-song.
-   *       2. Load all measure annotations via /api/user-song-measure.
-   */
+  // Initial load:
+  //   - If no user → just mark as not loading; annotations remain empty.
+  //   - If user exists:
+  //       1. Check for user_song row via /api/user-song.
+  //       2. Load all measure annotations via /api/user-song-measure.
   useEffect(() => {
     let isCancelled = false;
 
@@ -294,11 +285,9 @@ export function AnnotationsProvider({
     [annotationsByMeasure]
   );
 
-  /**
-   * Save handler: for now, only performs an optimistic local update.
-   * We will wire this to a PUT /api/user-song-measure endpoint (calling
-   * user_song_measure_update / user_song_measure_insert) in a later step.
-   */
+  // Save handler: for now, only performs an optimistic local update.
+  // We will wire this to a PUT /api/user-song-measure endpoint (calling
+  // user_song_measure_update / user_song_measure_insert) in a later step.
   const saveAnnotationsForMeasure = useCallback(
     async (measureNumber: MeasureNumber, payload: AnnotationPayload): Promise<void> => {
       // Require a logged-in user and a valid songId
@@ -397,13 +386,9 @@ export function AnnotationsProvider({
   );
 }
 
-/**
- * Hook for consuming annotations inside the score viewer / overlays.
- *
- * Example usage (later, inside ScoreViewer or a child):
- *
- *   const { getAnnotationsForMeasure, saveAnnotationsForMeasure } = useAnnotations();
- */
+// Hook for consuming annotations inside the score viewer / overlays.
+// Example usage (later, inside ScoreViewer or a child):
+//   const { getAnnotationsForMeasure, saveAnnotationsForMeasure } = useAnnotations();
 export function useAnnotations(): AnnotationsContextValue {
   const context = useContext(AnnotationsContext);
   if (!context) {

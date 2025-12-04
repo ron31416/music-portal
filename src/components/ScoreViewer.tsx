@@ -674,12 +674,30 @@ type GlyphRect = {
   glyphTag?: string;   // renamed from debug
 };
 
+//TEST
+type NoteAnchor = {
+  id: string;   // stable within a measure, e.g. "measure-12-n0"
+  x: number;    // notehead center X (page-local px)
+  y: number;    // notehead center Y (page-local px)
+  w: number;    // notehead width
+  h: number;    // notehead height
+};
+
+type NoteAnchorRef = {
+  type: "note";
+  noteId: string;  // matches NoteAnchor.id
+  dx: number;      // offset from note center X in page-local px
+  dy: number;      // offset from note center Y in page-local px
+};
+//TEST
+
 // One text mark inside a measure, positioned relative to the box [0,1] × [0,1]
 type AnnotationTextItem = {
   kind: "text";
   xRel: number;
   yRel: number;
   text: string;
+  anchor?: NoteAnchorRef;  // Nnote anchoring (optional)  TEST
 };
 
 // Viewer-side payload: everything from DB AnnotationPayload,
@@ -1113,7 +1131,8 @@ function drawAnnotationBoxes(
   outer: HTMLDivElement,
   rects: ReadonlyArray<MeasureBoxRect>,
   getAnnotationsForMeasure: GetAnnotationsForMeasure,
-  zoom = 1
+  zoom = 1,
+  noteAnchorsByMeasure?: Record<string, NoteAnchor[]>   //TEST
 ): void {
   if (!outer || rects.length === 0) {
     return;
@@ -1163,10 +1182,35 @@ function drawAnnotationBoxes(
       const xRel = Math.max(0, Math.min(1, item.xRel));
       const yRel = Math.max(0, Math.min(1, item.yRel));
 
-      // Convert to page-local px coordinates
-      const pxX = box.x + xRel * box.w;
-      const pxY = box.y + yRel * box.h;
+      //TEST
+      let pxX: number;
+      let pxY: number;
 
+      // if this item is anchored to a note, use the note position ---
+      const anchor = item.anchor;
+      if (
+        anchor &&
+        anchor.type === "note" &&
+        noteAnchorsByMeasure &&
+        noteAnchorsByMeasure[box.id]
+      ) {
+        const anchorsForMeasure = noteAnchorsByMeasure[box.id]!;
+        const note = anchorsForMeasure.find((a) => a.id === anchor.noteId);
+
+        if (note) {
+          pxX = note.x + anchor.dx;
+          pxY = note.y + anchor.dy;
+        } else {
+          // Note no longer exists / couldn’t be found → fall back to box-relative
+          pxX = box.x + xRel * box.w;
+          pxY = box.y + yRel * box.h;
+        }
+      } else {
+        // Original non-anchored behavior
+        pxX = box.x + xRel * box.w;
+        pxY = box.y + yRel * box.h;
+      }
+      //TEST
       const BASE_FONT_PX = 14;
       const fontPx = BASE_FONT_PX * zoom;
 
@@ -1554,7 +1598,77 @@ function findSafePointRelForTap(
   // 5) Last resort: fall back to the original point.
   return toRel(startX, startY);
 }
+//TEST
+// ---- Note anchor helpers ----------------------------------------------------
 
+// Max distance (in px) to consider a tap “close enough” to a notehead
+const NOTE_ANCHOR_SNAP_RADIUS_PX = 22;
+
+// Build a stable list of note anchors for a given measure from its glyph cloud.
+// We treat any glyph whose tag contains "notehead" as a candidate.
+// Note: this operates in the same page-local coordinate system as GlyphRect
+// and MeasureBoxRect.
+function buildNoteAnchorsForMeasure(
+  measureId: string,
+  glyphs: readonly GlyphRect[]
+): NoteAnchor[] {
+  if (!glyphs.length) {
+    return [];
+  }
+
+  const noteGlyphs = glyphs
+    .filter((g) => (g.glyphTag ?? "").toLowerCase().includes("notehead"))
+    // Sort for stable indexing: left-to-right, then top-to-bottom
+    .sort((a, b) => {
+      const dx = a.x - b.x;
+      if (dx !== 0) { return dx; }
+      return a.y - b.y;
+    });
+
+  const anchors: NoteAnchor[] = [];
+  for (let i = 0; i < noteGlyphs.length; i++) {
+    const g = noteGlyphs[i]!;
+    anchors.push({
+      id: `${measureId}-n${i}`,
+      x: g.x + g.w / 2,
+      y: g.y + g.h / 2,
+      w: g.w,
+      h: g.h,
+    });
+  }
+
+  return anchors;
+}
+
+// Given a set of note anchors and a page-local point (x,y), find the nearest
+// notehead within NOTE_ANCHOR_SNAP_RADIUS_PX. Returns undefined if nothing
+// is close enough.
+function findNearestNoteAnchor(
+  anchors: readonly NoteAnchor[],
+  x: number,
+  y: number
+): NoteAnchor | undefined {
+  if (!anchors.length) {
+    return undefined;
+  }
+
+  let best: NoteAnchor | undefined;
+  let bestDistSq = Number.POSITIVE_INFINITY;
+
+  for (const a of anchors) {
+    const dx = x - a.x;
+    const dy = y - a.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestDistSq) {
+      bestDistSq = d2;
+      best = a;
+    }
+  }
+
+  const maxDistSq = NOTE_ANCHOR_SNAP_RADIUS_PX * NOTE_ANCHOR_SNAP_RADIUS_PX;
+  return best && bestDistSq <= maxDistSq ? best : undefined;
+}
+//TEST
 
 // Props for the score viewer; currently just the song source ID.
 interface Props {
@@ -1602,6 +1716,11 @@ export default function ScoreViewer({
   // Currently selected measure + tap position inside it (for upcoming annotation UI)
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(null);
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
+
+  //TEST
+  // If the tap was near a notehead, store note anchoring info here
+  const [selectedAnchorRef, setSelectedAnchorRef] = useState<NoteAnchorRef | null>(null);
+  //TEST
 
   const [glyphDebugRects, setGlyphDebugRects] =
     useState<Record<string, GlyphRect[]>>({});
@@ -1679,14 +1798,35 @@ export default function ScoreViewer({
             if (safe) {
               setSelectedMeasureNumber(measureNumber);
               setSelectedPointRel(safe);
+
+              // --- NEW: compute note anchor for this safe point, if near a notehead ---
+              const safePxX = box.x + safe.xRel * box.w;
+              const safePxY = box.y + safe.yRel * box.h;
+
+              const anchors = buildNoteAnchorsForMeasure(box.id, glyphsForMeasure);
+              const nearest = findNearestNoteAnchor(anchors, safePxX, safePxY);
+
+              if (nearest) {
+                setSelectedAnchorRef({
+                  type: "note",
+                  noteId: nearest.id,
+                  dx: safePxX - nearest.x,
+                  dy: safePxY - nearest.y,
+                });
+              } else {
+                // Safe point is not near any notehead → no anchor
+                setSelectedAnchorRef(null);
+              }
             } else {
               // Everything nearby is congested; keep measure selected but no point yet.
               setSelectedMeasureNumber(measureNumber);
               setSelectedPointRel(null);
+              setSelectedAnchorRef(null);
             }
           } else {
             setSelectedMeasureNumber(null);
             setSelectedPointRel(null);
+            setSelectedAnchorRef(null);
           }
 
           ev.preventDefault();
@@ -1698,8 +1838,9 @@ export default function ScoreViewer({
       // Click started outside any measure
       setSelectedMeasureNumber(null);
       setSelectedPointRel(null);
+      setSelectedAnchorRef(null);
     },
-    [setSelectedMeasureNumber, setSelectedPointRel,]
+    [setSelectedMeasureNumber, setSelectedPointRel, setSelectedAnchorRef]
   );
 
   const handleViewerPointerUpCapture = useCallback(
@@ -2161,17 +2302,20 @@ export default function ScoreViewer({
   const barCandsRef = useRef<ReadonlyArray<BarCand>>([]);
   const geometryRef = useRef<ReadonlyMap<string, MeasureGeom>>(new Map());
   const pageMeasureRectsRef = useRef<MeasureBoxRect[]>([]);
+  // Per-page cache of note anchors, keyed by measureId (same ids as measureGlyphRectsRef)
+  const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({}); //TEST
 
   // Build a “glyph cloud” for the measures on the current page.
-  //
   // For each visible SVG graphics element, we compute its page-local bounding box
   // and associate it with every measure box it intersects. Results are cached in
   // measureGlyphRectsRef by measureId.
   const populateGlyphRectsForPage = useCallback(
     (outer: HTMLDivElement, rects: ReadonlyArray<MeasureBoxRect>): void => {
+
       if (!rects.length) {
         // Clear when there are no measures on this page
         measureGlyphRectsRef.current = {};
+        measureNoteAnchorsRef.current = {};   //TEST
         if (showGlyphDebug) {
           setGlyphDebugRects({});
         }
@@ -2181,6 +2325,7 @@ export default function ScoreViewer({
       const svg = getSvg(outer);
       if (!svg) {
         measureGlyphRectsRef.current = {};
+        measureNoteAnchorsRef.current = {};  //TEST
         if (showGlyphDebug) {
           setGlyphDebugRects({});
         }
@@ -2274,19 +2419,30 @@ export default function ScoreViewer({
           }
         }
       }
-
+      //TEST
       const next: Record<string, GlyphRect[]> = {};
+      const nextAnchors: Record<string, NoteAnchor[]> = {};
+
       for (const [measureId, glyphs] of perMeasure.entries()) {
         if (glyphs.length) {
           next[measureId] = glyphs;
+
+          // NEW: build note anchors for this measure from its glyphs
+          const anchors = buildNoteAnchorsForMeasure(measureId, glyphs);
+          if (anchors.length) {
+            nextAnchors[measureId] = anchors;
+          }
         }
       }
 
+      // Cache glyphs + note anchors for this page
       measureGlyphRectsRef.current = next;
+      measureNoteAnchorsRef.current = nextAnchors;
+
       if (showGlyphDebug) {
         setGlyphDebugRects(next);
       }
-
+      //TEST
       if (isDiagOn()) {
         const summary = rects
           .map((box) => {
@@ -2531,30 +2687,30 @@ export default function ScoreViewer({
               }
 
               const tag = glyphTag?.toLowerCase() ?? "";
-
-              // ---- Hard rejects ------------------------------------------------------
-              // Staff stripes (thin & long)
-              if (h <= 2 && w >= 20) {
-                return false;
-              }
-
-              // Preamble / frame / connective junk
-              if (
-                tag.includes("clef") ||
-                tag.includes("keysig") ||
-                tag.includes("key_signature") ||
-                tag.includes("timesig") ||
-                tag.includes("time_signature") ||
-                tag.includes("barline") ||
-                tag.includes("brace") ||
-                tag.includes("bracket") ||
-                tag.includes("connector") ||
-                tag.includes("ledger") ||   // ties / extension lines etc.
-                tag.includes("measure")     // measure envelope path
-              ) {
-                return false;
-              }
-
+              /*
+                            // ---- Hard rejects ------------------------------------------------------
+                            // Staff stripes (thin & long)
+                            if (h <= 2 && w >= 20) {
+                              return false;
+                            }
+              
+                            // Preamble / frame / connective junk
+                            if (
+                              tag.includes("clef") ||
+                              tag.includes("keysig") ||
+                              tag.includes("key_signature") ||
+                              tag.includes("timesig") ||
+                              tag.includes("time_signature") ||
+                              tag.includes("barline") ||
+                              tag.includes("brace") ||
+                              tag.includes("bracket") ||
+                              tag.includes("connector") ||
+                              tag.includes("ledger") ||   // ties / extension lines etc.
+                              tag.includes("measure")     // measure envelope path
+                            ) {
+                              return false;
+                            }
+              */
               // ---- Whitelist: genuine per-measure musical content -------------------
               // Notes + rests
               if (tag.includes("notehead")) { return true; }
@@ -2703,7 +2859,8 @@ export default function ScoreViewer({
               outer,
               rects,
               getter,
-              viewerZoomRef.current
+              viewerZoomRef.current,
+              measureNoteAnchorsRef.current    // per-page note anchors  TEST
             );
           }
 
@@ -2813,6 +2970,7 @@ export default function ScoreViewer({
       xRel: selectedPointRel.xRel,
       yRel: selectedPointRel.yRel,
       text: trimmed,
+      anchor: selectedAnchorRef ?? undefined,  // TEST
     };
 
     // Grab existing or empty
@@ -2832,15 +2990,19 @@ export default function ScoreViewer({
     // Clear selection so we don’t double-fire
     setSelectedMeasureNumber(null);
     setSelectedPointRel(null);
+    setSelectedAnchorRef(null);  //TEST
   }, [
     isEditMode,
     selectedMeasureNumber,
     selectedPointRel,
+    selectedAnchorRef,          // TEST
     getAnnotationsForMeasure,
     saveAnnotationsForMeasure,
     setSelectedMeasureNumber,
     setSelectedPointRel,
+    setSelectedAnchorRef,       // TEST
   ]);
+
 
   // Hide the SVG host while we do heavy work, then restore previous styles.
   const withHostHidden = useCallback(async <T,>(
