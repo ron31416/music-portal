@@ -44,6 +44,18 @@ const REFLOW = {
   PAD_PX_BASE: 12
 } as const;
 
+// --- Annotation handle geometry ---
+// Overall wrapper box (in px)
+const HANDLE_BOX_WIDTH = 40;
+const HANDLE_BOX_HEIGHT = 70;
+
+// The "stem" / circle that you grab
+// top: distance from wrapper top to stem top
+// height: vertical size of the stem
+const STEM_TOP = 12;
+const STEM_HEIGHT = 48;
+const STEM_CENTER_OFFSET = STEM_TOP + STEM_HEIGHT / 2;
+
 async function withTimeout<T>(p: Promise<T>, ms: number, tag: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = window.setTimeout(() => reject(new Error(tag)), ms);
@@ -5214,7 +5226,8 @@ export default function ScoreViewer({
 
   const handleViewerPointerMoveCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
-      // Allow both mouse and touch now; we want drag on tablet too.
+      // We allow both mouse and touch here (no early return).
+
       const dragId = dragPointerIdRef.current;
       if (dragId === null || ev.pointerId !== dragId) {
         return;
@@ -5241,19 +5254,20 @@ export default function ScoreViewer({
       }
 
       const outerBox = outer.getBoundingClientRect();
-      const pointerX = ev.clientX - outerBox.left;
-      const pointerY = ev.clientY - outerBox.top;
 
-      // We treat the pointer as being over the STEM CENTER,
-      // and the true annotation point (caret tip) sits
-      // ANNOTATION_HANDLE_STEM_CENTER_OFFSET_Y px *above* that.
-      const desiredTipX = pointerX;
-      const desiredTipY = pointerY - ANNOTATION_HANDLE_STEM_CENTER_OFFSET_Y;
+      // Pointer location over the STEM (circle) — treat as stem center.
+      const pointerCenterX = ev.clientX - outerBox.left;
+      const pointerCenterY = ev.clientY - outerBox.top;
 
-      // Clamp the TIP inside the measure box
-      const clampedTipX = Math.max(box.x, Math.min(desiredTipX, box.x + box.w));
-      const clampedTipY = Math.max(box.y, Math.min(desiredTipY, box.y + box.h));
+      // Compute the *unclamped* tip position implied by this center.
+      const tipXUnclamped = pointerCenterX;
+      const tipYUnclamped = pointerCenterY - STEM_CENTER_OFFSET;
 
+      // Clamp the TIP to the measure box.
+      const clampedTipX = Math.max(box.x, Math.min(tipXUnclamped, box.x + box.w));
+      const clampedTipY = Math.max(box.y, Math.min(tipYUnclamped, box.y + box.h));
+
+      // Update relative position from the *tip*.
       const xRel = clamp01((clampedTipX - box.x) / box.w);
       const yRel = clamp01((clampedTipY - box.y) / box.h);
 
@@ -5264,16 +5278,6 @@ export default function ScoreViewer({
     },
     [selectedMeasureNumber, setSelectedPointRel]
   );
-
-  // --- Annotation handle visual size (caret-style) ---
-  const HANDLE_BOX_WIDTH = 48;
-  const HANDLE_BOX_HEIGHT = 48; // total vertical space (tip + stem)
-  const HANDLE_TIP_HEIGHT = 10;
-  const HANDLE_STEM_WIDTH = 28;
-  const HANDLE_STEM_HEIGHT = 28;
-  // Keep this in sync with the caret stem style (top: 10, height: 24 → center is 22px below tip)
-  const ANNOTATION_HANDLE_STEM_CENTER_OFFSET_Y = 22;
-
   //TEST
 
   return (
@@ -5467,7 +5471,7 @@ export default function ScoreViewer({
           />
         )}
 
-        {/* Draggable annotation placement handle (caret-style) TEST */}
+        {/* Draggable annotation placement handle (caret-style) */}
         {isEditMode &&
           selectedMeasureNumber !== null &&
           selectedPointRel !== null &&
@@ -5477,21 +5481,38 @@ export default function ScoreViewer({
               data-annotation-handle="1"
               style={{
                 position: "absolute",
-                // Tip of the caret is exactly at (handlePxX, handlePxY)
-                left: handlePxX,
+                // handlePxX / handlePxY are the *tip* coordinates (page-local)
+                left: handlePxX - HANDLE_BOX_WIDTH / 2,
                 top: handlePxY,
-
                 width: HANDLE_BOX_WIDTH,
                 height: HANDLE_BOX_HEIGHT,
-
-                // center the box horizontally on the tip; no vertical shift
-                transform: "translate(-50%, 0)",
-
-                pointerEvents: "none", // only the stem is hittable
+                pointerEvents: "none", // all hit-testing goes to the stem below
                 zIndex: 60,
               }}
             >
-              {/* Triangle tip — true annotation point, pointing UP */}
+              {/* Stem / circle – this is what you actually grab */}
+              <div
+                data-annotation-handle-stem="1"
+                style={{
+                  position: "absolute",
+                  left: "50%",
+                  top: STEM_TOP,
+                  transform: "translateX(-50%)",
+                  width: 32,
+                  height: STEM_HEIGHT,
+                  borderRadius: "9999px",
+                  background: "rgba(0,0,0,0.85)",
+                  border: "2px solid #fff",
+                  boxShadow: "0 0 6px rgba(0, 0, 0, 0.5)",
+                  pointerEvents: "auto",
+                  touchAction: "none",
+                  cursor: "grab",
+                }}
+                onPointerDownCapture={handleAnnotationHandlePointerDown}
+                onPointerUpCapture={handleAnnotationHandlePointerUp}
+              />
+
+              {/* Triangle tip – true annotation point, pointing UP */}
               <div
                 style={{
                   position: "absolute",
@@ -5500,36 +5521,11 @@ export default function ScoreViewer({
                   transform: "translateX(-50%)",
                   width: 0,
                   height: 0,
-                  borderLeft: "8px solid transparent",
-                  borderRight: "8px solid transparent",
-                  borderBottom: "10px solid rgba(0,0,0,0.85)", // up-pointing tip
+                  borderLeft: "7px solid transparent",
+                  borderRight: "7px solid transparent",
+                  borderBottom: "10px solid rgba(0,0,0,0.85)",
                   pointerEvents: "none",
                 }}
-              />
-
-              {/* Stem (the part you actually grab with mouse/finger) */}
-              <div
-                data-annotation-handle-stem="1"
-                style={{
-                  position: "absolute",
-                  left: "50%",
-                  top: HANDLE_TIP_HEIGHT, // starts just under the tip
-                  transform: "translateX(-50%)",
-
-                  width: HANDLE_STEM_WIDTH,
-                  height: HANDLE_STEM_HEIGHT,
-
-                  borderRadius: 9999,
-                  background: "rgba(0,0,0,0.85)",
-                  border: "2px solid #fff",
-                  boxShadow: "0 0 6px rgba(0,0,0,0.5)",
-
-                  pointerEvents: "auto",
-                  touchAction: "none",
-                  cursor: "grab",
-                }}
-                onPointerDownCapture={handleAnnotationHandlePointerDown}
-                onPointerUpCapture={handleAnnotationHandlePointerUp}
               />
             </div>
           )}
