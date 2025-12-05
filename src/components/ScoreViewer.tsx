@@ -1609,9 +1609,6 @@ function findSafePointRelForTap(
 
 // ---- Note anchor helpers ----------------------------------------------------
 
-// Max distance (in px) to consider a tap “close enough” to a notehead
-//const NOTE_ANCHOR_SNAP_RADIUS_PX = 22;  TEST del
-
 // Build a stable list of note anchors for a given measure from its glyph cloud.
 // We treat any glyph whose tag contains "notehead" as a candidate.
 // Note: this operates in the same page-local coordinate system as GlyphRect
@@ -1647,39 +1644,6 @@ function buildNoteAnchorsForMeasure(
 
   return anchors;
 }
-
-/*
-TEST
-// Given a set of note anchors and a page-local point (x,y), find the nearest
-// notehead within NOTE_ANCHOR_SNAP_RADIUS_PX. Returns undefined if nothing
-// is close enough.
-function findNearestNoteAnchor(
-  anchors: readonly NoteAnchor[],
-  x: number,
-  y: number
-): NoteAnchor | undefined {
-  if (!anchors.length) {
-    return undefined;
-  }
-
-  let best: NoteAnchor | undefined;
-  let bestDistSq = Number.POSITIVE_INFINITY;
-
-  for (const a of anchors) {
-    const dx = x - a.x;
-    const dy = y - a.y;
-    const d2 = dx * dx + dy * dy;
-    if (d2 < bestDistSq) {
-      bestDistSq = d2;
-      best = a;
-    }
-  }
-
-  const maxDistSq = NOTE_ANCHOR_SNAP_RADIUS_PX * NOTE_ANCHOR_SNAP_RADIUS_PX;
-  return best && bestDistSq <= maxDistSq ? best : undefined;
-}
-TEST
-*/
 
 // Props for the score viewer; currently just the song source ID.
 interface Props {
@@ -1728,7 +1692,6 @@ export default function ScoreViewer({
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(null);
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
 
-  //TEST
   // Prompt for content and save an annotation at a given measure + point.
   // This replaces the old useEffect that auto-prompted whenever selection changed.
   const promptAndSaveAnnotation = React.useCallback(
@@ -1779,10 +1742,6 @@ export default function ScoreViewer({
       setSelectedPointRel,
     ]
   );
-  //TEST
-
-  // If the tap was near a notehead, store note anchoring info here
-  //const [selectedAnchorRef, setSelectedAnchorRef] = useState<NoteAnchorRef | null>(null);  TEST del
 
   const [glyphDebugRects, setGlyphDebugRects] =
     useState<Record<string, GlyphRect[]>>({});
@@ -1800,7 +1759,6 @@ export default function ScoreViewer({
     setMeasurePreviewRect(null);
   }, []);
 
-  //TEST change
   const handleViewerPointerDownCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       // Mouse/pen only; touch is handled via touch events
@@ -1899,7 +1857,6 @@ export default function ScoreViewer({
     },
     [setSelectedMeasureNumber, setSelectedPointRel]
   );
-  //TEST
 
   const handleViewerPointerUpCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
@@ -2363,7 +2320,6 @@ export default function ScoreViewer({
   // Per-page cache of note anchors, keyed by measureId (same ids as measureGlyphRectsRef)
   const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({});
 
-  //TEST
   // Tracks the pointer currently dragging the annotation handle, if any.
   const dragPointerIdRef = useRef<number | null>(null);
   // Draggable annotation handle element (the caret wrapper)
@@ -2375,7 +2331,6 @@ export default function ScoreViewer({
   // Live drag position in *relative* measure coordinates during a drag.
   // When not dragging, this may be null.
   const dragRelRef = useRef<{ xRel: number; yRel: number } | null>(null);
-  //TEST
 
   // Build a “glyph cloud” for the measures on the current page.
   // For each visible SVG graphics element, we compute its page-local bounding box
@@ -2499,7 +2454,7 @@ export default function ScoreViewer({
         if (glyphs.length) {
           next[measureId] = glyphs;
 
-          // NEW: build note anchors for this measure from its glyphs
+          // build note anchors for this measure from its glyphs
           const anchors = buildNoteAnchorsForMeasure(measureId, glyphs);
           if (anchors.length) {
             nextAnchors[measureId] = anchors;
@@ -5155,7 +5110,6 @@ export default function ScoreViewer({
   };
 
 
-  //TEST
   // --- Annotation handle position (page-local px) ---
   let handlePxX: number | null = null;
   let handlePxY: number | null = null;
@@ -5321,20 +5275,18 @@ export default function ScoreViewer({
     },
     []
   );
-  //TEST
 
   return (
     <div
       ref={wrapRef}
       onPointerDownCapture={handleViewerPointerDownCapture}
       onPointerUpCapture={handleViewerPointerUpCapture}
-      onPointerMoveCapture={handleViewerPointerMoveCapture} //TEST
+      onPointerMoveCapture={handleViewerPointerMoveCapture}
       onClickCapture={handleViewerClickCapture}
-      onContextMenu={stopEvent}  // <-- prevent long-press menus (tablet)  TEST
+      onContextMenu={stopEvent}  // <-- prevent long-press menus (tablet) 
       style={{
         ...outerStyle,
         position: "relative", // <-- ensure absolute children anchor here
-        // NEW: kill selection/long-press behaviors in the viewer
         userSelect: "none",
         WebkitUserSelect: "none",
         ["msUserSelect"]: "none",
