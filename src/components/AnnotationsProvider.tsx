@@ -20,22 +20,28 @@ export interface AnnotationTextItem {
   yRel: number;
   text: string;
   style?: string;
-  //TEST
   anchor?: {
     type: "note";
     noteId: string;
     dx: number;
     dy: number;
   };
-  //TEST
 }
+//TEST
+export interface AnnotationPedalItem {
+  kind: "pedal";
+  // relative X inside the measure box: 0 = left edge, 1 = right edge
+  startXRel: number;
+  endXRel: number;
+}
+
+export type AnnotationItem = AnnotationTextItem | AnnotationPedalItem;
 
 // Front-end only shape of the annotation payload.
 // The DB just stores this as `jsonb`.
 export interface AnnotationPayload {
   // Optional list of text items for this measure
-  items?: AnnotationTextItem[];
-
+  items?: AnnotationItem[];
   // Other fields you may add later (boxes, fingerings, etc.)
   boxes?: unknown[];
   fingerings?: unknown[];
@@ -44,6 +50,7 @@ export interface AnnotationPayload {
   // Index signature so this is assignable to MeasureAnnotation
   [key: string]: unknown;
 }
+//TEST
 
 export type MeasureNumber = number;
 
