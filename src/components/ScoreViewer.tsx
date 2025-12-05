@@ -754,12 +754,21 @@ type AnnotationTextItem = {
   text: string;
   anchor?: NoteAnchorRef;  // note anchoring (optional)
 };
+//TEST
+type AnnotationPedalItem = {
+  kind: "pedal";
+  startXRel: number;
+  endXRel: number;
+};
+
+type ViewerAnnotationItem = AnnotationTextItem | AnnotationPedalItem;
 
 // Viewer-side payload: everything from DB AnnotationPayload,
 // plus "items" which is what drawAnnotationBoxes reads.
 type MeasureAnnotation = AnnotationPayload & {
-  items?: AnnotationTextItem[];
+  items?: ViewerAnnotationItem[];
 };
+//TEST
 
 // Callback used by drawAnnotationBoxes to look up one measure’s annotation
 type GetAnnotationsForMeasure = (measureNumber: number) => MeasureAnnotation | undefined;
@@ -1229,87 +1238,139 @@ function drawAnnotationBoxes(
     }
 
     for (const item of items) {
-      if (item.kind !== "text") {
-        continue;
-      }
+      // =======================
+      // TEXT ITEMS
+      // =======================
+      if (item.kind === "text") {
+        // Clamp to [0,1] in both directions
+        const xRel = Math.max(0, Math.min(1, item.xRel));
+        const yRel = Math.max(0, Math.min(1, item.yRel));
 
-      // Clamp to [0,1] in both directions
-      const xRel = Math.max(0, Math.min(1, item.xRel));
-      const yRel = Math.max(0, Math.min(1, item.yRel));
+        let pxX: number;
+        let pxY: number;
 
-      let pxX: number;
-      let pxY: number;
+        // Box-relative fallback position (always inside the measure)
+        const boxPxX = box.x + xRel * box.w;
+        const boxPxY = box.y + yRel * box.h;
 
-      // Box-relative fallback position (always inside the measure)
-      const boxPxX = box.x + xRel * box.w;
-      const boxPxY = box.y + yRel * box.h;
+        // If this item is anchored to a note, *prefer* the note position,
+        // but only if it still lands inside the measure box. Otherwise,
+        // fall back to the box-relative coords.
+        const anchor = item.anchor;
+        if (
+          anchor &&
+          anchor.type === "note" &&
+          noteAnchorsByMeasure &&
+          noteAnchorsByMeasure[box.id]
+        ) {
+          const anchorsForMeasure = noteAnchorsByMeasure[box.id]!;
+          const note = anchorsForMeasure.find((a) => a.id === anchor.noteId);
 
-      // If this item is anchored to a note, *prefer* the note position,
-      // but only if it still lands inside the measure box. Otherwise,
-      // fall back to the box-relative coords.
-      const anchor = item.anchor;
-      if (
-        anchor &&
-        anchor.type === "note" &&
-        noteAnchorsByMeasure &&
-        noteAnchorsByMeasure[box.id]
-      ) {
-        const anchorsForMeasure = noteAnchorsByMeasure[box.id]!;
-        const note = anchorsForMeasure.find((a) => a.id === anchor.noteId);
+          if (note) {
+            const anchorPxX = note.x + anchor.dx;
+            const anchorPxY = note.y + anchor.dy;
 
-        if (note) {
-          const anchorPxX = note.x + anchor.dx;
-          const anchorPxY = note.y + anchor.dy;
+            const inside =
+              anchorPxX >= box.x &&
+              anchorPxX <= box.x + box.w &&
+              anchorPxY >= box.y &&
+              anchorPxY <= box.y + box.h;
 
-          const inside =
-            anchorPxX >= box.x &&
-            anchorPxX <= box.x + box.w &&
-            anchorPxY >= box.y &&
-            anchorPxY <= box.y + box.h;
-
-          if (inside) {
-            // Anchor is still inside the measure → use it
-            pxX = anchorPxX;
-            pxY = anchorPxY;
+            if (inside) {
+              // Anchor is still inside the measure → use it
+              pxX = anchorPxX;
+              pxY = anchorPxY;
+            } else {
+              // Anchor would place us outside the measure → use box-relative
+              pxX = boxPxX;
+              pxY = boxPxY;
+            }
           } else {
-            // Anchor would place us outside the measure → use box-relative
+            // Note no longer exists / couldn’t be found → fall back to box-relative
             pxX = boxPxX;
             pxY = boxPxY;
           }
         } else {
-          // Note no longer exists / couldn’t be found → fall back to box-relative
+          // Non-anchored behavior: just use box-relative position
           pxX = boxPxX;
           pxY = boxPxY;
         }
-      } else {
-        // Non-anchored behavior: just use box-relative position
-        pxX = boxPxX;
-        pxY = boxPxY;
+
+        const BASE_FONT_PX = 14;
+        const fontPx = BASE_FONT_PX * zoom;
+
+        const t = createSvgEl("text");
+        t.textContent = item.text;
+        t.setAttribute("x", String(pxX));
+        t.setAttribute("y", String(pxY));
+        t.setAttribute("fill", "black");
+        t.setAttribute("font-size", String(fontPx));
+        t.setAttribute("font-family", "sans-serif");
+        t.setAttribute("dominant-baseline", "middle");
+        t.setAttribute("text-anchor", "middle");       // or "start"?
+
+        g.appendChild(t);
+        continue;
       }
 
-      const BASE_FONT_PX = 14;
-      const fontPx = BASE_FONT_PX * zoom;
+      // =======================
+      // PEDAL ITEMS
+      // =======================
+      if (item.kind === "pedal") {
+        const startXRel = Math.max(0, Math.min(1, item.startXRel));
+        const endXRel = Math.max(0, Math.min(1, item.endXRel));
 
-      const t = createSvgEl("text");
-      t.textContent = item.text;
-      t.setAttribute("x", String(pxX));
-      t.setAttribute("y", String(pxY));
-      t.setAttribute("fill", "black");
-      t.setAttribute("font-size", String(fontPx));
-      t.setAttribute("font-family", "sans-serif");
-      t.setAttribute("dominant-baseline", "middle");
-      t.setAttribute("text-anchor", "middle");         // or "start"?
+        if (!Number.isFinite(startXRel) || !Number.isFinite(endXRel)) {
+          continue;
+        }
 
-      g.appendChild(t);
+        let x1 = box.x + startXRel * box.w;
+        let x2 = box.x + endXRel * box.w;
+
+        // Ensure x1 <= x2 so the path is consistent
+        if (x2 < x1) {
+          const tmp = x1;
+          x1 = x2;
+          x2 = tmp;
+        }
+
+        // Vertical placement near the bottom of the measure box
+        const PEDAL_MARGIN_FROM_BOTTOM = 3; // px above box bottom
+        const PEDAL_TICK_HEIGHT = 6;        // height of the little "legs"
+
+        const pedalY = box.y + box.h - PEDAL_MARGIN_FROM_BOTTOM;
+        const tickTopY = pedalY - PEDAL_TICK_HEIGHT;
+
+        const path = createSvgEl("path");
+        // Goal-post shape: up from the bottom, across, then down
+        path.setAttribute(
+          "d",
+          `M ${x1} ${tickTopY} ` +
+          `L ${x1} ${pedalY} ` +
+          `L ${x2} ${pedalY} ` +
+          `L ${x2} ${tickTopY}`
+        );
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", "black");
+        path.setAttribute("stroke-width", String(1 * zoom));
+        path.setAttribute("stroke-linecap", "round");
+        path.setAttribute("stroke-linejoin", "round");
+
+        g.appendChild(path);
+        continue;
+      }
+
+      // Future item kinds can fall through here and be ignored safely.
     }
   }
 
   outer.appendChild(layer);
   try {
     outer.dataset.viewerFunc = prevFuncTag;
-  } catch { }
+  } catch {
+    // ignore
+  }
 }
-
 
 // Remove the annotation overlay layer if present.
 function clearAnnotationBoxes(outer: HTMLDivElement): void {
