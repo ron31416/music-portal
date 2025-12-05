@@ -54,7 +54,6 @@ const HANDLE_TIP_WIDTH = 10;        // half-width of the triangle at the base
 const HANDLE_TIP_HEIGHT = 14;       // height of the triangle tip
 const HANDLE_BORDER_RADIUS = 9999;
 
-//TEST
 // How close we allow the caret tip to get to a glyph, in px.
 const AVOID_GLYPH_MARGIN_PX = 4;
 
@@ -1965,7 +1964,7 @@ export default function ScoreViewer({
   // Per-page cache of note anchors, keyed by measureId (same ids as measureGlyphRectsRef)
   const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({});
 
-  const measureAllGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({}); //TEST
+  const measureAllGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({});
 
   // Staff lines / envelopes are "vf-measure" in your logs.
   // We do NOT want them to block annotation placement.
@@ -1977,7 +1976,6 @@ export default function ScoreViewer({
   // For placement/avoidance, we want:
   //   all glyphs that intersect the measure
   //   EXCEPT staff lines (vf-measure).
-  //TEST chg
   const getAvoidanceGlyphsForMeasure = useCallback(
     (measureId: string): GlyphRect[] => {
       const all: GlyphRect[] = measureAllGlyphRectsRef.current[measureId] ?? [];
@@ -1988,9 +1986,7 @@ export default function ScoreViewer({
     },
     [] // no dependencies; refs never change identity
   );
-  //TEST chg
 
-  // When true, this pointer gesture should NOT trigger a page turn.
   const suppressPageTurnRef = useRef(false);
 
   // The measure rect we hit on pointer-down (if any).
@@ -2416,7 +2412,7 @@ export default function ScoreViewer({
         // Clear when there are no measures on this page
         measureGlyphRectsRef.current = {};
         measureNoteAnchorsRef.current = {};
-        measureAllGlyphRectsRef.current = {};   //TEST
+        measureAllGlyphRectsRef.current = {};
         if (showGlyphDebug) {
           setGlyphDebugRects({});
         }
@@ -2427,7 +2423,7 @@ export default function ScoreViewer({
       if (!svg) {
         measureGlyphRectsRef.current = {};
         measureNoteAnchorsRef.current = {};
-        measureAllGlyphRectsRef.current = {};   //TEST
+        measureAllGlyphRectsRef.current = {};
         if (showGlyphDebug) {
           setGlyphDebugRects({});
         }
@@ -2524,7 +2520,7 @@ export default function ScoreViewer({
 
       const next: Record<string, GlyphRect[]> = {};
       const nextAnchors: Record<string, NoteAnchor[]> = {};
-      const nextAllGlyphs: Record<string, GlyphRect[]> = {};   //TEST
+      const nextAllGlyphs: Record<string, GlyphRect[]> = {};
 
       for (const [measureId, glyphs] of perMeasure.entries()) {
         if (glyphs.length) {
@@ -2545,7 +2541,7 @@ export default function ScoreViewer({
       // Cache glyphs + note anchors for this page
       measureGlyphRectsRef.current = next;
       measureNoteAnchorsRef.current = nextAnchors;
-      measureAllGlyphRectsRef.current = nextAllGlyphs;   //TEST
+      measureAllGlyphRectsRef.current = nextAllGlyphs;
 
       if (showGlyphDebug) {
         setGlyphDebugRects(next);
@@ -2777,7 +2773,6 @@ export default function ScoreViewer({
           //   - Prefer noteheads + rests as “structural” anchors.
           //   - Position the box LEFT_PADDING_PX to the left of that glyph,
           //     clamped to the original barline envelope.
-          //TEST chg
           const refineMeasureBoxRectsWithGlyphs = (
             rawRects: ReadonlyArray<MeasureBoxRect>,
             glyphsByMeasure: Record<string, GlyphRect[]> | undefined
@@ -2815,7 +2810,7 @@ export default function ScoreViewer({
 
             const result: MeasureBoxRect[] = [];
 
-            // NEW: structural glyphs per measure, to be cached globally.
+            // structural glyphs per measure, to be cached globally.
             const structuralByMeasure: Record<string, GlyphRect[]> = {};
 
             for (const raw of rawRects) {
@@ -2916,14 +2911,13 @@ export default function ScoreViewer({
               });
             }
 
-            // NEW: globally cache the structural glyphs so everyone else can use them.
+            // globally cache the structural glyphs so everyone else can use them.
             // After this, measureGlyphRectsRef.current contains ONLY structural glyphs
             // (noteheads, stems, beams, modifiers), NOT staff lines, envelopes, etc.
             measureGlyphRectsRef.current = structuralByMeasure;
 
             return result;
           };
-          //TEST chg
 
           // 1) Compute barline-based "envelope" rects for THIS page
           const rawRects = computeMeasureBoxRectsForPage(
@@ -5333,7 +5327,6 @@ export default function ScoreViewer({
     [promptAndSaveAnnotation, selectedMeasureNumber, setSelectedPointRel]
   );
 
-  //TEST chg
   const handleViewerPointerMoveCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       const dragId = dragPointerIdRef.current;
@@ -5422,7 +5415,6 @@ export default function ScoreViewer({
     },
     [getAvoidanceGlyphsForMeasure],
   );
-  //TEST 
 
   return (
     <div
