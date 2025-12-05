@@ -1240,7 +1240,13 @@ function drawAnnotationBoxes(
       let pxX: number;
       let pxY: number;
 
-      // if this item is anchored to a note, use the note position ---
+      // Box-relative fallback position (always inside the measure)
+      const boxPxX = box.x + xRel * box.w;
+      const boxPxY = box.y + yRel * box.h;
+
+      // If this item is anchored to a note, *prefer* the note position,
+      // but only if it still lands inside the measure box. Otherwise,
+      // fall back to the box-relative coords.
       const anchor = item.anchor;
       if (
         anchor &&
@@ -1252,17 +1258,33 @@ function drawAnnotationBoxes(
         const note = anchorsForMeasure.find((a) => a.id === anchor.noteId);
 
         if (note) {
-          pxX = note.x + anchor.dx;
-          pxY = note.y + anchor.dy;
+          const anchorPxX = note.x + anchor.dx;
+          const anchorPxY = note.y + anchor.dy;
+
+          const inside =
+            anchorPxX >= box.x &&
+            anchorPxX <= box.x + box.w &&
+            anchorPxY >= box.y &&
+            anchorPxY <= box.y + box.h;
+
+          if (inside) {
+            // Anchor is still inside the measure → use it
+            pxX = anchorPxX;
+            pxY = anchorPxY;
+          } else {
+            // Anchor would place us outside the measure → use box-relative
+            pxX = boxPxX;
+            pxY = boxPxY;
+          }
         } else {
           // Note no longer exists / couldn’t be found → fall back to box-relative
-          pxX = box.x + xRel * box.w;
-          pxY = box.y + yRel * box.h;
+          pxX = boxPxX;
+          pxY = boxPxY;
         }
       } else {
-        // Original non-anchored behavior
-        pxX = box.x + xRel * box.w;
-        pxY = box.y + yRel * box.h;
+        // Non-anchored behavior: just use box-relative position
+        pxX = boxPxX;
+        pxY = boxPxY;
       }
 
       const BASE_FONT_PX = 14;
@@ -1276,7 +1298,7 @@ function drawAnnotationBoxes(
       t.setAttribute("font-size", String(fontPx));
       t.setAttribute("font-family", "sans-serif");
       t.setAttribute("dominant-baseline", "middle");
-      t.setAttribute("text-anchor", "middle");
+      t.setAttribute("text-anchor", "middle");         // or "start"?
 
       g.appendChild(t);
     }
@@ -1740,6 +1762,9 @@ export default function ScoreViewer({
 
   // Prompt for content and save an annotation at a given measure + point.
   // This replaces the old useEffect that auto-prompted whenever selection changed.
+  // Prompt for content and save an annotation at a given measure + point.
+  // Now also tries to anchor to the nearest notehead so the mark will
+  // follow that note across re-layouts/zooms.
   const promptAndSaveAnnotation = React.useCallback(
     async (measureNumber: number, point: PointRel): Promise<void> => {
       if (!isEditModeRef.current) {
@@ -1757,12 +1782,70 @@ export default function ScoreViewer({
         return;
       }
 
-      // Build new item
+      // -----------------------------
+      // 1) Compute caret tip in page px
+      // -----------------------------
+      const rects = pageMeasureRectsRef.current ?? [];
+      const box = rects.find((r) => r.measureNumber === measureNumber) ?? null;
+
+      // Start with no anchor; we’ll try to fill this in.
+      let anchorRef: NoteAnchorRef | undefined;
+
+      if (box) {
+        const tipX = box.x + point.xRel * box.w;
+        const tipY = box.y + point.yRel * box.h;
+
+        // -----------------------------
+        // 2) Look up note anchors for this measure
+        // -----------------------------
+        const anchorsForMeasure =
+          measureNoteAnchorsRef.current?.[box.id] ?? [];
+
+        if (anchorsForMeasure.length > 0) {
+          // -----------------------------
+          // 3) Find nearest notehead, within a sane radius
+          // -----------------------------
+          let best = anchorsForMeasure[0] as NoteAnchor;
+          let bestDistSq =
+            (tipX - best.x) * (tipX - best.x) +
+            (tipY - best.y) * (tipY - best.y);
+
+          for (let i = 1; i < anchorsForMeasure.length; i++) {
+            const cand = anchorsForMeasure[i]!;
+            const dx = tipX - cand.x;
+            const dy = tipY - cand.y;
+            const distSq = dx * dx + dy * dy;
+            if (distSq < bestDistSq) {
+              best = cand;
+              bestDistSq = distSq;
+            }
+          }
+
+          // Require the caret to be "near enough" to a notehead
+          const maxDistPx = Math.max(24, box.h * 0.75);
+          const maxDistSq = maxDistPx * maxDistPx;
+
+          if (bestDistSq <= maxDistSq) {
+            anchorRef = {
+              type: "note",
+              noteId: best.id,
+              dx: tipX - best.x,
+              dy: tipY - best.y,
+            };
+          }
+        }
+      }
+
+      // -----------------------------
+      // 4) Build new item (keep rel coords as fallback)
+      // -----------------------------
       const newItem: AnnotationTextItem = {
         kind: "text",
         xRel: point.xRel,
         yRel: point.yRel,
         text: trimmed,
+        // Only present if we successfully found a nearby notehead
+        ...(anchorRef ? { anchor: anchorRef } : {}),
       };
 
       // Grab existing or empty
@@ -1786,7 +1869,7 @@ export default function ScoreViewer({
       saveAnnotationsForMeasure,
       setSelectedMeasureNumber,
       setSelectedPointRel,
-    ]
+    ],
   );
 
   const [glyphDebugRects, setGlyphDebugRects] =
