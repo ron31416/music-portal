@@ -54,6 +54,53 @@ const HANDLE_TIP_WIDTH = 10;        // half-width of the triangle at the base
 const HANDLE_TIP_HEIGHT = 14;       // height of the triangle tip
 const HANDLE_BORDER_RADIUS = 9999;
 
+//TEST
+// How close we allow the caret tip to get to a glyph, in px.
+const AVOID_GLYPH_MARGIN_PX = 4;
+
+type RectPx = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+// Expand a rect by `margin` in all directions and test if (x, y) is inside.
+function pointHitsRectWithMargin(x: number, y: number, rect: RectPx, margin: number): boolean {
+  const left = rect.x - margin;
+  const right = rect.x + rect.w + margin;
+  const top = rect.y - margin;
+  const bottom = rect.y + rect.h + margin;
+
+  if (x < left) {
+    return false;
+  }
+  if (x > right) {
+    return false;
+  }
+  if (y < top) {
+    return false;
+  }
+  if (y > bottom) {
+    return false;
+  }
+  return true;
+}
+
+function pointHitsAnyRectWithMargin(
+  x: number,
+  y: number,
+  rects: readonly RectPx[],
+  margin: number,
+): boolean {
+  for (const rect of rects) {
+    if (pointHitsRectWithMargin(x, y, rect, margin)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 
 async function withTimeout<T>(p: Promise<T>, ms: number, tag: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -1822,14 +1869,15 @@ export default function ScoreViewer({
           const measureNumber = box.measureNumber;
           if (measureNumber > 0 && Number.isFinite(measureNumber)) {
             // Look up glyph cloud for this measure
-            const glyphsForMeasure = measureGlyphRectsRef.current[box.id] ?? [];
+            const glyphsForMeasure =
+              measureGlyphRectsRef.current[box.id] ?? [];
 
             // Find a nearby non-glyph point inside this measure
             const safe = findSafePointRelForTap(
               box,
               xPage,
               yPage,
-              glyphsForMeasure
+              glyphsForMeasure,
             );
 
             if (safe) {
@@ -1855,7 +1903,7 @@ export default function ScoreViewer({
       setSelectedMeasureNumber(null);
       setSelectedPointRel(null);
     },
-    [setSelectedMeasureNumber, setSelectedPointRel]
+    [setSelectedMeasureNumber, setSelectedPointRel],
   );
 
   const handleViewerPointerUpCapture = useCallback(
@@ -1914,6 +1962,33 @@ export default function ScoreViewer({
 
   // Per-measure glyph “cloud” in page-local coordinates
   const measureGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({});
+  // Per-page cache of note anchors, keyed by measureId (same ids as measureGlyphRectsRef)
+  const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({});
+
+  const measureAllGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({}); //TEST
+
+  // Staff lines / envelopes are "vf-measure" in your logs.
+  // We do NOT want them to block annotation placement.
+  const isStaffLineGlyph = (g: GlyphRect): boolean => {
+    const tag = g.glyphTag?.toLowerCase() ?? "";
+    return tag.includes("vf-measure");
+  };
+
+  // For placement/avoidance, we want:
+  //   all glyphs that intersect the measure
+  //   EXCEPT staff lines (vf-measure).
+  //TEST chg
+  const getAvoidanceGlyphsForMeasure = useCallback(
+    (measureId: string): GlyphRect[] => {
+      const all: GlyphRect[] = measureAllGlyphRectsRef.current[measureId] ?? [];
+      if (!all.length) {
+        return [];
+      }
+      return all.filter((g: GlyphRect) => !isStaffLineGlyph(g));
+    },
+    [] // no dependencies; refs never change identity
+  );
+  //TEST chg
 
   // When true, this pointer gesture should NOT trigger a page turn.
   const suppressPageTurnRef = useRef(false);
@@ -2317,8 +2392,6 @@ export default function ScoreViewer({
   const barCandsRef = useRef<ReadonlyArray<BarCand>>([]);
   const geometryRef = useRef<ReadonlyMap<string, MeasureGeom>>(new Map());
   const pageMeasureRectsRef = useRef<MeasureBoxRect[]>([]);
-  // Per-page cache of note anchors, keyed by measureId (same ids as measureGlyphRectsRef)
-  const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({});
 
   // Tracks the pointer currently dragging the annotation handle, if any.
   const dragPointerIdRef = useRef<number | null>(null);
@@ -2343,6 +2416,7 @@ export default function ScoreViewer({
         // Clear when there are no measures on this page
         measureGlyphRectsRef.current = {};
         measureNoteAnchorsRef.current = {};
+        measureAllGlyphRectsRef.current = {};   //TEST
         if (showGlyphDebug) {
           setGlyphDebugRects({});
         }
@@ -2353,6 +2427,7 @@ export default function ScoreViewer({
       if (!svg) {
         measureGlyphRectsRef.current = {};
         measureNoteAnchorsRef.current = {};
+        measureAllGlyphRectsRef.current = {};   //TEST
         if (showGlyphDebug) {
           setGlyphDebugRects({});
         }
@@ -2449,9 +2524,14 @@ export default function ScoreViewer({
 
       const next: Record<string, GlyphRect[]> = {};
       const nextAnchors: Record<string, NoteAnchor[]> = {};
+      const nextAllGlyphs: Record<string, GlyphRect[]> = {};   //TEST
 
       for (const [measureId, glyphs] of perMeasure.entries()) {
         if (glyphs.length) {
+          // All glyphs (for avoidance / diagnostics)
+          nextAllGlyphs[measureId] = glyphs.slice();  // shallow copy
+
+          // Existing behavior
           next[measureId] = glyphs;
 
           // build note anchors for this measure from its glyphs
@@ -2465,6 +2545,7 @@ export default function ScoreViewer({
       // Cache glyphs + note anchors for this page
       measureGlyphRectsRef.current = next;
       measureNoteAnchorsRef.current = nextAnchors;
+      measureAllGlyphRectsRef.current = nextAllGlyphs;   //TEST
 
       if (showGlyphDebug) {
         setGlyphDebugRects(next);
@@ -2696,6 +2777,7 @@ export default function ScoreViewer({
           //   - Prefer noteheads + rests as “structural” anchors.
           //   - Position the box LEFT_PADDING_PX to the left of that glyph,
           //     clamped to the original barline envelope.
+          //TEST chg
           const refineMeasureBoxRectsWithGlyphs = (
             rawRects: ReadonlyArray<MeasureBoxRect>,
             glyphsByMeasure: Record<string, GlyphRect[]> | undefined
@@ -2727,11 +2809,14 @@ export default function ScoreViewer({
               // Accidentals, fermatas, etc.
               if (tag.includes("modifiers")) { return true; }
 
-              // Everything else: ignore
+              // Everything else: ignore (staff lines, barlines, braces, etc.)
               return false;
             };
 
             const result: MeasureBoxRect[] = [];
+
+            // NEW: structural glyphs per measure, to be cached globally.
+            const structuralByMeasure: Record<string, GlyphRect[]> = {};
 
             for (const raw of rawRects) {
               const barLeft = raw.x;
@@ -2755,6 +2840,12 @@ export default function ScoreViewer({
 
               // Only keep whitelisted “structural” glyphs
               const structural = glyphs.filter(isStructuralContentGlyph);
+
+              if (structural.length) {
+                // Cache structural glyphs for this measure so we can reuse them
+                structuralByMeasure[raw.id] = structural;
+              }
+
               if (!structural.length) {
                 // Nothing we trust → keep the original envelope box
                 result.push(raw);
@@ -2790,16 +2881,31 @@ export default function ScoreViewer({
                   measureNumber: raw.measureNumber,
                   barLeft,
                   barRight,
+
                   glyphCount: glyphs.length,
                   structuralCount: structural.length,
+
                   firstContentX,
                   proposedLeft,
                   finalLeft: newLeft,
                   dxFromBar: newLeft - barLeft,
+
+                  // Structural glyphs (as before)
                   structural: structural
                     .slice()
-                    .sort((a, b) => a.x - b.x)
-                    .map((g) => ({ x: g.x, w: g.w, h: g.h, tag: g.glyphTag })),
+                    .sort((a, b) => {
+                      if (a.x !== b.x) { return a.x - b.x; }
+                      return a.y - b.y;
+                    })
+                    .map((g) => ({ x: g.x, y: g.y, w: g.w, h: g.h, tag: g.glyphTag })),
+
+                  allGlyphs: glyphs
+                    .slice()
+                    .sort((a, b) => {
+                      if (a.x !== b.x) { return a.x - b.x; }
+                      return a.y - b.y;
+                    })
+                    .map((g) => ({ x: g.x, y: g.y, w: g.w, h: g.h, tag: g.glyphTag })),
                 });
               }
 
@@ -2810,8 +2916,14 @@ export default function ScoreViewer({
               });
             }
 
+            // NEW: globally cache the structural glyphs so everyone else can use them.
+            // After this, measureGlyphRectsRef.current contains ONLY structural glyphs
+            // (noteheads, stems, beams, modifiers), NOT staff lines, envelopes, etc.
+            measureGlyphRectsRef.current = structuralByMeasure;
+
             return result;
           };
+          //TEST chg
 
           // 1) Compute barline-based "envelope" rects for THIS page
           const rawRects = computeMeasureBoxRectsForPage(
@@ -4757,16 +4869,15 @@ export default function ScoreViewer({
 
               const measureNumber = box.measureNumber;
               if (measureNumber > 0 && Number.isFinite(measureNumber)) {
-                // Look up glyph cloud for this measure (same as mouse/pen path)
-                const glyphsForMeasure =
-                  measureGlyphRectsRef.current[box.id] ?? [];
+                // Look up glyphs for avoidance (all except staff lines)
+                const glyphsForMeasure = getAvoidanceGlyphsForMeasure(box.id);
 
-                // Use the shared glyph-avoidance helper to find a safe point
+                // Find a nearby non-glyph point inside this measure
                 const safe = findSafePointRelForTap(
                   box,
                   xPage,
                   yPage,
-                  glyphsForMeasure
+                  glyphsForMeasure,
                 );
 
                 if (safe) {
@@ -4825,7 +4936,7 @@ export default function ScoreViewer({
       cleanupOuter.removeEventListener("touchmove", onTouchMove);
       cleanupOuter.removeEventListener("touchend", onTouchEnd);
     };
-  }, [goNext, goPrev, openMeasurePreview]);
+  }, [goNext, goPrev, openMeasurePreview, getAvoidanceGlyphsForMeasure]);
 
 
   // Mouse single-click paging (disabled while busy)
@@ -5222,6 +5333,7 @@ export default function ScoreViewer({
     [promptAndSaveAnnotation, selectedMeasureNumber, setSelectedPointRel]
   );
 
+  //TEST chg
   const handleViewerPointerMoveCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       const dragId = dragPointerIdRef.current;
@@ -5255,26 +5367,62 @@ export default function ScoreViewer({
       let tipY = pointerY - DRAG_ANCHOR_OFFSET;
 
       // Clamp tip inside the measure box
-      if (tipX < box.x) { tipX = box.x; }
-      else if (tipX > box.x + box.w) { tipX = box.x + box.w; }
+      if (tipX < box.x) {
+        tipX = box.x;
+      } else if (tipX > box.x + box.w) {
+        tipX = box.x + box.w;
+      }
 
-      if (tipY < box.y) { tipY = box.y; }
-      else if (tipY > box.y + box.h) { tipY = box.y + box.h; }
+      if (tipY < box.y) {
+        tipY = box.y;
+      } else if (tipY > box.y + box.h) {
+        tipY = box.y + box.h;
+      }
 
-      // Store rel coords for use on pointer-up
-      const xRel = (tipX - box.x) / box.w;
-      const yRel = (tipY - box.y) / box.h;
-      dragRelRef.current = { xRel, yRel };
+      // === Glyph avoidance using "all minus staff-lines" ===
+      type PageMeasureRectWithId = PageMeasureRect & { id: string };
+      const boxWithId = box as PageMeasureRectWithId;
+      const measureId = boxWithId.id;
 
-      // Move the handle wrapper so that the caret tip is at (tipX, tipY)
-      handleNode.style.left = `${tipX - HANDLE_STEM_WIDTH / 2}px`;
-      handleNode.style.top = `${tipY}px`;
+      // All glyphs except staff lines (vf-measure)
+      const glyphRectsForMeasure = getAvoidanceGlyphsForMeasure(measureId);
+
+      const isBlocked =
+        glyphRectsForMeasure.length > 0 &&
+        pointHitsAnyRectWithMargin(
+          tipX,
+          tipY,
+          glyphRectsForMeasure,
+          AVOID_GLYPH_MARGIN_PX,
+        );
+
+      let finalTipX = tipX;
+      let finalTipY = tipY;
+
+      if (isBlocked) {
+        const lastRel = dragRelRef.current;
+        if (lastRel !== null) {
+          // Revert to last safe position (boundary behavior)
+          finalTipX = box.x + lastRel.xRel * box.w;
+          finalTipY = box.y + lastRel.yRel * box.h;
+        }
+      } else {
+        // This point is safe; update the last safe rel coords.
+        const xRel = (tipX - box.x) / box.w;
+        const yRel = (tipY - box.y) / box.h;
+        dragRelRef.current = { xRel, yRel };
+      }
+
+      // Move the handle wrapper so that the caret tip is at (finalTipX, finalTipY)
+      handleNode.style.left = `${finalTipX - HANDLE_STEM_WIDTH / 2}px`;
+      handleNode.style.top = `${finalTipY}px`;
 
       ev.preventDefault();
       ev.stopPropagation();
     },
-    []
+    [getAvoidanceGlyphsForMeasure],
   );
+  //TEST 
 
   return (
     <div
