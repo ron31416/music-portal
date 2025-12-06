@@ -23,11 +23,12 @@ export interface AnnotationTextItem {
   anchor?: {
     type: "note";
     noteId: string;
-    dx: number;
-    dy: number;
+    dxRel: number;
+    dyRel: number;
+    baseNoteH?: number;
   };
 }
-//TEST
+
 export interface AnnotationPedalItem {
   kind: "pedal";
   // relative X inside the measure box: 0 = left edge, 1 = right edge
@@ -50,7 +51,6 @@ export interface AnnotationPayload {
   // Index signature so this is assignable to MeasureAnnotation
   [key: string]: unknown;
 }
-//TEST
 
 export type MeasureNumber = number;
 

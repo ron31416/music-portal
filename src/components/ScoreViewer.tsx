@@ -739,11 +739,14 @@ type NoteAnchor = {
   h: number;    // notehead height
 };
 
+// Note-relative anchor:
+//   dxRel, dyRel are offsets expressed in units of note.h (notehead height).
 type NoteAnchorRef = {
   type: "note";
   noteId: string;  // matches NoteAnchor.id
-  dx: number;      // offset from note center X in page-local px
-  dy: number;      // offset from note center Y in page-local px
+  dxRel: number;   // offset from note center X in units of note height
+  dyRel: number;   // offset from note center Y in units of note height
+  baseNoteH?: number; // notehead height at creation time, in px
 };
 
 // One text mark inside a measure, positioned relative to the box [0,1] × [0,1]
@@ -754,7 +757,7 @@ type AnnotationTextItem = {
   text: string;
   anchor?: NoteAnchorRef;  // note anchoring (optional)
 };
-//TEST
+
 type AnnotationPedalItem = {
   kind: "pedal";
   startXRel: number;
@@ -768,7 +771,6 @@ type ViewerAnnotationItem = AnnotationTextItem | AnnotationPedalItem;
 type MeasureAnnotation = AnnotationPayload & {
   items?: ViewerAnnotationItem[];
 };
-//TEST
 
 // Callback used by drawAnnotationBoxes to look up one measure’s annotation
 type GetAnnotationsForMeasure = (measureNumber: number) => MeasureAnnotation | undefined;
@@ -1151,14 +1153,16 @@ function drawMeasureBoxes(
     r.setAttribute("vector-effect", "non-scaling-stroke");
     g.appendChild(r);
 
-    // Diagnostic measure label (preserving your behaviour)
+    // Diagnostic measure label (now *above* the box so it doesn’t block annotations)
     const measureNum = Number(id);
     if (Number.isFinite(measureNum)) {
       const textEl = createSvgEl("text");
       textEl.textContent = String(measureNum);
 
+      // Upper-left corner, just *outside* the box
       const labelX = x + 2;
-      const labelY = y + 10;
+      // Clamp so labels don’t disappear when a box is very near the top
+      const labelY = Math.max(8, y - 2);
 
       textEl.setAttribute("x", String(labelX));
       textEl.setAttribute("y", String(labelY));
@@ -1166,6 +1170,7 @@ function drawMeasureBoxes(
       textEl.setAttribute("fill", "red");
       textEl.setAttribute("stroke", "black");
       textEl.setAttribute("stroke-width", "0.5");
+      textEl.setAttribute("dominant-baseline", "baseline"); // optional, default is fine too
 
       g.appendChild(textEl);
     }
@@ -1253,10 +1258,10 @@ function drawAnnotationBoxes(
         const boxPxX = box.x + xRel * box.w;
         const boxPxY = box.y + yRel * box.h;
 
-        // If this item is anchored to a note, *prefer* the note position,
-        // but only if it still lands inside the measure box. Otherwise,
-        // fall back to the box-relative coords.
         const anchor = item.anchor;
+        let anchorNote: NoteAnchor | undefined;
+
+        // Try to resolve the anchored note in this measure
         if (
           anchor &&
           anchor.type === "note" &&
@@ -1264,29 +1269,41 @@ function drawAnnotationBoxes(
           noteAnchorsByMeasure[box.id]
         ) {
           const anchorsForMeasure = noteAnchorsByMeasure[box.id]!;
-          const note = anchorsForMeasure.find((a) => a.id === anchor.noteId);
+          anchorNote = anchorsForMeasure.find((a) => a.id === anchor.noteId);
 
-          if (note) {
-            const anchorPxX = note.x + anchor.dx;
-            const anchorPxY = note.y + anchor.dy;
+          if (anchorNote) {
+            const noteH = anchorNote.h;
 
-            const inside =
-              anchorPxX >= box.x &&
-              anchorPxX <= box.x + box.w &&
-              anchorPxY >= box.y &&
-              anchorPxY <= box.y + box.h;
+            if (noteH > 0 && Number.isFinite(noteH)) {
+              // Convert relative offsets back to px in the current layout
+              const dxPx = anchor.dxRel * noteH;
+              const dyPx = anchor.dyRel * noteH;
 
-            if (inside) {
-              // Anchor is still inside the measure → use it
-              pxX = anchorPxX;
-              pxY = anchorPxY;
+              const anchorPxX = anchorNote.x + dxPx;
+              const anchorPxY = anchorNote.y + dyPx;
+
+              const inside =
+                anchorPxX >= box.x &&
+                anchorPxX <= box.x + box.w &&
+                anchorPxY >= box.y &&
+                anchorPxY <= box.y + box.h;
+
+              if (inside) {
+                // Anchor is still inside the measure → use it
+                pxX = anchorPxX;
+                pxY = anchorPxY;
+              } else {
+                // Anchor would place us outside the measure → use box-relative
+                pxX = boxPxX;
+                pxY = boxPxY;
+              }
             } else {
-              // Anchor would place us outside the measure → use box-relative
+              // Bad noteH → fall back to box-relative
               pxX = boxPxX;
               pxY = boxPxY;
             }
           } else {
-            // Note no longer exists / couldn’t be found → fall back to box-relative
+            // Note no longer exists / couldn’t be found → fall back
             pxX = boxPxX;
             pxY = boxPxY;
           }
@@ -1296,8 +1313,35 @@ function drawAnnotationBoxes(
           pxY = boxPxY;
         }
 
-        const BASE_FONT_PX = 14;
-        const fontPx = BASE_FONT_PX * zoom;
+        // --- Font sizing: relative to note size *change*, not absolute size ---
+        const BASE_FONT_PX = 16;   // tweak to taste (global fingering size)
+        const MIN_FONT_PX = 8;     // lower/raise if needed
+        const MAX_FONT_PX = 30;
+
+        let fontPx = BASE_FONT_PX * zoom; // default: zoom-based
+
+        if (anchorNote && anchor?.type === "note") {
+          const currentH = anchorNote.h;
+          const baseH =
+            anchor.baseNoteH && Number.isFinite(anchor.baseNoteH) && anchor.baseNoteH > 0
+              ? anchor.baseNoteH
+              : currentH;
+
+          if (
+            currentH > 0 &&
+            Number.isFinite(currentH) &&
+            baseH > 0 &&
+            Number.isFinite(baseH)
+          ) {
+            const relScale = currentH / baseH; // how much the note has grown/shrunk
+            let candidate = BASE_FONT_PX * zoom * relScale;
+
+            if (candidate < MIN_FONT_PX) { candidate = MIN_FONT_PX; }
+            if (candidate > MAX_FONT_PX) { candidate = MAX_FONT_PX; }
+
+            fontPx = candidate;
+          }
+        }
 
         const t = createSvgEl("text");
         t.textContent = item.text;
@@ -1307,7 +1351,7 @@ function drawAnnotationBoxes(
         t.setAttribute("font-size", String(fontPx));
         t.setAttribute("font-family", "sans-serif");
         t.setAttribute("dominant-baseline", "middle");
-        t.setAttribute("text-anchor", "middle");       // or "start"?
+        t.setAttribute("text-anchor", "middle");
 
         g.appendChild(t);
         continue;
@@ -1847,7 +1891,8 @@ export default function ScoreViewer({
       // 1) Compute caret tip in page px
       // -----------------------------
       const rects = pageMeasureRectsRef.current ?? [];
-      const box = rects.find((r) => r.measureNumber === measureNumber) ?? null;
+      const box =
+        rects.find((r) => r.measureNumber === measureNumber) ?? null;
 
       // Start with no anchor; we’ll try to fill this in.
       let anchorRef: NoteAnchorRef | undefined;
@@ -1864,7 +1909,7 @@ export default function ScoreViewer({
 
         if (anchorsForMeasure.length > 0) {
           // -----------------------------
-          // 3) Find nearest notehead, within a sane radius
+          // 3) Always anchor to the nearest notehead/rest
           // -----------------------------
           let best = anchorsForMeasure[0] as NoteAnchor;
           let bestDistSq =
@@ -1882,18 +1927,20 @@ export default function ScoreViewer({
             }
           }
 
-          // Require the caret to be "near enough" to a notehead
-          const maxDistPx = Math.max(24, box.h * 0.75);
-          const maxDistSq = maxDistPx * maxDistPx;
+          // Always use the nearest anchor, as long as its geometry is sane.
+          const dx = tipX - best.x;
+          const dy = tipY - best.y;
+          const h = best.h;
 
-          if (bestDistSq <= maxDistSq) {
+          if (h > 0 && Number.isFinite(h)) {
             anchorRef = {
               type: "note",
               noteId: best.id,
-              dx: tipX - best.x,
-              dy: tipY - best.y,
+              dxRel: dx / h,
+              dyRel: dy / h,
             };
           }
+          // If h is bogus, we just skip anchoring and fall back to box-relative.
         }
       }
 
