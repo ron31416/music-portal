@@ -389,6 +389,29 @@ function drawBandGuides(
     lb.setAttribute("stroke-width", String(STROKE_W));
     lb.setAttribute("vector-effect", "non-scaling-stroke");
     g.appendChild(lb);
+
+    // ---------- NEW: band index label ----------
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.textContent = String(i); // same index as logs
+
+    // Small inset from left, slightly below the top line
+    const LABEL_X = x1 + 8;
+    const LABEL_Y = topY + 10;
+
+    label.setAttribute("x", String(LABEL_X));
+    label.setAttribute("y", String(LABEL_Y));
+    label.setAttribute("fill", "black");
+    label.setAttribute("font-size", "10");
+    label.setAttribute("font-family", "monospace");
+    label.setAttribute("pointer-events", "none");
+
+    // Outline so it stays readable over notes
+    label.setAttribute("paint-order", "stroke");
+    label.setAttribute("stroke", "white");
+    label.setAttribute("stroke-width", "2");
+
+    g.appendChild(label);
+    // -------------------------------------------
   }
 }
 
@@ -562,54 +585,68 @@ function derivePaddedBands(
   return out;
 }
 
-// Logs hard warnings when padded bands overlap or leave too little gap.
-// Overlap > 0 means the page needs data-level spacing (MusicXML) fixes.
+
 function validateBandSpacing(
-  outer: HTMLDivElement,
+  outer: HTMLDivElement | null,
   bands: Band[],
-  {
-    minGapAlertPx = 2,   // log if the inter-system gap is smaller than this
-  }: { minGapAlertPx?: number } = {}
+  options?: { minGapAlertPx?: number }
 ): void {
   if (!bands.length) { return; }
 
-  const prevFuncTag = outer.dataset.viewerFunc ?? "";
-  outer.dataset.viewerFunc = "validateBandSpacing";
+  const minGapAlertPx = options?.minGapAlertPx ?? 0;
 
+  for (let i = 1; i < bands.length; i++) {
+    const prev = bands[i - 1]!;
+    const curr = bands[i]!;
 
-  let overlaps = 0;
-  let tightGaps = 0;
+    const delta = curr.top - prev.bottom;
 
-  for (let i = 0; i + 1 < bands.length; i++) {
-    const a = bands[i]!;
-    const b = bands[i + 1]!;
-    const gap = Math.floor(b.top) - Math.ceil(a.bottom);
-    if (gap < 0) { overlaps++; }
-    else if (gap < minGapAlertPx) { tightGaps++; }
-  }
+    if (delta < 0) {
+      // True overlap: curr.top is above prev.bottom
+      if (isDiagOn()) {
+        void logStep(
+          `OVERLAP: bands[${i - 1}] bottom=${prev.bottom} > ` +
+          `bands[${i}] top=${curr.top} (delta ${delta}) — FIXING`,
+          {
+            outer,
+            caller: "validateBandSpacing",
+          }
+        );
+      }
 
-  if (overlaps > 0 || tightGaps > 0) {
-    if (isDiagOn()) {
-      // Emit per-incident detail (kept short).
-      for (let i = 0; i + 1 < bands.length; i++) {
-        const a = bands[i]!;
-        const b = bands[i + 1]!;
-        const gap = Math.floor(b.top) - Math.ceil(a.bottom);
-        if (gap < 0) {
-          void logStep(
-            `OVERLAP: bands[${i}] bottom=${Math.ceil(a.bottom)} > bands[${i + 1}] top=${Math.floor(b.top)} (delta ${gap})`,
-            { outer, caller: prevFuncTag }
-          );
-        } else if (gap < minGapAlertPx) {
-          void logStep(
-            `TIGHT: bands[${i}]→[${i + 1}] gap=${gap}px (<${minGapAlertPx})`,
-            { outer, caller: prevFuncTag }
-          );
-        }
+      // Nudge current band down just enough to remove overlap (+1px buffer)
+      const shift = -delta + 1;
+      curr.top += shift;
+      curr.bottom += shift;
+    } else if (minGapAlertPx > 0 && delta < minGapAlertPx) {
+      // Tiny but non-negative gap: log for diagnostics only
+      if (isDiagOn()) {
+        void logStep(
+          `SMALL GAP: bands[${i - 1}] bottom=${prev.bottom} -> ` +
+          `bands[${i}] top=${curr.top} (delta ${delta})`,
+          {
+            outer,
+            caller: "validateBandSpacing",
+          }
+        );
       }
     }
   }
-  try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
+
+  // Optional summary of final band positions
+  if (isDiagOn()) {
+    const summary = bands
+      .map(
+        (b, idx) =>
+          `b${idx}[${b.top.toFixed(0)}..${b.bottom.toFixed(0)}]`
+      )
+      .join(" ");
+
+    void logStep(`bands after validate: ${summary}`, {
+      outer,
+      caller: "validateBandSpacing",
+    });
+  }
 }
 
 
@@ -3122,6 +3159,26 @@ export default function ScoreViewer({
             maskTopWithinMusicPx
           );
 
+          if (isDiagOn()) {
+            // For each measure box, find which band its vertical midpoint sits in.
+            const bandSummary = rawRects
+              .map((r) => {
+                const midY = r.y + r.h / 2;
+                const bandIdx = bandsNN.findIndex(
+                  (b) => midY >= b.top - 0.5 && midY <= b.bottom + 0.5
+                );
+                return `${r.id}@${midY.toFixed(0)}→b${bandIdx}`;
+              })
+              .join(" ");
+
+            void logStep(
+              `pageRects: page=${p} startIndex=${startIndex} nextStartIndex=${nextStartIndex} ` +
+              `maskTop=${maskTopWithinMusicPx.toFixed(0)} rects=${rawRects.length} ` +
+              `${bandSummary}`,
+              { outer, caller: "applyPage/pageRects" }
+            );
+          }
+
           // 2) Build per-measure glyph "cloud" from the rendered SVG for this page
           //    (uses rawRects as envelopes to associate glyphs to measures)
           populateGlyphRectsForPage(outer, rawRects);
@@ -3440,7 +3497,7 @@ export default function ScoreViewer({
           }
         }
 
-        // Bucket measures into tiles (systems) using overlap against [sep[k], sep[k+1]]
+        // Bucket measures into bands (systems) using overlap against [sep[k], sep[k+1]]
         type BucketItem = { m: { id: string; rect: Rect }; k: number };
         const buckets = new Map<number, BucketItem[]>();
 
@@ -3449,7 +3506,7 @@ export default function ScoreViewer({
           const rectBot = Math.round(m.rect.y + Math.max(1, Math.round(m.rect.h)));
 
 
-          // choose tile by maximum vertical overlap
+          // choose band by maximum vertical overlap
           let kBest = -1, bestOv = 0;
           for (let k = 0; k < seps.length - 1; k++) {
             const y0 = seps[k]!;
@@ -3464,17 +3521,31 @@ export default function ScoreViewer({
         }
 
         if (isDiagOn()) {
-          await logStep(
-            `geom: buckets: ` +
-            Array.from(buckets.entries())
-              .map(([k, arr]) =>
-                `k=${k} count=${arr.length} ids=[${arr.map(bi => bi.m.id).join(",")}]`
-              )
-              .join(" | "),
+          const bucketSummary = Array.from(buckets.entries())
+            .map(([k, arr]) =>
+              `k=${k} count=${arr.length} ids=[${arr.map(bi => bi.m.id).join(",")}]`
+            )
+            .join(" | ");
+
+          void logStep(
+            `geom: buckets summary: ${bucketSummary}`,
             { outer, caller: prevFuncTag }
           );
         }
 
+        /*
+                        if (isDiagOn()) {
+                          await logStep(
+                            `geom: buckets: ` +
+                            Array.from(buckets.entries())
+                              .map(([k, arr]) =>
+                                `k=${k} count=${arr.length} ids=[${arr.map(bi => bi.m.id).join(",")}]`
+                              )
+                              .join(" | "),
+                            { outer, caller: prevFuncTag }
+                          );
+                        }
+                */
         // Collect inner-edge X positions of vertical barlines that belong to a given tile.
         // expectedBars = measures_in_tile + 1
         function computeMeasureIntervals(
@@ -3779,18 +3850,49 @@ export default function ScoreViewer({
             const LEFT_TOL = 2;
             const leftBoundPx = musicLeft - LEFT_TOL;
 
-            const xs = computeMeasureIntervals(bandTop, bandBot, expectedBars, leftBoundPx);
+            // 1) Try bar-line–based intervals first
+            let xs = computeMeasureIntervals(bandTop, bandBot, expectedBars, leftBoundPx);
 
+            /*
             if (isDiagOn()) {
               await logStep(
                 `geom: tile k=${k} xs.len=${xs.length} xs=[${xs.join(",")}] expectedBars=${expectedBars}`,
                 { outer, caller: prevFuncTag }
               );
             }
+            */
 
-            if (xs.length < 2) { continue; }
+            // 2) Fallback: if bar-line detection chokes, synthesize xs from measure rects
+            if (xs.length < 2 && items.length > 0) {
+              const firstRect = items[0]!.m.rect;
+              const lastRect = items[items.length - 1]!.m.rect;
 
-            // intervals
+              const xsFallback: number[] = [];
+              xsFallback.push(Math.round(firstRect.x)); // leftmost edge
+
+              for (let i = 0; i < items.length - 1; i++) {
+                const a = items[i]!.m.rect;
+                const b = items[i + 1]!.m.rect;
+                const boundary = Math.round((a.x + a.w + b.x) / 2);
+                xsFallback.push(boundary);
+              }
+
+              xsFallback.push(Math.round(lastRect.x + lastRect.w)); // rightmost edge
+
+              // Fallback for cases where barline scanning can't produce reliable interval boundaries.
+              console.warn(
+                `[measure-interval-fallback] tile=${k} measures=${items.length} xs=[${xsFallback.join(",")}] expectedBars=${expectedBars}`
+              );
+
+              xs = xsFallback;
+            }
+
+            // If even the fallback can’t give us a sensible set, skip as before.
+            if (xs.length < 2) {
+              continue;
+            }
+
+            // 3) Build intervals from whatever xs we ended up with
             const intervals: MeasureInterval[] = [];
             for (let i = 0; i < xs.length - 1; i++) {
               const l = xs[i]!, r = xs[i + 1]!;
@@ -3814,15 +3916,15 @@ export default function ScoreViewer({
                 }
                 continue;
               }
-
-              if (isDiagOn()) {
-                void logStep(
-                  `geom: tile k=${k} id=${m.id} interval=[${iv.left},${iv.right}] ` +
-                  `mm.top=${mm.top} mm.bot=${mm.bottom}`,
-                  { outer, caller: prevFuncTag }
-                );
-              }
-
+              /*
+                            if (isDiagOn()) {
+                              void logStep(
+                                `geom: tile k=${k} id=${m.id} interval=[${iv.left},${iv.right}] ` +
+                                `mm.top=${mm.top} mm.bot=${mm.bottom}`,
+                                { outer, caller: prevFuncTag }
+                              );
+                            }
+              */
               geomPairs.push([m.id, {
                 id: m.id,
                 tileIndex: k,
