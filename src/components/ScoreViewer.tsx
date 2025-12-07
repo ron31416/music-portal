@@ -240,7 +240,7 @@ async function waitForPaint(timeoutMs = 450): Promise<void> {
 }
 
 
-// URL-driven debug flags: #viewer-log or #viewer-diag 
+// URL-driven debug flags: #log or #diag 
 function readDebugFlag(name: string, fallback = false): boolean {
   try {
     const read = (s: string) => {
@@ -250,7 +250,7 @@ function readDebugFlag(name: string, fallback = false): boolean {
         const t = v.toLowerCase();
         return t === "" || t === "1" || t === "true" || t === "on" || t === "yes";
       }
-      // also allow presence-only tokens in hash, e.g. "#viewer-log"
+      // also allow presence-only tokens in hash, e.g. "#log"
       const tokens = s.toLowerCase().split(/[&;,]/).map(x => x.trim());
       if (tokens.includes(name.toLowerCase())) { return true; }
       return null;
@@ -269,8 +269,8 @@ function readDebugFlag(name: string, fallback = false): boolean {
   return fallback;
 }
 // URL flags (read once at module import; change URL + Reload to apply)
-const URL_LOG = readDebugFlag("viewer-log", false);
-const URL_PAG = readDebugFlag("viewer-diag", false);
+const URL_LOG = readDebugFlag("log", false);
+const URL_PAG = readDebugFlag("diag", false);
 
 // Effective switches: pagination diag implies logging
 const isLogOn = () => URL_LOG || URL_PAG;
@@ -587,66 +587,51 @@ function derivePaddedBands(
 
 
 function validateBandSpacing(
-  outer: HTMLDivElement | null,
+  outer: HTMLDivElement,
   bands: Band[],
-  options?: { minGapAlertPx?: number }
+  {
+    minGapAlertPx = 2,   // log if the inter-system gap is smaller than this
+  }: { minGapAlertPx?: number } = {}
 ): void {
   if (!bands.length) { return; }
 
-  const minGapAlertPx = options?.minGapAlertPx ?? 0;
+  const prevFuncTag = outer.dataset.viewerFunc ?? "";
+  outer.dataset.viewerFunc = "validateBandSpacing";
 
-  for (let i = 1; i < bands.length; i++) {
-    const prev = bands[i - 1]!;
-    const curr = bands[i]!;
 
-    const delta = curr.top - prev.bottom;
+  let overlaps = 0;
+  let tightGaps = 0;
 
-    if (delta < 0) {
-      // True overlap: curr.top is above prev.bottom
-      if (isDiagOn()) {
-        void logStep(
-          `OVERLAP: bands[${i - 1}] bottom=${prev.bottom} > ` +
-          `bands[${i}] top=${curr.top} (delta ${delta}) — FIXING`,
-          {
-            outer,
-            caller: "validateBandSpacing",
-          }
-        );
-      }
+  for (let i = 0; i + 1 < bands.length; i++) {
+    const a = bands[i]!;
+    const b = bands[i + 1]!;
+    const gap = Math.floor(b.top) - Math.ceil(a.bottom);
+    if (gap < 0) { overlaps++; }
+    else if (gap < minGapAlertPx) { tightGaps++; }
+  }
 
-      // Nudge current band down just enough to remove overlap (+1px buffer)
-      const shift = -delta + 1;
-      curr.top += shift;
-      curr.bottom += shift;
-    } else if (minGapAlertPx > 0 && delta < minGapAlertPx) {
-      // Tiny but non-negative gap: log for diagnostics only
-      if (isDiagOn()) {
-        void logStep(
-          `SMALL GAP: bands[${i - 1}] bottom=${prev.bottom} -> ` +
-          `bands[${i}] top=${curr.top} (delta ${delta})`,
-          {
-            outer,
-            caller: "validateBandSpacing",
-          }
-        );
+  if (overlaps > 0 || tightGaps > 0) {
+    if (isDiagOn()) {
+      // Emit per-incident detail (kept short).
+      for (let i = 0; i + 1 < bands.length; i++) {
+        const a = bands[i]!;
+        const b = bands[i + 1]!;
+        const gap = Math.floor(b.top) - Math.ceil(a.bottom);
+        if (gap < 0) {
+          void logStep(
+            `OVERLAP: bands[${i}] bottom=${Math.ceil(a.bottom)} > bands[${i + 1}] top=${Math.floor(b.top)} (delta ${gap})`,
+            { outer, caller: prevFuncTag }
+          );
+        } else if (gap < minGapAlertPx) {
+          void logStep(
+            `TIGHT: bands[${i}]→[${i + 1}] gap=${gap}px (<${minGapAlertPx})`,
+            { outer, caller: prevFuncTag }
+          );
+        }
       }
     }
   }
-
-  // Optional summary of final band positions
-  if (isDiagOn()) {
-    const summary = bands
-      .map(
-        (b, idx) =>
-          `b${idx}[${b.top.toFixed(0)}..${b.bottom.toFixed(0)}]`
-      )
-      .join(" ");
-
-    void logStep(`bands after validate: ${summary}`, {
-      outer,
-      caller: "validateBandSpacing",
-    });
-  }
+  try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
 }
 
 
