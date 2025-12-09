@@ -390,7 +390,7 @@ function drawBandGuides(
     lb.setAttribute("vector-effect", "non-scaling-stroke");
     g.appendChild(lb);
 
-    // ---------- NEW: band index label ----------
+    // ---------- band index label ----------
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
     label.textContent = String(i); // same index as logs
 
@@ -782,8 +782,9 @@ type AnnotationTextItem = {
 
 type AnnotationPedalItem = {
   kind: "pedal";
-  startXRel: number;
-  endXRel: number;
+  left?: NoteAnchorRef | null;
+  right?: NoteAnchorRef | null;
+  active?: true;
 };
 
 type ViewerAnnotationItem = AnnotationTextItem | AnnotationPedalItem;
@@ -1252,6 +1253,145 @@ function drawAnnotationBoxes(
   const g = createSvgEl("g");
   layer.appendChild(g);
 
+  // For each measure box, remember the right edge of the *previous* measure
+  // on the same system, so we can extend pedal lines up to the real barline.
+  const prevMeasureRightById: Record<string, number> = {};
+  {
+    let lastBoxOnSystem: MeasureBoxRect | null = null;
+
+    for (const b of rects) {
+      if (!lastBoxOnSystem) {
+        lastBoxOnSystem = b;
+        continue;
+      }
+
+      // Heuristic: same system if vertical centers are close.
+      const lastMidY = lastBoxOnSystem.y + lastBoxOnSystem.h / 2;
+      const thisMidY = b.y + b.h / 2;
+      const sameSystem = Math.abs(thisMidY - lastMidY) < b.h * 0.4;
+
+      if (sameSystem) {
+        // For this box, "previous right edge" is lastBoxOnSystem's right side.
+        prevMeasureRightById[b.id] = lastBoxOnSystem.x + lastBoxOnSystem.w;
+      } else {
+        // New system → reset
+        lastBoxOnSystem = b;
+        continue;
+      }
+
+      lastBoxOnSystem = b;
+    }
+  }
+
+  // Resolve a NoteAnchorRef to an X coordinate in px for this measure, or null if it can't be resolved.
+  function resolveNoteAnchorX(
+    ref: NoteAnchorRef | null | undefined,
+    boxId: string,
+    noteAnchorsByMeasure?: Record<string, NoteAnchor[]>
+  ): number | null {
+    if (!ref || ref.type !== "note") {
+      return null;
+    }
+
+    if (!noteAnchorsByMeasure) {
+      return null;
+    }
+
+    const anchorsForMeasure = noteAnchorsByMeasure[boxId];
+    if (!anchorsForMeasure || !anchorsForMeasure.length) {
+      return null;
+    }
+
+    const anchorNote = anchorsForMeasure.find((a) => a.id === ref.noteId);
+    if (!anchorNote) {
+      return null;
+    }
+
+    const noteH = anchorNote.h;
+    if (!(noteH > 0 && Number.isFinite(noteH))) {
+      return null;
+    }
+
+    const dxPx = ref.dxRel * noteH;
+    const anchorPxX = anchorNote.x + dxPx;
+
+    if (!Number.isFinite(anchorPxX)) {
+      return null;
+    }
+
+    return anchorPxX;
+  }
+
+
+  // Compute a shared vertical baseline (bottom Y) for each measure
+  // that belongs to a continuous pedal "run".
+  function computePedalBaselinesForRects(
+    rects: ReadonlyArray<MeasureBoxRect>,
+    getAnnotationsForMeasure: GetAnnotationsForMeasure
+  ): Record<string, number> {
+    const result: Record<string, number> = {};
+
+    let currentRunMeasureIds: string[] = [];
+    let currentRunBottomY = -Infinity;
+
+    const flushRun = () => {
+      if (!currentRunMeasureIds.length || !Number.isFinite(currentRunBottomY)) {
+        currentRunMeasureIds = [];
+        currentRunBottomY = -Infinity;
+        return;
+      }
+      for (const id of currentRunMeasureIds) {
+        result[id] = currentRunBottomY;
+      }
+      currentRunMeasureIds = [];
+      currentRunBottomY = -Infinity;
+    };
+
+    for (const box of rects) {
+      const annotation = getAnnotationsForMeasure(box.measureNumber);
+      const items = annotation && Array.isArray(annotation.items)
+        ? (annotation.items as ViewerAnnotationItem[])
+        : [];
+
+      const pedalItems = items.filter(
+        (it) => it.kind === "pedal" && (it as AnnotationPedalItem).active
+      ) as AnnotationPedalItem[];
+
+      const hasActivePedal = pedalItems.length > 0;
+
+      if (!hasActivePedal) {
+        // end any run we were in
+        flushRun();
+        continue;
+      }
+
+      // this measure is part of the current run
+      currentRunMeasureIds.push(box.id);
+
+      const bottomY = box.y + box.h;
+      if (!Number.isFinite(currentRunBottomY) || bottomY > currentRunBottomY) {
+        currentRunBottomY = bottomY;
+      }
+
+      // if any pedal in this measure has a right anchor, the run ends here
+      const hasRightAnchor = pedalItems.some((p) => p.right);
+      if (hasRightAnchor) {
+        flushRun();
+      }
+    }
+
+    // in case a run reaches the end without a right anchor
+    flushRun();
+
+    return result;
+  }
+
+
+  const pedalBaselineByMeasureId = computePedalBaselinesForRects(
+    rects,
+    getAnnotationsForMeasure
+  );
+
   for (const box of rects) {
     // --- Retrieve DB annotation (if any) ---
     const annotation = getAnnotationsForMeasure(box.measureNumber);
@@ -1263,6 +1403,16 @@ function drawAnnotationBoxes(
     if (!items.length) {
       continue;
     }
+
+    /*
+    if (noteAnchorsByMeasure && noteAnchorsByMeasure[box.id]) {
+      console.log(
+        "Note anchors for measure",
+        box.id,
+        noteAnchorsByMeasure[box.id]
+      );
+    }
+    */
 
     for (const item of items) {
       // =======================
@@ -1383,17 +1533,77 @@ function drawAnnotationBoxes(
       // PEDAL ITEMS
       // =======================
       if (item.kind === "pedal") {
-        const startXRel = Math.max(0, Math.min(1, item.startXRel));
-        const endXRel = Math.max(0, Math.min(1, item.endXRel));
+        const leftRef = item.left ?? null;
+        const rightRef = item.right ?? null;
 
-        if (!Number.isFinite(startXRel) || !Number.isFinite(endXRel)) {
+        const leftXFromAnchor = resolveNoteAnchorX(leftRef, box.id, noteAnchorsByMeasure);
+        const rightXFromAnchor = resolveNoteAnchorX(rightRef, box.id, noteAnchorsByMeasure);
+
+        const isActive = item.active === true;
+
+        if (!isActive && leftXFromAnchor === null && rightXFromAnchor === null) {
           continue;
         }
 
-        let x1 = box.x + startXRel * box.w;
-        let x2 = box.x + endXRel * box.w;
+        // Horizontal placement:
+        // - If both anchors exist: from left anchor to right anchor.
+        // - If only left anchor exists: from left anchor to right edge of this measure.
+        // - If only right anchor exists: from left edge of this measure to right anchor.
+        //   (Later, when we do cross-measure stitching, these "edge" segments
+        //    will be what we extend to neighbors.)
+        let x1: number;
+        let x2: number;
+
+        if (leftXFromAnchor !== null && rightXFromAnchor !== null) {
+          x1 = leftXFromAnchor;
+          x2 = rightXFromAnchor;
+        } else if (leftXFromAnchor !== null) {
+          // anchored on the left, open on the right
+          x1 = leftXFromAnchor;
+          x2 = box.x + box.w; // to right edge of this measure for now
+        } else if (rightXFromAnchor !== null) {
+          // open on the left, anchored on the right
+          x1 = box.x;         // from left edge of this measure
+          x2 = rightXFromAnchor as number;
+        } else if (isActive) {
+          // fully open span in this measure (no anchors, but part of a run)
+          x1 = box.x;
+          x2 = box.x + box.w;
+        } else {
+          // completely inactive and no anchors → nothing to draw
+          continue;
+        }
 
         // Ensure x1 <= x2 so the path is consistent
+        if (x2 < x1) {
+          const tmp = x1;
+          x1 = x2;
+          x2 = tmp;
+        }
+
+        // After initial x1/x2 are chosen and ordered…
+
+        // Extend the *left* side of an open span to meet the previous barline,
+        // if we know where that is.
+        if (isActive && leftXFromAnchor === null) {
+          const prevRight = prevMeasureRightById[box.id];
+          if (prevRight !== undefined) {
+            // Tiny epsilon so the join visually overlaps by a hair.
+            x1 = prevRight - 1 * zoom;
+          } else {
+            // First measure on the system: just nudge a little left.
+            const EDGE_OVERSHOOT = 4 * zoom;
+            x1 = box.x - EDGE_OVERSHOOT;
+          }
+        }
+
+        // Never let the bar extend past this measure’s right barline.
+        const rightLimit = box.x + box.w;
+        if (x2 > rightLimit) {
+          x2 = rightLimit;
+        }
+
+        // Safety: keep ordering consistent after clamps/adjustments.
         if (x2 < x1) {
           const tmp = x1;
           x1 = x2;
@@ -1404,18 +1614,38 @@ function drawAnnotationBoxes(
         const PEDAL_MARGIN_FROM_BOTTOM = 3; // px above box bottom
         const PEDAL_TICK_HEIGHT = 6;        // height of the little "legs"
 
-        const pedalY = box.y + box.h - PEDAL_MARGIN_FROM_BOTTOM;
+        const runBottomY =
+          pedalBaselineByMeasureId[box.id] ?? (box.y + box.h);
+
+        const pedalY = runBottomY - PEDAL_MARGIN_FROM_BOTTOM;
         const tickTopY = pedalY - PEDAL_TICK_HEIGHT;
 
+        const hasLeftTick = leftRef !== null;
+        const hasRightTick = rightRef !== null;
+
+        // Build the path:
+        // - If an endpoint is anchored (hasLeftTick/hasRightTick), we draw a little vertical leg.
+        // - If not, that endpoint is just the bare horizontal bar.
+        let d = "";
+
+        if (hasLeftTick) {
+          // Left uptick: up, then down to baseline
+          d += `M ${x1} ${tickTopY} L ${x1} ${pedalY} `;
+        } else {
+          // Start directly on the baseline
+          d += `M ${x1} ${pedalY} `;
+        }
+
+        // Horizontal bar
+        d += `L ${x2} ${pedalY} `;
+
+        if (hasRightTick) {
+          // Right uptick
+          d += `L ${x2} ${tickTopY}`;
+        }
+
         const path = createSvgEl("path");
-        // Goal-post shape: up from the bottom, across, then down
-        path.setAttribute(
-          "d",
-          `M ${x1} ${tickTopY} ` +
-          `L ${x1} ${pedalY} ` +
-          `L ${x2} ${pedalY} ` +
-          `L ${x2} ${tickTopY}`
-        );
+        path.setAttribute("d", d.trim());
         path.setAttribute("fill", "none");
         path.setAttribute("stroke", "black");
         path.setAttribute("stroke-width", String(1 * zoom));
