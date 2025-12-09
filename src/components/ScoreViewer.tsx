@@ -1617,6 +1617,20 @@ function drawAnnotationBoxes(
         const runBottomY =
           pedalBaselineByMeasureId[box.id] ?? (box.y + box.h);
 
+        //TEST
+        console.log("[pedal-baseline-debug]", {
+          measureNumber: box.measureNumber,
+          boxId: box.id,
+          boxY: box.y,
+          boxH: box.h,
+          boxBottom: box.y + box.h,
+          baselineForMeasure: pedalBaselineByMeasureId[box.id] ?? null,
+          isActive,
+          hasLeftAnchor: leftXFromAnchor !== null,
+          hasRightAnchor: rightXFromAnchor !== null,
+        });
+        //TEST
+
         const pedalY = runBottomY - PEDAL_MARGIN_FROM_BOTTOM;
         const tickTopY = pedalY - PEDAL_TICK_HEIGHT;
 
