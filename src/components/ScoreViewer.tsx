@@ -1323,67 +1323,116 @@ function drawAnnotationBoxes(
   }
 
 
-  // Compute a shared vertical baseline (bottom Y) for each measure
-  // that belongs to a continuous pedal "run".
+  // Compute vertical baselines for pedal runs, but only per *system* (line).
+  // We infer systems purely from geometry: boxes whose top y are "close"
+  // belong to the same system.
   function computePedalBaselinesForRects(
     rects: ReadonlyArray<MeasureBoxRect>,
     getAnnotationsForMeasure: GetAnnotationsForMeasure
   ): Record<string, number> {
-    const result: Record<string, number> = {};
+    const byMeasureId: Record<string, number> = {};
 
-    let currentRunMeasureIds: string[] = [];
-    let currentRunBottomY = -Infinity;
+    if (!rects.length) {
+      return byMeasureId;
+    }
 
-    const flushRun = () => {
-      if (!currentRunMeasureIds.length || !Number.isFinite(currentRunBottomY)) {
-        currentRunMeasureIds = [];
-        currentRunBottomY = -Infinity;
-        return;
+    // --- Step 1: estimate a typical measure height to set a vertical tolerance ---
+    const heights = rects.map((r) => r.h);
+    const sortedHeights = [...heights].sort((a, b) => a - b);
+    const medianH =
+      sortedHeights[Math.floor(sortedHeights.length / 2)] ?? rects[0]!.h;
+    // Boxes whose top y differ by less than this are considered on the same system.
+    const SYSTEM_TOL = medianH * 0.6;
+
+    // --- Step 2: sort boxes roughly in reading order (top-to-bottom, left-to-right) ---
+    const sortedBoxes = [...rects].sort((a, b) => {
+      const dy = a.y - b.y;
+      if (Math.abs(dy) > SYSTEM_TOL) {
+        return dy;
       }
-      for (const id of currentRunMeasureIds) {
-        result[id] = currentRunBottomY;
-      }
-      currentRunMeasureIds = [];
-      currentRunBottomY = -Infinity;
+      return a.x - b.x;
+    });
+
+    type BoxWithPedal = {
+      box: MeasureBoxRect;
+      hasActivePedal: boolean;
     };
 
-    for (const box of rects) {
-      const annotation = getAnnotationsForMeasure(box.measureNumber);
-      const items = annotation && Array.isArray(annotation.items)
-        ? (annotation.items as ViewerAnnotationItem[])
-        : [];
+    // Local structural type so we don't need "any".
+    type Pedalish = { kind: string; active?: boolean | null };
 
-      const pedalItems = items.filter(
-        (it) => it.kind === "pedal" && (it as AnnotationPedalItem).active
-      ) as AnnotationPedalItem[];
+    // --- Step 3: for each box, detect whether it has an active pedal item ---
+    const boxesWithPedal: BoxWithPedal[] = sortedBoxes.map((box) => {
+      const ann = getAnnotationsForMeasure(box.measureNumber);
+      let hasActivePedal = false;
 
-      const hasActivePedal = pedalItems.length > 0;
-
-      if (!hasActivePedal) {
-        // end any run we were in
-        flushRun();
-        continue;
+      if (ann && Array.isArray(ann.items)) {
+        for (const raw of ann.items as Pedalish[]) {
+          if (raw.kind === "pedal" && raw.active === true) {
+            hasActivePedal = true;
+            break;
+          }
+        }
       }
 
-      // this measure is part of the current run
-      currentRunMeasureIds.push(box.id);
+      return { box, hasActivePedal };
+    });
 
-      const bottomY = box.y + box.h;
-      if (!Number.isFinite(currentRunBottomY) || bottomY > currentRunBottomY) {
-        currentRunBottomY = bottomY;
+    // --- Step 4: group boxes into "systems" based on their y positions ---
+    const systems: BoxWithPedal[][] = [];
+
+    for (const entry of boxesWithPedal) {
+      const { box } = entry;
+
+      let placed = false;
+      for (const sys of systems) {
+        const refBox = sys[0]!.box;
+        if (Math.abs(box.y - refBox.y) <= SYSTEM_TOL) {
+          sys.push(entry);
+          placed = true;
+          break;
+        }
       }
 
-      // if any pedal in this measure has a right anchor, the run ends here
-      const hasRightAnchor = pedalItems.some((p) => p.right);
-      if (hasRightAnchor) {
-        flushRun();
+      if (!placed) {
+        systems.push([entry]);
       }
     }
 
-    // in case a run reaches the end without a right anchor
-    flushRun();
+    // --- Step 5: for each system, compute a baseline if there is any active pedal ---
+    for (const sys of systems) {
+      const hasAnyPedal = sys.some((e) => e.hasActivePedal);
+      if (!hasAnyPedal) {
+        continue;
+      }
 
-    return result;
+      // Baseline for this system = lowest bottom among boxes on this system
+      // that participate in a pedal run (hasActivePedal === true).
+      let systemBottom = -Infinity;
+
+      for (const e of sys) {
+        if (e.hasActivePedal) {
+          const bottom = e.box.y + e.box.h;
+          if (bottom > systemBottom) {
+            systemBottom = bottom;
+          }
+        }
+      }
+
+      if (!Number.isFinite(systemBottom)) {
+        continue;
+      }
+
+      const baseline = systemBottom;
+
+      for (const e of sys) {
+        if (e.hasActivePedal) {
+          byMeasureId[e.box.id] = baseline;
+        }
+      }
+    }
+
+    return byMeasureId;
   }
 
 
