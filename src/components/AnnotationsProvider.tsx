@@ -12,30 +12,37 @@ import {
   ReactElement,
 } from "react";
 
-// Front-end only shape of a single text annotation item inside a measure.
-// This mirrors what ScoreViewer expects in its MeasureAnnotation type.
+// ---- Shared annotation types (note-anchored) -----------------------------
+
+// Note-relative anchor:
+//   dxRel, dyRel are offsets expressed in units of notehead height.
+export interface NoteAnchorRef {
+  type: "note";
+  noteId: string;   // matches NoteAnchor.id in ScoreViewer
+  dxRel: number;    // offset from note center X in units of note height
+  dyRel: number;    // offset from note center Y in units of note height
+  baseNoteH?: number; // notehead height at creation time, in px
+}
+
+// One text mark inside a measure, always anchored to a note.
 export interface AnnotationTextItem {
   kind: "text";
-  xRel: number;
-  yRel: number;
   text: string;
   style?: string;
-  anchor?: {
-    type: "note";
-    noteId: string;
-    dxRel: number;
-    dyRel: number;
-    baseNoteH?: number;
-  };
+  anchor: NoteAnchorRef;  // required now: always note-anchored
 }
 
+// One pedal run "segment" for a measure.
+// - left/right: uptick anchors in this measure (if present)
+// - active: this measure is part of the continuous pedal run
 export interface AnnotationPedalItem {
   kind: "pedal";
-  // relative X inside the measure box: 0 = left edge, 1 = right edge
-  startXRel: number;
-  endXRel: number;
+  left?: NoteAnchorRef;
+  right?: NoteAnchorRef;
+  active?: boolean;
 }
 
+// Union of all annotation items.
 export type AnnotationItem = AnnotationTextItem | AnnotationPedalItem;
 
 // Front-end only shape of the annotation payload.

@@ -4,7 +4,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { useAnnotations } from "@/components/AnnotationsProvider";
-import type { AnnotationPayload } from "@/components/AnnotationsProvider";
+import type {
+  AnnotationPayload,
+  AnnotationItem,
+  AnnotationTextItem,
+  AnnotationPedalItem,
+  NoteAnchorRef,
+} from "@/components/AnnotationsProvider";
 
 // ---------- Props & Types ----------
 
@@ -411,7 +417,6 @@ function drawBandGuides(
     label.setAttribute("stroke-width", "2");
 
     g.appendChild(label);
-    // -------------------------------------------
   }
 }
 
@@ -434,8 +439,6 @@ async function waitForFonts(): Promise<void> {
 function useVisibleViewportHeight() {
   const vpRef = useRef<number>(0);
   const [, force] = React.useReducer((x: number) => x + 1, 0);
-
-
   useEffect(() => {
     const update = () => {
       // prefer visualViewport when available, otherwise fall back to doc height
@@ -577,9 +580,6 @@ function derivePaddedBands(
       top,
       bottom,
       height: bottom - top,
-      // If your Band type has other fields, copy them here:
-      // ...(b as any),
-      // then overwrite top/bottom/height after spreading
     } as Band;
   }
   return out;
@@ -754,49 +754,20 @@ type GlyphRect = {
 };
 
 type NoteAnchor = {
-  id: string;   // stable within a measure, e.g. "measure-12-n0"
+  id: string;   // stable within a measure, e.g. "n0", "n1"
   x: number;    // notehead center X (page-local px)
   y: number;    // notehead center Y (page-local px)
   w: number;    // notehead width
   h: number;    // notehead height
 };
 
-// Note-relative anchor:
-//   dxRel, dyRel are offsets expressed in units of note.h (notehead height).
-type NoteAnchorRef = {
-  type: "note";
-  noteId: string;  // matches NoteAnchor.id
-  dxRel: number;   // offset from note center X in units of note height
-  dyRel: number;   // offset from note center Y in units of note height
-  baseNoteH?: number; // notehead height at creation time, in px
-};
+// We use the shared payload directly from AnnotationsProvider.
+type MeasureAnnotation = AnnotationPayload;
 
-// One text mark inside a measure, positioned relative to the box [0,1] × [0,1]
-type AnnotationTextItem = {
-  kind: "text";
-  xRel: number;
-  yRel: number;
-  text: string;
-  anchor?: NoteAnchorRef;  // note anchoring (optional)
-};
-
-type AnnotationPedalItem = {
-  kind: "pedal";
-  left?: NoteAnchorRef | null;
-  right?: NoteAnchorRef | null;
-  active?: true;
-};
-
-type ViewerAnnotationItem = AnnotationTextItem | AnnotationPedalItem;
-
-// Viewer-side payload: everything from DB AnnotationPayload,
-// plus "items" which is what drawAnnotationBoxes reads.
-type MeasureAnnotation = AnnotationPayload & {
-  items?: ViewerAnnotationItem[];
-};
-
-// Callback used by drawAnnotationBoxes to look up one measure’s annotation
-type GetAnnotationsForMeasure = (measureNumber: number) => MeasureAnnotation | undefined;
+// drawAnnotationBoxes just needs whatever the provider returns.
+type GetAnnotationsForMeasure = (
+  measureNumber: number
+) => MeasureAnnotation | undefined;
 
 
 // Pure geometry helper: computes the measure-box rectangles for the
@@ -1468,100 +1439,69 @@ function drawAnnotationBoxes(
       // TEXT ITEMS
       // =======================
       if (item.kind === "text") {
-        // Clamp to [0,1] in both directions
-        const xRel = Math.max(0, Math.min(1, item.xRel));
-        const yRel = Math.max(0, Math.min(1, item.yRel));
-
-        let pxX: number;
-        let pxY: number;
-
-        // Box-relative fallback position (always inside the measure)
-        const boxPxX = box.x + xRel * box.w;
-        const boxPxY = box.y + yRel * box.h;
-
         const anchor = item.anchor;
-        let anchorNote: NoteAnchor | undefined;
 
-        // Try to resolve the anchored note in this measure
+        // We now require a note anchor; if it's missing or invalid, skip.
         if (
-          anchor &&
-          anchor.type === "note" &&
-          noteAnchorsByMeasure &&
-          noteAnchorsByMeasure[box.id]
+          !anchor ||
+          anchor.type !== "note" ||
+          !noteAnchorsByMeasure ||
+          !noteAnchorsByMeasure[box.id]
         ) {
-          const anchorsForMeasure = noteAnchorsByMeasure[box.id]!;
-          anchorNote = anchorsForMeasure.find((a) => a.id === anchor.noteId);
-
-          if (anchorNote) {
-            const noteH = anchorNote.h;
-
-            if (noteH > 0 && Number.isFinite(noteH)) {
-              // Convert relative offsets back to px in the current layout
-              const dxPx = anchor.dxRel * noteH;
-              const dyPx = anchor.dyRel * noteH;
-
-              const anchorPxX = anchorNote.x + dxPx;
-              const anchorPxY = anchorNote.y + dyPx;
-
-              const inside =
-                anchorPxX >= box.x &&
-                anchorPxX <= box.x + box.w &&
-                anchorPxY >= box.y &&
-                anchorPxY <= box.y + box.h;
-
-              if (inside) {
-                // Anchor is still inside the measure → use it
-                pxX = anchorPxX;
-                pxY = anchorPxY;
-              } else {
-                // Anchor would place us outside the measure → use box-relative
-                pxX = boxPxX;
-                pxY = boxPxY;
-              }
-            } else {
-              // Bad noteH → fall back to box-relative
-              pxX = boxPxX;
-              pxY = boxPxY;
-            }
-          } else {
-            // Note no longer exists / couldn’t be found → fall back
-            pxX = boxPxX;
-            pxY = boxPxY;
-          }
-        } else {
-          // Non-anchored behavior: just use box-relative position
-          pxX = boxPxX;
-          pxY = boxPxY;
+          continue;
         }
 
+        const anchorsForMeasure = noteAnchorsByMeasure[box.id]!;
+        const anchorNote = anchorsForMeasure.find(
+          (a) => a.id === anchor.noteId
+        );
+
+        if (!anchorNote) {
+          // Note no longer exists / couldn't be found → skip this item
+          continue;
+        }
+
+        const noteH = anchorNote.h;
+        if (!(noteH > 0 && Number.isFinite(noteH))) {
+          // Bad geometry → skip
+          continue;
+        }
+
+        // Convert relative offsets back to px in the *current* layout
+        const dxPx = anchor.dxRel * noteH;
+        const dyPx = anchor.dyRel * noteH;
+
+        const pxX = anchorNote.x + dxPx;
+        const pxY = anchorNote.y + dyPx;
+
         // --- Font sizing: relative to note size *change*, not absolute size ---
-        const BASE_FONT_PX = 16;   // tweak to taste (global fingering size)
-        const MIN_FONT_PX = 8;     // lower/raise if needed
+        const BASE_FONT_PX = 16;   // tweak to taste
+        const MIN_FONT_PX = 8;
         const MAX_FONT_PX = 30;
 
-        let fontPx = BASE_FONT_PX * zoom; // default: zoom-based
+        let fontPx = BASE_FONT_PX * zoom; // default
 
-        if (anchorNote && anchor?.type === "note") {
-          const currentH = anchorNote.h;
-          const baseH =
-            anchor.baseNoteH && Number.isFinite(anchor.baseNoteH) && anchor.baseNoteH > 0
-              ? anchor.baseNoteH
-              : currentH;
+        const currentH = anchorNote.h;
+        const baseH =
+          anchor.baseNoteH &&
+            Number.isFinite(anchor.baseNoteH) &&
+            anchor.baseNoteH > 0
+            ? anchor.baseNoteH
+            : currentH;
 
-          if (
-            currentH > 0 &&
-            Number.isFinite(currentH) &&
-            baseH > 0 &&
-            Number.isFinite(baseH)
-          ) {
-            const relScale = currentH / baseH; // how much the note has grown/shrunk
-            let candidate = BASE_FONT_PX * zoom * relScale;
+        if (
+          currentH > 0 &&
+          Number.isFinite(currentH) &&
+          baseH > 0 &&
+          Number.isFinite(baseH)
+        ) {
+          const relScale = currentH / baseH;
+          let candidate = BASE_FONT_PX * zoom * relScale;
 
-            if (candidate < MIN_FONT_PX) { candidate = MIN_FONT_PX; }
-            if (candidate > MAX_FONT_PX) { candidate = MAX_FONT_PX; }
+          if (candidate < MIN_FONT_PX) { candidate = MIN_FONT_PX; }
+          if (candidate > MAX_FONT_PX) { candidate = MAX_FONT_PX; }
 
-            fontPx = candidate;
-          }
+          fontPx = candidate;
         }
 
         const t = createSvgEl("text");
@@ -1666,7 +1606,7 @@ function drawAnnotationBoxes(
         const runBottomY =
           pedalBaselineByMeasureId[box.id] ?? (box.y + box.h);
 
-        //TEST
+        /*
         console.log("[pedal-baseline-debug]", {
           measureNumber: box.measureNumber,
           boxId: box.id,
@@ -1678,7 +1618,7 @@ function drawAnnotationBoxes(
           hasLeftAnchor: leftXFromAnchor !== null,
           hasRightAnchor: rightXFromAnchor !== null,
         });
-        //TEST
+        */
 
         const pedalY = runBottomY - PEDAL_MARGIN_FROM_BOTTOM;
         const tickTopY = pedalY - PEDAL_TICK_HEIGHT;
@@ -2122,7 +2062,7 @@ function buildNoteAnchorsForMeasure(
   for (let i = 0; i < noteGlyphs.length; i++) {
     const g = noteGlyphs[i]!;
     anchors.push({
-      id: `${measureId}-n${i}`,
+      id: `n${i}`,
       x: g.x + g.w / 2,
       y: g.y + g.h / 2,
       w: g.w,
@@ -2260,24 +2200,33 @@ export default function ScoreViewer({
       }
 
       // -----------------------------
-      // 4) Build new item (keep rel coords as fallback)
+      // 4) Build new item (require note anchor)
       // -----------------------------
+      if (!anchorRef) {
+        // Invariant going forward: text annotations are always note-anchored.
+        // If we somehow fail to find a note, just skip creating the item.
+        console.warn(
+          "[promptAndSaveAnnotation] No note anchor found for text annotation; aborting."
+        );
+        return;
+      }
+
       const newItem: AnnotationTextItem = {
         kind: "text",
-        xRel: point.xRel,
-        yRel: point.yRel,
         text: trimmed,
-        // Only present if we successfully found a nearby notehead
-        ...(anchorRef ? { anchor: anchorRef } : {}),
+        anchor: anchorRef,
       };
 
       // Grab existing or empty
       const existing = getAnnotationsForMeasure(measureNumber);
-      const items = Array.isArray(existing?.items) ? existing!.items : [];
+
+      const existingItems: AnnotationItem[] = Array.isArray(existing?.items)
+        ? existing!.items.slice()
+        : [];
 
       const nextPayload: MeasureAnnotation = {
-        ...existing,
-        items: [...items, newItem],
+        ...(existing ?? { items: [] as AnnotationItem[] }),
+        items: [...existingItems, newItem], // newItem is AnnotationTextItem → OK
       };
 
       // Save (local optimistic update + server)
@@ -3811,19 +3760,6 @@ export default function ScoreViewer({
           );
         }
 
-        /*
-                        if (isDiagOn()) {
-                          await logStep(
-                            `geom: buckets: ` +
-                            Array.from(buckets.entries())
-                              .map(([k, arr]) =>
-                                `k=${k} count=${arr.length} ids=[${arr.map(bi => bi.m.id).join(",")}]`
-                              )
-                              .join(" | "),
-                            { outer, caller: prevFuncTag }
-                          );
-                        }
-                */
         // Collect inner-edge X positions of vertical barlines that belong to a given tile.
         // expectedBars = measures_in_tile + 1
         function computeMeasureIntervals(
@@ -4131,15 +4067,6 @@ export default function ScoreViewer({
             // 1) Try bar-line–based intervals first
             let xs = computeMeasureIntervals(bandTop, bandBot, expectedBars, leftBoundPx);
 
-            /*
-            if (isDiagOn()) {
-              await logStep(
-                `geom: tile k=${k} xs.len=${xs.length} xs=[${xs.join(",")}] expectedBars=${expectedBars}`,
-                { outer, caller: prevFuncTag }
-              );
-            }
-            */
-
             // 2) Fallback: if bar-line detection chokes, synthesize xs from measure rects
             if (xs.length < 2 && items.length > 0) {
               const firstRect = items[0]!.m.rect;
@@ -4194,15 +4121,7 @@ export default function ScoreViewer({
                 }
                 continue;
               }
-              /*
-                            if (isDiagOn()) {
-                              void logStep(
-                                `geom: tile k=${k} id=${m.id} interval=[${iv.left},${iv.right}] ` +
-                                `mm.top=${mm.top} mm.bot=${mm.bottom}`,
-                                { outer, caller: prevFuncTag }
-                              );
-                            }
-              */
+
               geomPairs.push([m.id, {
                 id: m.id,
                 tileIndex: k,
