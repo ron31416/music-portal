@@ -1,120 +1,130 @@
-// src/components/auth/AuthHeaderClient.tsx
 "use client";
 
 import React from "react";
 import Link from "next/link";
-import { getSupabaseBrowser } from "@/lib/supabaseBrowser";
+
+type WhoAmI = {
+  ok: boolean;
+  email: string | null;
+  role: string | null;
+  is_admin: boolean;
+};
 
 export default function AuthHeaderClient({
-    title = "Music Portal",
+  title = "Music Portal",
 }: {
-    title?: string;
+  title?: string;
 }) {
-    const supabase = React.useMemo(() => getSupabaseBrowser(), []);
-    const [hasUser, setHasUser] = React.useState(false);
-    const [isAdmin, setIsAdmin] = React.useState(false);
+  const [hasUser, setHasUser] = React.useState(false);
+  const [isAdmin, setIsAdmin] = React.useState(false);
 
-    React.useEffect(() => {
-        let active = true;
-        (async () => {
-            const [authRes, who] = await Promise.all([
-                supabase.auth.getUser(),
-                fetch("/api/whoami", { cache: "no-store" })
-                    .then((r) => (r.ok ? r.json() : null))
-                    .catch(() => null),
-            ]);
-            if (!active) { return; }
+  React.useEffect(() => {
+    let active = true;
 
-            const userFromSupabase = Boolean(authRes?.data?.user);
-            const emailFromWho = (who && who.email) || null;
+    (async () => {
+      try {
+        const res = await fetch("/api/whoami", { cache: "no-store" });
+        if (!res.ok) {
+          if (active) {
+            setHasUser(false);
+            setIsAdmin(false);
+          }
+          return;
+        }
 
-            // consider "signed in" if either Supabase has a session OR /api/whoami returned an email
-            const effectiveHasUser = userFromSupabase || Boolean(emailFromWho);
-            setHasUser(effectiveHasUser);
+        const who = (await res.json()) as WhoAmI;
+        if (!active) { return; }
 
-            const adminFlag =
-                (who && (who.is_admin === true || who.role === "admin")) || false;
-            setIsAdmin(Boolean(adminFlag));
-        })();
-        return () => {
-            active = false;
-        };
-    }, [supabase]);
+        const signedIn = Boolean(who.email);
+        setHasUser(signedIn);
+        setIsAdmin(Boolean(who.is_admin));
+      } catch {
+        if (active) {
+          setHasUser(false);
+          setIsAdmin(false);
+        }
+      }
+    })();
 
-    // Shared button style (outline, no fill) for visual parity
-    const outlineBtn: React.CSSProperties = {
-        display: "inline-block",
-        padding: "8px 12px",
-        borderRadius: 8,
-        border: "1px solid #666",
-        background: "transparent",
-        color: "inherit",
-        textDecoration: "none",
-        cursor: "pointer",
+    return () => {
+      active = false;
     };
+  }, []);
 
-    return (
-        <div style={{ marginBottom: 16 }}>
-            <div style={{ maxWidth: 880, margin: "0 auto", padding: "0 24px" }}>
-                {/* Row 1: centered title alone */}
-                <div
-                    style={{
-                        display: "grid",
-                        gridTemplateColumns: "1fr",
-                        alignItems: "center",
-                    }}
-                >
-                    <h1
-                        style={{
-                            justifySelf: "center",
-                            fontSize: 24,
-                            fontWeight: 700,
-                            textAlign: "center",
-                            margin: 0,
-                        }}
-                    >
-                        {title}
-                    </h1>
-                </div>
+  // Shared button style (outline, no fill) for visual parity
+  const outlineBtn: React.CSSProperties = {
+    display: "inline-block",
+    padding: "8px 12px",
+    borderRadius: 8,
+    border: "1px solid #666",
+    background: "transparent",
+    color: "inherit",
+    textDecoration: "none",
+    cursor: "pointer",
+  };
 
-                {/* Row 2: left & right actions on one line */}
-                <div
-                    style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        marginTop: 10,
-                    }}
-                >
-                    {/* Left slot: Admin only */}
-                    <div style={{ minHeight: 1 }}>
-                        {isAdmin ? (
-                            <Link
-                                href="/admin"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                style={outlineBtn}
-                            >
-                                Admin
-                            </Link>
-                        ) : null}
-                    </div>
-
-                    {/* Right slot: Log in (signed-out) OR Log out (signed-in) */}
-                    <div>
-                        {!hasUser ? (
-                            <Link
-                                href="/login"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                style={outlineBtn}
-                            >
-                                Sign in
-                            </Link>
-                        ) : null}
-                    </div>
-                </div>
-            </div>
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ maxWidth: 880, margin: "0 auto", padding: "0 24px" }}>
+        {/* Row 1: centered title alone */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr",
+            alignItems: "center",
+          }}
+        >
+          <h1
+            style={{
+              justifySelf: "center",
+              fontSize: 24,
+              fontWeight: 700,
+              textAlign: "center",
+              margin: 0,
+            }}
+          >
+            {title}
+          </h1>
         </div>
-    );
+
+        {/* Row 2: left & right actions on one line */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginTop: 10,
+          }}
+        >
+          {/* Left slot: Admin only */}
+          <div style={{ minHeight: 1 }}>
+            {isAdmin ? (
+              <Link
+                href="/admin"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={outlineBtn}
+              >
+                Admin
+              </Link>
+            ) : null}
+          </div>
+
+          {/* Right slot: Sign in (signed-out only) */}
+          <div>
+            {!hasUser ? (
+              <Link
+                href="/login"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={outlineBtn}
+              >
+                Sign in
+              </Link>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
