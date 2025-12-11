@@ -9,13 +9,14 @@ import { getCurrentUserInfo } from "@/lib/currentUser";
 //   - If signed in: role from user_get(user_email), is_admin = (role === "admin")
 export async function GET() {
   try {
-    const { email, role, isAdmin } = await getCurrentUserInfo();
+    const { email, role, isAdmin, userId } = await getCurrentUserInfo();
 
     return NextResponse.json({
       ok: true as const,
       email,
       role,
       is_admin: isAdmin,
+      userId,
     });
   } catch (e) {
     return NextResponse.json(
