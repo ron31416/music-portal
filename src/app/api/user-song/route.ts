@@ -125,7 +125,15 @@ export async function GET(req: NextRequest): Promise<Response> {
 //========================= */
 export async function POST(req: NextRequest): Promise<Response> {
   try {
-    // 1) Bind Supabase SSR client to this request's cookie jar
+    // 1) Parse body
+    const body = (await req.json()) as Partial<UserSongRequestBody>;
+    const { songId } = body;
+
+    if (typeof songId !== "number" || !Number.isInteger(songId) || songId <= 0) {
+      return badRequestJson("songId must be a positive integer");
+    }
+
+    // 2) Bind a Supabase SSR client to this request's cookie jar
     const cookieStore = await cookies();
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -145,26 +153,19 @@ export async function POST(req: NextRequest): Promise<Response> {
       }
     );
 
-    // 2) Read current user from Supabase auth
-    const { data: authData, error: authErr } = await supabase.auth.getUser();
-    if (authErr) {
-      console.warn("[user-song POST] getUser error:", authErr);
+    // 3) Read verified session/email from Supabase Auth
+    const { data: sessData, error: sessErr } = await supabase.auth.getSession();
+    if (sessErr) {
+      console.warn("[user-song POST] getSession error:", sessErr);
+      return unauthorizedJson("Session read failed");
     }
 
-    const email = (authData.user?.email as string | null) ?? null;
+    const email = sessData?.session?.user?.email ?? null;
     if (!email) {
       return unauthorizedJson("Not signed in");
     }
 
-    // 3) Parse body
-    const body = (await req.json()) as Partial<UserSongRequestBody>;
-    const { songId } = body;
-
-    if (typeof songId !== "number" || !Number.isInteger(songId) || songId <= 0) {
-      return badRequestJson("songId must be a positive integer");
-    }
-
-    // 4) Service-role admin client → upsert via email
+    // 4) Use service-role client to run the upsert by email
     const supabaseAdmin = getSupabaseAdmin();
 
     const { data, error } = await supabaseAdmin
@@ -184,10 +185,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     const row = rows.length > 0 ? rows[0] : null;
 
     return NextResponse.json(
-      {
-        ok: true,
-        data: row,
-      },
+      { ok: true, data: row },
       { status: 200 }
     );
   } catch (e: unknown) {
