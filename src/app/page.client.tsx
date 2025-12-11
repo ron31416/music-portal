@@ -33,38 +33,7 @@ export default function HomeClient(): React.ReactElement {
   const listAbortRef = React.useRef<AbortController | null>(null);
   const listSeqRef = React.useRef(0);
 
-  // NEW: viewer user ID (passed to /viewer?uid=###)
-  const [viewerUserId, setViewerUserId] = React.useState<number | null>(null);
-
-  // Load current user ID from /api/whoami
-  React.useEffect(() => {
-    let alive = true;
-
-    async function loadUser() {
-      try {
-        const res = await fetch("/api/whoami", {
-          credentials: "include",
-          cache: "no-store",
-        });
-
-        if (!res.ok) { return; }
-
-        const json = await res.json();
-        if (alive) {
-          setViewerUserId(json.userId ?? null);
-        }
-      } catch {
-        /* ignore — treat as signed-out */
-      }
-    }
-
-    loadUser();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // --- Fetch song list ---
+  // --- Fetch song list ---  (unchanged)
   const refreshSongList = React.useCallback(
     async (
       overrideSort?: SongColToken | null,
@@ -111,7 +80,6 @@ export default function HomeClient(): React.ReactElement {
     [sort, sortDir]
   );
 
-  // Load list on mount
   React.useEffect(() => {
     void refreshSongList();
     return () => {
@@ -122,7 +90,7 @@ export default function HomeClient(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sorting handler
+  // Sorting handler (unchanged)
   const toggleSort = (key: SongColToken): void => {
     const nextDir: SortDir =
       sort === key ? (sortDir === "asc" ? "desc" : "asc") : "asc";
@@ -133,13 +101,12 @@ export default function HomeClient(): React.ReactElement {
     void refreshSongList(key, nextDir);
   };
 
-  // --- NEW: Open viewer WITH uid passed in URL ---
+  // Open viewer WITHOUT uid
   const openInNewTab = (id: number): void => {
     const tabId = Date.now().toString(36);
-    const uid = viewerUserId ?? ""; // If null, send empty
 
     window.open(
-      `/viewer?tab=${tabId}&id=${id}&uid=${uid}`,
+      `/viewer?tab=${tabId}&id=${id}`,
       "_blank",
       "noopener,noreferrer"
     );
