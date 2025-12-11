@@ -5,8 +5,9 @@ import { DB_SCHEMA } from "@/lib/dbSchema";
 
 export type CurrentUserInfo = {
   email: string | null;
-  role: string | null;   // normalized, lowercased
+  role: string | null;
   isAdmin: boolean;
+  userId: number | null;
 };
 
 export async function getCurrentUserInfo(): Promise<CurrentUserInfo> {
@@ -18,13 +19,14 @@ export async function getCurrentUserInfo(): Promise<CurrentUserInfo> {
   const email = (user?.email as string | null) ?? null;
 
   if (uerr || !user || !email) {
-    return { email: null, role: null, isAdmin: false };
+    return { email: null, role: null, isAdmin: false, userId: null };
   }
 
-  // 2) DB role via service_role RPC: user_get(email)
+  // 2) DB lookup via service_role RPC: user_get
   const adminClient = getSupabaseAdmin();
 
   let role: string | null = null;
+  let userId: number | null = null;
 
   try {
     const { data, error: getErr } = await adminClient
@@ -37,18 +39,23 @@ export async function getCurrentUserInfo(): Promise<CurrentUserInfo> {
     if (!getErr && Array.isArray(data) && data.length > 0) {
       const row = data[0] as {
         user_role_name?: string | null;
+        user_id?: number | null;
       };
 
       if (row.user_role_name !== null) {
         role = String(row.user_role_name).toLowerCase();
       }
+
+      if (row.user_id !== null && typeof row.user_id === "number") {
+        userId = row.user_id;
+      }
     }
   } catch {
-    // If the RPC blows up, just treat as non-admin
     role = null;
+    userId = null;
   }
 
   const isAdmin = role === "admin";
 
-  return { email, role, isAdmin };
+  return { email, role, isAdmin, userId };
 }

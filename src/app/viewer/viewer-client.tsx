@@ -1,6 +1,7 @@
 // src/app/viewer/viewer-client.tsx
 "use client";
 
+import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import ScoreViewer from "@/components/ScoreViewer";
 import { AnnotationsProvider } from "@/components/AnnotationsProvider";
@@ -13,10 +14,43 @@ export default function ViewerClient(): React.ReactElement {
   const params = useSearchParams();
   const id = isPositiveIntString(params.get("id")) ? params.get("id")! : undefined;
 
-  // Build the canonical, same-origin API URL from the id
-  const src = id !== undefined ? `/api/song/${id}` : undefined;
+  // -----------------------------------------
+  // Hooks MUST come before any early return
+  // -----------------------------------------
+  const [userId, setUserId] = useState<number | null>(null);
+  const [checkedUser, setCheckedUser] = useState(false);
 
-  if (src === undefined) {
+  useEffect(() => {
+    let alive = true;
+
+    async function loadUser() {
+      try {
+        const res = await fetch("/api/whoami", { cache: "no-store" });
+        if (!res.ok) {
+          if (alive) { setCheckedUser(true); }
+          return;
+        }
+
+        const json = await res.json();
+        if (alive) {
+          setUserId(json.userId ?? null);
+          setCheckedUser(true);
+        }
+      } catch {
+        if (alive) { setCheckedUser(true); }
+      }
+    }
+
+    loadUser();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // -----------------------------------------
+  // Now the early return is allowed
+  // -----------------------------------------
+  if (id === undefined) {
     return (
       <p style={{ color: "crimson" }}>
         No score id provided. Open this page with <code>?id=2</code>.
@@ -24,13 +58,27 @@ export default function ViewerClient(): React.ReactElement {
     );
   }
 
-  // We already know `id` is a positive integer string here.
   const songId = Number(id);
+  const src = `/api/song/${id}`;
 
-  // TEMP: hard-code your dev user_id for now.
-  // Replace this with the real logged-in user's id once we wire auth in.
-  const userId = 1; // TODO: replace with actual user id for your account
+  if (!checkedUser) {
+    return <p>Loading…</p>;
+  }
 
+  if (userId === null) {
+    return (
+      <>
+        <p style={{ color: "crimson" }}>
+          You must be signed in to view or edit annotations.
+        </p>
+        <ScoreViewer src={src} />
+      </>
+    );
+  }
+
+  // -----------------------------------------
+  // Normal render with real userId
+  // -----------------------------------------
   return (
     <div
       style={{

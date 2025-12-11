@@ -188,7 +188,7 @@ export function AnnotationsProvider({
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ songId }),
+        body: JSON.stringify({ songId, userId }),
       });
 
       if (!response.ok) {
@@ -213,7 +213,7 @@ export function AnnotationsProvider({
       console.error("ensureUserSongRow: network error", e);
       setErrorMessage("Network error while preparing annotations.");
     }
-  }, [hasUserSongRow, songId]);
+  }, [hasUserSongRow, songId, userId]);
 
   // Initial load:
   //   - If no user → just mark as not loading; annotations remain empty.
