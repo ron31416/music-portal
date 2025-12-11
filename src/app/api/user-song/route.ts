@@ -9,7 +9,7 @@ import { DB_SCHEMA } from "@/lib/dbSchema";
 
 //=========================
 // Types
-//========================= */
+//=========================*/
 
 type UserSongRequestBody = {
   songId: number;
@@ -25,8 +25,8 @@ type UserSongRow = {
 };
 
 //=========================
-// Helpers
-//========================= */
+// Small helpers (JSON responses)
+//=========================*/
 
 function badRequestJson(message: string): Response {
   return NextResponse.json(
@@ -42,19 +42,79 @@ function serverErrorJson(message: string): Response {
   );
 }
 
-// (GET unchanged above…)
+//=========================
+// GET /api/user-song
+// Query: ?userId=123&songId=456
+// Calls: user_song_get(p_user_id, p_song_id)
+// Returns: { ok: true, data: UserSongRow | null }
+//=========================*/
+export async function GET(req: NextRequest): Promise<Response> {
+  try {
+    const url = new URL(req.url);
+    const userIdParam = url.searchParams.get("userId");
+    const songIdParam = url.searchParams.get("songId");
 
-/* ============================================================
-   POST /api/user-song
-   Body: { songId: number, userId: number }
-   Behavior:
-     - Directly runs user_song_upsert(p_user_id, p_song_id)
-     - No Supabase auth lookup (ViewerClient already did that)
-   Returns: { ok: true, data: row }
-   ============================================================ */
+    if (!userIdParam || !songIdParam) {
+      return badRequestJson("userId and songId query parameters are required");
+    }
+
+    const userId = Number(userIdParam);
+    const songId = Number(songIdParam);
+
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return badRequestJson("userId must be a positive integer");
+    }
+    if (!Number.isInteger(songId) || songId <= 0) {
+      return badRequestJson("songId must be a positive integer");
+    }
+
+    const supabaseAdmin = getSupabaseAdmin();
+
+    const { data, error } = await supabaseAdmin
+      .schema(DB_SCHEMA)
+      .rpc("user_song_get", {
+        p_user_id: userId,
+        p_song_id: songId,
+      });
+
+    if (error) {
+      console.error("user_song_get error:", error);
+      return serverErrorJson(error.message ?? "Failed to get user_song row");
+    }
+
+    const rows = Array.isArray(data) ? (data as UserSongRow[]) : [];
+    const row = rows.length > 0 ? rows[0] : null;
+
+    return NextResponse.json(
+      {
+        ok: true,
+        data: row,
+      },
+      { status: 200 }
+    );
+  } catch (e: unknown) {
+    const message =
+      e instanceof Error
+        ? e.message
+        : typeof e === "string"
+          ? e
+          : "Unexpected error in user-song GET endpoint";
+
+    console.error("user-song GET route error:", e);
+    return serverErrorJson(message);
+  }
+}
+
+//=========================
+// POST /api/user-song
+// Body: { songId: number, userId: number }
+// Behavior:
+//   - Uses service_role client to call user_song_upsert(p_user_id, p_user_email=null, p_song_id).
+//   - No Supabase auth here; ViewerClient already resolved userId via /api/whoami.
+// Returns: { ok: true, data: UserSongRow | null } on success
+//=========================*/
 export async function POST(req: NextRequest): Promise<Response> {
   try {
-    // 1) Parse body
     const body = (await req.json()) as Partial<UserSongRequestBody>;
     const { songId, userId } = body;
 
@@ -74,7 +134,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       return badRequestJson("userId must be a positive integer");
     }
 
-    // 2) Perform upsert using service role
     const supabaseAdmin = getSupabaseAdmin();
 
     const { data, error } = await supabaseAdmin
