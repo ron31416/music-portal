@@ -2093,6 +2093,8 @@ export default function ScoreViewer({
     isLoading: annotationsLoading,
   } = useAnnotations();
 
+  const { ensureUserSongRow } = useAnnotations(); //TEST
+
   // Always use the latest getAnnotationsForMeasure, even from stable callbacks / pipeline
   const getAnnotationsForMeasureRef = useRef<GetAnnotationsForMeasure>(
     // Default: no annotations
@@ -6015,7 +6017,7 @@ export default function ScoreViewer({
         </div>
       </div>
 
-      {/* EDIT / DONE toggle hotspot*/}
+      {/* EDIT / DONE toggle hotspot */}
       <button
         type="button"
         data-ignore-page-turn="true"
@@ -6042,9 +6044,22 @@ export default function ScoreViewer({
           e.preventDefault();
           e.stopPropagation();
         }}
-        onClick={(e) => {
+        onClick={async (e) => {
           e.preventDefault();
           e.stopPropagation();
+
+          // If we are entering edit mode, ensure the user_song row exists first
+          if (!isEditMode) {
+            try {
+              await ensureUserSongRow();
+            } catch (err) {
+              console.error("Failed to ensure user_song row", err);
+              // Optional: early-return here if you want to *block* edit mode on failure.
+              // return;
+            }
+          }
+
+          // Then toggle edit mode (Edit <-> Done)
           toggleEditMode();
         }}
         aria-pressed={isEditMode}
