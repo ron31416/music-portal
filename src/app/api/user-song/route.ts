@@ -4,8 +4,9 @@ export const runtime = "nodejs";
 
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { getSupabaseServerClient } from "@/lib/supabaseServer";
 import { DB_SCHEMA } from "@/lib/dbSchema";
 
 //=========================
@@ -124,16 +125,38 @@ export async function GET(req: NextRequest): Promise<Response> {
 //========================= */
 export async function POST(req: NextRequest): Promise<Response> {
   try {
-    // 1) Auth-bound supabase client → current user
-    const supabase = await getSupabaseServerClient();
-    const { data: authData } = await supabase.auth.getUser();
-    const email = (authData.user?.email as string | null) ?? null;
+    // 1) Bind Supabase SSR client to this request's cookie jar
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value ?? undefined;
+          },
+          set(name: string, value: string, options: CookieOptions) {
+            cookieStore.set({ name, value, ...options });
+          },
+          remove(name: string, options: CookieOptions) {
+            cookieStore.set({ name, value: "", ...options, maxAge: 0 });
+          },
+        },
+      }
+    );
 
+    // 2) Read current user from Supabase auth
+    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    if (authErr) {
+      console.warn("[user-song POST] getUser error:", authErr);
+    }
+
+    const email = (authData.user?.email as string | null) ?? null;
     if (!email) {
       return unauthorizedJson("Not signed in");
     }
 
-    // 2) Parse body
+    // 3) Parse body
     const body = (await req.json()) as Partial<UserSongRequestBody>;
     const { songId } = body;
 
@@ -141,9 +164,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       return badRequestJson("songId must be a positive integer");
     }
 
+    // 4) Service-role admin client → upsert via email
     const supabaseAdmin = getSupabaseAdmin();
 
-    // 3) Single RPC: email → user_id inside SQL, upsert user_song
     const { data, error } = await supabaseAdmin
       .schema(DB_SCHEMA)
       .rpc("user_song_upsert", {
@@ -153,11 +176,10 @@ export async function POST(req: NextRequest): Promise<Response> {
       });
 
     if (error) {
-      console.error("user_song_upsert error:", error);
+      console.error("[user-song POST] user_song_upsert error:", error);
       return serverErrorJson(error.message ?? "Failed to upsert user_song row");
     }
 
-    // If your function returns the row, we can pass it through; if it returns void, data will be null.
     const rows = Array.isArray(data) ? (data as UserSongRow[]) : [];
     const row = rows.length > 0 ? rows[0] : null;
 
@@ -176,7 +198,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           ? e
           : "Unexpected error in user-song POST endpoint";
 
-    console.error("user-song POST route error:", e);
+    console.error("[user-song POST] route error:", e);
     return serverErrorJson(message);
   }
 }
