@@ -10,7 +10,7 @@ import { fetchSongList } from "@/lib/songListFetch";
 import AuthHeaderClient from "@/components/auth/AuthHeaderClient";
 
 // --- Config ---
-//                 First Last Title Level
+//                 First   Last    Title   Level
 const GRID_COLS_PX = [140, 140, 260, 120] as const;
 const GRID_COLS: React.CSSProperties["gridTemplateColumns"] =
   GRID_COLS_PX.map((n) => `${n}px`).join(" ");
@@ -20,24 +20,45 @@ const TABLE_ROW_COUNT = 12;
 
 const SONG_LIST_ENDPOINT = "/api/song";
 
-// --- Types ---
 type SortDir = "asc" | "desc";
 
-// --- Component ---
 export default function HomeClient(): React.ReactElement {
   // Data/state
   const [rows, setRows] = React.useState<SongListItem[]>([]);
   const [listLoading, setListLoading] = React.useState(false);
   const [listError, setListError] = React.useState("");
 
-  // Server-side sorting (defaults from songCols)
+  // Sorting
   const [sort, setSort] = React.useState<SongColToken | null>(DEFAULT_SORT);
   const [sortDir, setSortDir] = React.useState<SortDir>(DEFAULT_DIR);
 
-  // Fetch lifecycle management
+  // NEW: userId for the viewer tab
+  const [viewerUserId, setViewerUserId] = React.useState<number | null>(null);
+
+  // Fetch lifecycle
   const listAbortRef = React.useRef<AbortController | null>(null);
   const listSeqRef = React.useRef(0);
 
+  // NEW: Load userId for viewer
+  React.useEffect(() => {
+    async function loadWho() {
+      try {
+        const res = await fetch("/api/whoami", {
+          cache: "no-store",
+          credentials: "include",
+        });
+        if (!res.ok) { return; }
+
+        const json = await res.json();
+        setViewerUserId(json.userId ?? null);
+      } catch {
+        setViewerUserId(null);
+      }
+    }
+    loadWho();
+  }, []);
+
+  // Fetch song list
   const refreshSongList = React.useCallback(
     async (
       overrideSort?: SongColToken | null,
@@ -81,6 +102,7 @@ export default function HomeClient(): React.ReactElement {
     [sort, sortDir]
   );
 
+  // Initial list load
   React.useEffect(() => {
     void refreshSongList();
     return () => {
@@ -97,14 +119,19 @@ export default function HomeClient(): React.ReactElement {
     void refreshSongList(key, nextDir);
   };
 
+  // NEW: open viewer with uid=userId GET param
   const openInNewTab = (id: number): void => {
     const tabId = Date.now().toString(36);
-    window.open(`/viewer?tab=${tabId}&id=${id}`, "_blank", "noopener,noreferrer");
+    const uid = viewerUserId ?? "";
+    window.open(
+      `/viewer?tab=${tabId}&id=${id}&uid=${uid}`,
+      "_blank",
+      "noopener,noreferrer"
+    );
   };
 
   return (
     <section>
-      {/* Auth header lives INSIDE the same layout as the table so it aligns perfectly */}
       <AuthHeaderClient title="Music Portal" />
 
       <SongListPanel
@@ -114,7 +141,7 @@ export default function HomeClient(): React.ReactElement {
         sort={sort}
         sortDir={sortDir}
         onToggleSort={toggleSort}
-        onRowClick={(row) => { openInNewTab(row.song_id); }}
+        onRowClick={(row) => openInNewTab(row.song_id)}
         gridCols={GRID_COLS}
         tableMinPx={TABLE_MIN_PX}
         rowPx={TABLE_ROW_PX}

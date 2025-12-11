@@ -1,7 +1,6 @@
 // src/app/viewer/viewer-client.tsx
 "use client";
 
-import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import ScoreViewer from "@/components/ScoreViewer";
 import { AnnotationsProvider } from "@/components/AnnotationsProvider";
@@ -12,66 +11,26 @@ function isPositiveIntString(v: string | null): v is string {
 
 export default function ViewerClient(): React.ReactElement {
   const params = useSearchParams();
-  const id = isPositiveIntString(params.get("id")) ? params.get("id")! : undefined;
 
-  // -----------------------------------------
-  // Hooks MUST come before any early return
-  // -----------------------------------------
-  const [userId, setUserId] = useState<number | null>(null);
-  const [checkedUser, setCheckedUser] = useState(false);
+  const idParam = params.get("id");
+  const uidParam = params.get("uid");      // <-- this is the key line
 
-  useEffect(() => {
-    let alive = true;
+  const id = isPositiveIntString(idParam) ? Number(idParam) : undefined;
+  const userId = isPositiveIntString(uidParam) ? Number(uidParam) : null;  // authoritative
 
-    async function loadUser() {
-      try {
-        const res = await fetch("/api/whoami", {
-          cache: "no-store",
-          credentials: "include",
-        });
-        if (!res.ok) {
-          if (alive) { setCheckedUser(true); }
-          return;
-        }
-
-        const json = await res.json();
-
-        // inside useEffect, right after const json = await res.json();
-        console.log("whoami from ViewerClient:", json);  //TEST
-
-        if (alive) {
-          setUserId(json.userId ?? null);
-          setCheckedUser(true);
-        }
-      } catch {
-        if (alive) { setCheckedUser(true); }
-      }
-    }
-
-    loadUser();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // -----------------------------------------
-  // Now the early return is allowed
-  // -----------------------------------------
   if (id === undefined) {
     return (
       <p style={{ color: "crimson" }}>
-        No score id provided. Open this page with <code>?id=2</code>.
+        No score id provided. Use <code>?id=2</code>.
       </p>
     );
   }
 
-  const songId = Number(id);
   const src = `/api/song/${id}`;
 
-  if (!checkedUser) {
-    return <p>Loading…</p>;
-  }
-
+  //
+  // If there is NO uid, this is a read-only viewer
+  //
   if (userId === null) {
     return (
       <div
@@ -86,17 +45,17 @@ export default function ViewerClient(): React.ReactElement {
           You must be signed in to view or edit annotations.
         </p>
 
-        {/* Provider stays mounted, but userId=null means read-only mode */}
-        <AnnotationsProvider songId={songId} userId={null}>
+        {/* provider stays mounted but in read-only mode */}
+        <AnnotationsProvider songId={id} userId={null}>
           <ScoreViewer src={src} />
         </AnnotationsProvider>
       </div>
     );
   }
 
-  // -----------------------------------------
-  // Normal render with real userId
-  // -----------------------------------------
+  //
+  // Normal: uid was passed in the URL
+  //
   return (
     <div
       style={{
@@ -106,7 +65,7 @@ export default function ViewerClient(): React.ReactElement {
         minHeight: 0,
       }}
     >
-      <AnnotationsProvider songId={songId} userId={userId}>
+      <AnnotationsProvider songId={id} userId={userId}>
         <ScoreViewer src={src} />
       </AnnotationsProvider>
     </div>
