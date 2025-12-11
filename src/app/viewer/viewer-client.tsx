@@ -35,6 +35,10 @@ export default function ViewerClient(): React.ReactElement {
         }
 
         const json = await res.json();
+
+        // inside useEffect, right after const json = await res.json();
+        console.log("whoami from ViewerClient:", json);  //TEST
+
         if (alive) {
           setUserId(json.userId ?? null);
           setCheckedUser(true);
