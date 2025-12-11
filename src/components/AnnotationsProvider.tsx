@@ -185,6 +185,7 @@ export function AnnotationsProvider({
     try {
       const response = await fetch("/api/user-song", {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },
@@ -238,6 +239,7 @@ export function AnnotationsProvider({
       try {
         const response = await fetch("/api/user-song-measure", {
           method: "POST",
+          credentials: "include",
           headers: {
             "Content-Type": "application/json",
           },

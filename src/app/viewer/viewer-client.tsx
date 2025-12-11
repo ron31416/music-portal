@@ -25,7 +25,10 @@ export default function ViewerClient(): React.ReactElement {
 
     async function loadUser() {
       try {
-        const res = await fetch("/api/whoami", { cache: "no-store" });
+        const res = await fetch("/api/whoami", {
+          cache: "no-store",
+          credentials: "include",
+        });
         if (!res.ok) {
           if (alive) { setCheckedUser(true); }
           return;
