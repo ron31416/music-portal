@@ -67,12 +67,23 @@ export default function ViewerClient(): React.ReactElement {
 
   if (userId === null) {
     return (
-      <>
+      <div
+        style={{
+          position: "relative",
+          background: "#fff",
+          width: "100%",
+          minHeight: 0,
+        }}
+      >
         <p style={{ color: "crimson" }}>
           You must be signed in to view or edit annotations.
         </p>
-        <ScoreViewer src={src} />
-      </>
+
+        {/* Provider stays mounted, but userId=null means read-only mode */}
+        <AnnotationsProvider songId={songId} userId={null}>
+          <ScoreViewer src={src} />
+        </AnnotationsProvider>
+      </div>
     );
   }
 
