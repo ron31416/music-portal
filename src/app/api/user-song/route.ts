@@ -4,8 +4,7 @@ export const runtime = "nodejs";
 
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { getSupabaseServerClient } from "@/lib/supabaseServer";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { DB_SCHEMA } from "@/lib/dbSchema";
 
@@ -133,39 +132,23 @@ export async function POST(req: NextRequest): Promise<Response> {
       return badRequestJson("songId must be a positive integer");
     }
 
-    // 2) Bind a Supabase SSR client to this request's cookie jar
-    const cookieStore = await cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return cookieStore.get(name)?.value ?? undefined;
-          },
-          set(name: string, value: string, options: CookieOptions) {
-            cookieStore.set({ name, value, ...options });
-          },
-          remove(name: string, options: CookieOptions) {
-            cookieStore.set({ name, value: "", ...options, maxAge: 0 });
-          },
-        },
-      }
-    );
+    // 2) Read the current auth user via the shared server helper
+    const supabase = await getSupabaseServerClient();
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
 
-    // 3) Read verified session/email from Supabase Auth
-    const { data: sessData, error: sessErr } = await supabase.auth.getSession();
-    if (sessErr) {
-      console.warn("[user-song POST] getSession error:", sessErr);
-      return unauthorizedJson("Session read failed");
+    if (userErr) {
+      console.warn("[user-song POST] auth.getUser error:", userErr);
+      return unauthorizedJson("auth_getUser_error");
     }
 
-    const email = sessData?.session?.user?.email ?? null;
+    const email = (userData.user?.email as string | null) ?? null;
+
     if (!email) {
-      return unauthorizedJson("Not signed in");
+      console.warn("[user-song POST] no email on user");
+      return unauthorizedJson("no_email_on_user");
     }
 
-    // 4) Use service-role client to run the upsert by email
+    // 3) Use service-role client to run the upsert by email
     const supabaseAdmin = getSupabaseAdmin();
 
     const { data, error } = await supabaseAdmin
