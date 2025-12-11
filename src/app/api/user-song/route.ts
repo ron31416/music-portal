@@ -182,7 +182,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       .schema(DB_SCHEMA)
       .rpc("user_song_upsert", {
         p_user_id: userId,
-        p_user_email: null,
         p_song_id: songId,
       });
 
