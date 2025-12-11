@@ -11,11 +11,6 @@ import { DB_SCHEMA } from "@/lib/dbSchema";
 // Types
 //=========================*/
 
-type UserSongRequestBody = {
-  songId: number;
-  userId: number;
-};
-
 type UserSongRow = {
   user_song_id: number;
   user_id: number;
@@ -115,14 +110,44 @@ export async function GET(req: NextRequest): Promise<Response> {
 //=========================*/
 export async function POST(req: NextRequest): Promise<Response> {
   try {
-    const body = (await req.json()) as Partial<UserSongRequestBody>;
-    const { songId, userId } = body;
+    // --------------------------------------------
+    // Safely read and log the incoming request body
+    // --------------------------------------------
+    let raw: unknown;
+    try {
+      raw = await req.json();
+    } catch (err) {
+      console.error("[user-song POST] Failed to parse JSON body:", err);
+      return badRequestJson("Invalid JSON body");
+    }
 
+    console.log("[user-song POST] RAW BODY:", raw);
+
+    // Ensure raw is an object before destructuring
+    if (typeof raw !== "object" || raw === null) {
+      return badRequestJson("Request body must be an object");
+    }
+
+    const body = raw as Record<string, unknown>;
+    const songId = body.songId;
+    const userId = body.userId;
+
+    console.log(
+      "[user-song POST] Parsed values → songId:",
+      songId,
+      "userId:",
+      userId
+    );
+
+    // --------------------------------------------
+    // Validation
+    // --------------------------------------------
     if (
       typeof songId !== "number" ||
       !Number.isInteger(songId) ||
       songId <= 0
     ) {
+      console.error("[user-song POST] Invalid songId:", songId);
       return badRequestJson("songId must be a positive integer");
     }
 
@@ -131,9 +156,13 @@ export async function POST(req: NextRequest): Promise<Response> {
       !Number.isInteger(userId) ||
       userId <= 0
     ) {
+      console.error("[user-song POST] Invalid userId:", userId);
       return badRequestJson("userId must be a positive integer");
     }
 
+    // --------------------------------------------
+    // Perform RPC call (same as before)
+    // --------------------------------------------
     const supabaseAdmin = getSupabaseAdmin();
 
     const { data, error } = await supabaseAdmin
@@ -152,8 +181,12 @@ export async function POST(req: NextRequest): Promise<Response> {
     const rows = Array.isArray(data) ? (data as UserSongRow[]) : [];
     const row = rows.length > 0 ? rows[0] : null;
 
+    console.log("[user-song POST] Upsert result row:", row);
+
     return NextResponse.json({ ok: true, data: row }, { status: 200 });
+
   } catch (e: unknown) {
+    console.error("[user-song POST] route error:", e);
     const message =
       e instanceof Error
         ? e.message
@@ -161,7 +194,6 @@ export async function POST(req: NextRequest): Promise<Response> {
           ? e
           : "Unexpected error in user-song POST endpoint";
 
-    console.error("[user-song POST] route error:", e);
     return serverErrorJson(message);
   }
 }
