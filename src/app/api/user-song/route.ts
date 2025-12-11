@@ -121,8 +121,6 @@ export async function POST(req: NextRequest): Promise<Response> {
       return badRequestJson("Invalid JSON body");
     }
 
-    console.log("[user-song POST] RAW BODY:", raw);
-
     // Ensure raw is an object before destructuring
     if (typeof raw !== "object" || raw === null) {
       return badRequestJson("Request body must be an object");
@@ -131,13 +129,6 @@ export async function POST(req: NextRequest): Promise<Response> {
     const body = raw as Record<string, unknown>;
     const songId = body.songId;
     const userId = body.userId;
-
-    console.log(
-      "[user-song POST] Parsed values → songId:",
-      songId,
-      "userId:",
-      userId
-    );
 
     // --------------------------------------------
     // Validation
@@ -180,8 +171,6 @@ export async function POST(req: NextRequest): Promise<Response> {
 
     const rows = Array.isArray(data) ? (data as UserSongRow[]) : [];
     const row = rows.length > 0 ? rows[0] : null;
-
-    console.log("[user-song POST] Upsert result row:", row);
 
     return NextResponse.json({ ok: true, data: row }, { status: 200 });
 
