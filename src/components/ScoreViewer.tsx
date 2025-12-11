@@ -2091,9 +2091,11 @@ export default function ScoreViewer({
     saveAnnotationsForMeasure,
     annotationsByMeasure,
     isLoading: annotationsLoading,
+    isAuthenticated,
+    ensureUserSongRow,
   } = useAnnotations();
 
-  const { ensureUserSongRow } = useAnnotations(); //TEST
+  //const { ensureUserSongRow } = useAnnotations(); //TEST
 
   // Always use the latest getAnnotationsForMeasure, even from stable callbacks / pipeline
   const getAnnotationsForMeasureRef = useRef<GetAnnotationsForMeasure>(
@@ -6018,70 +6020,71 @@ export default function ScoreViewer({
       </div>
 
       {/* EDIT / DONE toggle hotspot */}
-      <button
-        type="button"
-        data-ignore-page-turn="true"
-        // Touch/pen only: stop parent page-turn handlers *early*
-        onPointerDownCapture={(e) => {
-          if (e.pointerType === "touch" || e.pointerType === "pen") {
-            e.preventDefault();
-            e.stopPropagation();
-          }
-        }}
-        onPointerUpCapture={(e) => {
-          if (e.pointerType === "touch" || e.pointerType === "pen") {
-            e.preventDefault();
-            e.stopPropagation();
-          }
-        }}
-
-        // Your ORIGINAL handlers (leave PC behavior untouched)
-        onPointerDown={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        }}
-        onPointerUp={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        }}
-        onClick={async (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-
-          // If we are entering edit mode, ensure the user_song row exists first
-          if (!isEditMode) {
-            try {
-              await ensureUserSongRow();
-            } catch (err) {
-              console.error("Failed to ensure user_song row", err);
-              // Optional: early-return here if you want to *block* edit mode on failure.
-              // return;
+      {isAuthenticated && (
+        <button
+          type="button"
+          data-ignore-page-turn="true"
+          // Touch/pen only: stop parent page-turn handlers *early*
+          onPointerDownCapture={(e) => {
+            if (e.pointerType === "touch" || e.pointerType === "pen") {
+              e.preventDefault();
+              e.stopPropagation();
             }
-          }
+          }}
+          onPointerUpCapture={(e) => {
+            if (e.pointerType === "touch" || e.pointerType === "pen") {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          }}
+          // Your ORIGINAL handlers (leave PC behavior untouched)
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onPointerUp={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onClick={async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
 
-          // Then toggle edit mode (Edit <-> Done)
-          toggleEditMode();
-        }}
-        aria-pressed={isEditMode}
-        style={{
-          position: "absolute",
-          top: 8,
-          right: 8,
-          zIndex: 100,
-          padding: "6px 10px",
-          borderRadius: 8,
-          border: "1px solid #999",
-          background: isEditMode ? "#222" : "#f5f5f5",
-          color: isEditMode ? "#fff" : "#111",
-          fontSize: 14,
-          cursor: "pointer",
-          opacity: 0.9,
-          pointerEvents: "auto", // be explicit
-          touchAction: "none",   // helps prevent gesture interpretation
-        }}
-      >
-        {isEditMode ? "Done" : "Edit"}
-      </button>
+            // If we are entering edit mode, ensure the user_song row exists first
+            if (!isEditMode) {
+              try {
+                await ensureUserSongRow();
+              } catch (err) {
+                console.error("Failed to ensure user_song row", err);
+                // If you want to block entering edit mode on failure, early-return here.
+                // return;
+              }
+            }
+
+            // Then toggle edit mode (Edit <-> Done)
+            toggleEditMode();
+          }}
+          aria-pressed={isEditMode}
+          style={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            zIndex: 100,
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: "1px solid #999",
+            background: isEditMode ? "#222" : "#f5f5f5",
+            color: isEditMode ? "#fff" : "#111",
+            fontSize: 14,
+            cursor: "pointer",
+            opacity: 0.9,
+            pointerEvents: "auto", // be explicit
+            touchAction: "none",   // helps prevent gesture interpretation
+          }}
+        >
+          {isEditMode ? "Done" : "Edit"}
+        </button>
+      )}
 
       {/* DEBUG / preview root for cropped measure overlay*/}
       <div

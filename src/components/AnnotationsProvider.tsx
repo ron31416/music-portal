@@ -18,9 +18,9 @@ import {
 //   dxRel, dyRel are offsets expressed in units of notehead height.
 export interface NoteAnchorRef {
   type: "note";
-  noteId: string;   // matches NoteAnchor.id in ScoreViewer
-  dxRel: number;    // offset from note center X in units of note height
-  dyRel: number;    // offset from note center Y in units of note height
+  noteId: string;     // matches NoteAnchor.id in ScoreViewer
+  dxRel: number;      // offset from note center X in units of note height
+  dyRel: number;      // offset from note center Y in units of note height
   baseNoteH?: number; // notehead height at creation time, in px
 }
 
@@ -67,15 +67,13 @@ export type AnnotationMap = Record<MeasureNumber, AnnotationPayload>;
 // API response types
 // =========================
 
-// Request body for saving annotations for a single measure
 interface SaveAnnotationsRequestBody {
-  userId: number;
+  // NOTE: userId removed. Server infers user from auth cookies.
   songId: number;
   measureNumber: MeasureNumber;
   annotations: AnnotationPayload;
 }
 
-// Minimal response we expect back from the API route
 interface SaveAnnotationsResponseBody {
   ok: boolean;
   error?: string;
@@ -110,6 +108,12 @@ type UserSongMeasureApiResponse = {
   message?: string;
 };
 
+type WhoAmIResponse = {
+  ok: boolean;
+  userId: number | null;
+  // other fields ignored
+};
+
 // =========================
 // Context types
 // =========================
@@ -121,6 +125,9 @@ interface AnnotationsContextValue {
 
   // True once a `user_song` row exists for (user, song).
   hasUserSongRow: boolean;
+
+  // True if /api/whoami reports a logged-in user.
+  isAuthenticated: boolean;
 
   annotationsByMeasure: AnnotationMap;
 
@@ -143,8 +150,7 @@ interface AnnotationsContextValue {
 const AnnotationsContext = createContext<AnnotationsContextValue | null>(null);
 
 interface AnnotationsProviderProps {
-  songId: number;          // matches p_song_id int
-  userId: number | null;   // null/undefined if not logged in
+  songId: number; // matches p_song_id int
   children: ReactNode;
 }
 
@@ -152,14 +158,13 @@ interface AnnotationsProviderProps {
 // Provider
 // =========================
 
-// Top-level provider for all annotations of a given song for a given user.
-// Usage (already wired in ViewerClient):
-//   <AnnotationsProvider songId={songId} userId={userId}>
+// Top-level provider for all annotations of a given song.
+// Usage (after ViewerClient cleanup):
+//   <AnnotationsProvider songId={songId}>
 //     <ScoreViewer src={src} />
 //   </AnnotationsProvider>
 export function AnnotationsProvider({
   songId,
-  userId,
   children,
 }: AnnotationsProviderProps): ReactElement {
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -169,58 +174,46 @@ export function AnnotationsProvider({
   const [annotationsByMeasure, setAnnotationsByMeasure] =
     useState<AnnotationMap>({});
 
-  // Ensure a user_song row exists for the current user & song.
-  // This is called from the Edit button, not during initial load.
-  const ensureUserSongRow = useCallback(async (): Promise<void> => {
-    // If we've already ensured it, nothing to do.
-    if (hasUserSongRow) {
-      return;
-    }
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
 
-    if (!songId) {
-      console.warn("ensureUserSongRow: no songId; ignoring");
-      return;
-    }
+  // Step 1: Check whether user is logged in via /api/whoami
+  useEffect(() => {
+    let isCancelled = false;
 
-    try {
-      const response = await fetch("/api/user-song", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ songId, userId }),
-      });
+    async function loadAuthStatus(): Promise<void> {
+      try {
+        const res = await fetch("/api/whoami", {
+          credentials: "include",
+          cache: "no-store",
+        });
 
-      if (!response.ok) {
-        console.error("user-song upsert POST error, status:", response.status);
-        setErrorMessage(
-          response.status === 401
-            ? "You must be signed in to edit annotations."
-            : "Unable to prepare this score for annotations."
-        );
-        return;
+        if (!res.ok) {
+          if (!isCancelled) {
+            setIsAuthenticated(false);
+          }
+          return;
+        }
+
+        const json = (await res.json()) as WhoAmIResponse;
+        if (!isCancelled) {
+          setIsAuthenticated(json.userId !== null);
+        }
+      } catch {
+        if (!isCancelled) {
+          // Treat network errors as "not authenticated" for now.
+          setIsAuthenticated(false);
+        }
       }
-
-      const json = (await response.json()) as UserSongApiResponse;
-
-      if (json.ok && json.data) {
-        setHasUserSongRow(true);
-      } else {
-        console.warn("user-song upsert POST returned no row", json);
-        // leave hasUserSongRow as-is
-      }
-    } catch (e) {
-      console.error("ensureUserSongRow: network error", e);
-      setErrorMessage("Network error while preparing annotations.");
     }
-  }, [hasUserSongRow, songId, userId]);
 
-  // Initial load:
-  //   - If no user → just mark as not loading; annotations remain empty.
-  //   - If user exists:
-  //       1. Load all measure annotations via /api/user-song-measure.
-  //       2. If any rows are returned, we know a user_song row exists.
+    void loadAuthStatus();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  // Step 2: Load annotations if authenticated.
   useEffect(() => {
     let isCancelled = false;
 
@@ -228,11 +221,13 @@ export function AnnotationsProvider({
       setIsLoading(true);
       setErrorMessage(null);
 
-      if (userId === null || userId === undefined) {
+      if (!isAuthenticated) {
         // Not logged in → read-only view, no annotations.
-        setHasUserSongRow(false);
-        setAnnotationsByMeasure({});
-        setIsLoading(false);
+        if (!isCancelled) {
+          setHasUserSongRow(false);
+          setAnnotationsByMeasure({});
+          setIsLoading(false);
+        }
         return;
       }
 
@@ -244,12 +239,22 @@ export function AnnotationsProvider({
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            userId,
+            // NOTE: userId omitted; server derives from cookies.
             songId,
           }),
         });
 
         if (!response.ok) {
+          if (response.status === 401) {
+            // Lost auth or not logged in after all.
+            if (!isCancelled) {
+              setIsAuthenticated(false);
+              setHasUserSongRow(false);
+              setAnnotationsByMeasure({});
+            }
+            return;
+          }
+
           const text = await response.text();
           throw new Error(
             `user-song-measure API error: ${response.status} ${text}`
@@ -281,7 +286,6 @@ export function AnnotationsProvider({
       } catch (err: unknown) {
         if (!isCancelled) {
           console.error("Failed to load annotations via API", err);
-          // "No annotations yet" is not an error; but API/parse failures are.
           setErrorMessage("Could not load annotations for this piece.");
         }
       } finally {
@@ -291,12 +295,14 @@ export function AnnotationsProvider({
       }
     }
 
+    // Only attempt to load once we know auth status (initial default false
+    // already produces "read-only" behavior, but this keeps semantics clear).
     void loadAllAnnotations();
 
     return () => {
       isCancelled = true;
     };
-  }, [songId, userId]);
+  }, [songId, isAuthenticated]);
 
   const getAnnotationsForMeasure = useCallback(
     (measureNumber: MeasureNumber): AnnotationPayload | undefined => {
@@ -305,17 +311,63 @@ export function AnnotationsProvider({
     [annotationsByMeasure]
   );
 
+  // Ensure a user_song row exists for the current user & song.
+  // This is called from the Edit button, not during initial load.
+  const ensureUserSongRow = useCallback(async (): Promise<void> => {
+    if (hasUserSongRow) {
+      return;
+    }
+
+    if (!songId) {
+      console.warn("ensureUserSongRow: no songId; ignoring");
+      return;
+    }
+
+    if (!isAuthenticated) {
+      setErrorMessage("You must be signed in to edit annotations.");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/user-song", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ songId }), // user inferred on server
+      });
+
+      if (!response.ok) {
+        console.error("user-song upsert POST error, status:", response.status);
+        setErrorMessage(
+          response.status === 401
+            ? "You must be signed in to edit annotations."
+            : "Unable to prepare this score for annotations."
+        );
+        return;
+      }
+
+      const json = (await response.json()) as UserSongApiResponse;
+
+      if (json.ok && json.data) {
+        setHasUserSongRow(true);
+      } else {
+        console.warn("user-song upsert POST returned no row", json);
+        // leave hasUserSongRow as-is
+      }
+    } catch (e) {
+      console.error("ensureUserSongRow: network error", e);
+      setErrorMessage("Network error while preparing annotations.");
+    }
+  }, [hasUserSongRow, isAuthenticated, songId]);
+
   // Save handler: optimistic local update + PUT /api/user-song-measure.
   const saveAnnotationsForMeasure = useCallback(
     async (
       measureNumber: MeasureNumber,
       payload: AnnotationPayload
     ): Promise<void> => {
-      // Require a logged-in user and a valid songId
-      if (!userId) {
-        console.warn("saveAnnotationsForMeasure: no userId; ignoring");
-        return;
-      }
       if (!songId) {
         console.warn("saveAnnotationsForMeasure: no songId; ignoring");
         return;
@@ -325,6 +377,10 @@ export function AnnotationsProvider({
           "saveAnnotationsForMeasure: invalid measureNumber",
           measureNumber
         );
+        return;
+      }
+      if (!isAuthenticated) {
+        setErrorMessage("You must be signed in to edit annotations.");
         return;
       }
 
@@ -339,7 +395,6 @@ export function AnnotationsProvider({
 
       try {
         const body: SaveAnnotationsRequestBody = {
-          userId,
           songId,
           measureNumber,
           annotations: payload,
@@ -347,6 +402,7 @@ export function AnnotationsProvider({
 
         const response = await fetch("/api/user-song-measure", {
           method: "PUT",
+          credentials: "include",
           headers: {
             "Content-Type": "application/json",
           },
@@ -354,6 +410,12 @@ export function AnnotationsProvider({
         });
 
         if (!response.ok) {
+          if (response.status === 401) {
+            setIsAuthenticated(false);
+            setErrorMessage("You must be signed in to edit annotations.");
+            return;
+          }
+
           const text = await response.text();
           console.error(
             "saveAnnotationsForMeasure: HTTP error",
@@ -389,7 +451,7 @@ export function AnnotationsProvider({
         setIsSaving(false);
       }
     },
-    [userId, songId]
+    [isAuthenticated, songId]
   );
 
   const contextValue: AnnotationsContextValue = useMemo(
@@ -398,6 +460,7 @@ export function AnnotationsProvider({
       isSaving,
       errorMessage,
       hasUserSongRow,
+      isAuthenticated,
       annotationsByMeasure,
       getAnnotationsForMeasure,
       saveAnnotationsForMeasure,
@@ -408,6 +471,7 @@ export function AnnotationsProvider({
       errorMessage,
       getAnnotationsForMeasure,
       hasUserSongRow,
+      isAuthenticated,
       isLoading,
       isSaving,
       saveAnnotationsForMeasure,

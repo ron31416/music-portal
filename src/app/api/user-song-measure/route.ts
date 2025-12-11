@@ -12,7 +12,6 @@ import { DB_SCHEMA } from "@/lib/dbSchema";
    ========================= */
 
 type ListRequestBody = {
-  userId: number;
   songId: number;
 };
 
@@ -24,7 +23,6 @@ type UserSongMeasureRow = {
 };
 
 type SaveRequestBody = {
-  userId: number;
   songId: number;
   measureNumber: number;
   annotations: unknown; // matches annotations_json JSONB payload
@@ -32,6 +30,13 @@ type SaveRequestBody = {
 
 type SaveResponseBody = {
   ok: boolean;
+  error?: string;
+  message?: string;
+};
+
+type WhoAmIResponse = {
+  ok: boolean;
+  userId: number | null;
   error?: string;
   message?: string;
 };
@@ -47,6 +52,13 @@ function badRequestJson(message: string): Response {
   );
 }
 
+function unauthorizedJson(message: string): Response {
+  return NextResponse.json(
+    { ok: false, error: "unauthorized", message },
+    { status: 401 }
+  );
+}
+
 function serverErrorJson(message: string): Response {
   return NextResponse.json(
     { ok: false, error: "server_error", message },
@@ -54,24 +66,46 @@ function serverErrorJson(message: string): Response {
   );
 }
 
+// Helper: reuse /api/whoami to resolve current user from cookies.
+async function getCurrentUserId(req: NextRequest): Promise<number | null> {
+  const url = new URL(req.url);
+  url.pathname = "/api/whoami";
+
+  const cookieHeader = req.headers.get("cookie") ?? "";
+
+  const res = await fetch(url.toString(), {
+    headers: {
+      cookie: cookieHeader,
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    return null;
+  }
+
+  const json = (await res.json()) as WhoAmIResponse;
+  return json.ok && json.userId !== null ? json.userId : null;
+}
+
 /* =========================
    POST /api/user-song-measure
-   Body: { userId: number, songId: number }
+   Body: { songId: number }
    -> lists all measures for that (user, song)
    ========================= */
 
 export async function POST(req: NextRequest): Promise<Response> {
   try {
     const body = (await req.json()) as Partial<ListRequestBody>;
-
-    const { userId, songId } = body;
-
-    if (typeof userId !== "number" || !Number.isInteger(userId) || userId <= 0) {
-      return badRequestJson("userId must be a positive integer");
-    }
+    const { songId } = body;
 
     if (typeof songId !== "number" || !Number.isInteger(songId) || songId <= 0) {
       return badRequestJson("songId must be a positive integer");
+    }
+
+    const userId = await getCurrentUserId(req);
+    if (!userId) {
+      return unauthorizedJson("You must be signed in to load annotations.");
     }
 
     const supabaseAdmin = getSupabaseAdmin();
@@ -113,7 +147,6 @@ export async function POST(req: NextRequest): Promise<Response> {
 /* =========================
    PUT /api/user-song-measure
    Body: {
-     userId: number;
      songId: number;
      measureNumber: number;
      annotations: unknown;
@@ -124,10 +157,11 @@ export async function POST(req: NextRequest): Promise<Response> {
 export async function PUT(req: NextRequest): Promise<Response> {
   try {
     const body = (await req.json()) as Partial<SaveRequestBody>;
-    const { userId, songId, measureNumber, annotations } = body;
+    const { songId, measureNumber, annotations } = body;
 
-    if (typeof userId !== "number" || !Number.isInteger(userId) || userId <= 0) {
-      return badRequestJson("userId must be a positive integer");
+    const userId = await getCurrentUserId(req);
+    if (!userId) {
+      return unauthorizedJson("You must be signed in to save annotations.");
     }
 
     if (typeof songId !== "number" || !Number.isInteger(songId) || songId <= 0) {
@@ -148,9 +182,6 @@ export async function PUT(req: NextRequest): Promise<Response> {
 
     const supabaseAdmin = getSupabaseAdmin();
 
-    // IMPORTANT: adjust RPC name and parameter names if your function differs.
-    // This assumes you have a function:
-    //   user_song_measure_insert(p_user_id, p_song_id, p_measure_number, p_annotations_json)
     const { error } = await supabaseAdmin
       .schema(DB_SCHEMA)
       .rpc("user_song_measure_upsert", {
@@ -161,7 +192,7 @@ export async function PUT(req: NextRequest): Promise<Response> {
       });
 
     if (error) {
-      console.error("user_song_measure_insert error:", error);
+      console.error("user_song_measure_upsert error:", error);
       return NextResponse.json<SaveResponseBody>(
         {
           ok: false,

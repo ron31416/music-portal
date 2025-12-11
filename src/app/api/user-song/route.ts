@@ -19,6 +19,13 @@ type UserSongRow = {
   updated_datetime: string | null;
 };
 
+type WhoAmIResponse = {
+  ok: boolean;
+  userId: number | null;
+  error?: string;
+  message?: string;
+};
+
 //=========================
 // Small helpers (JSON responses)
 //=========================*/
@@ -30,6 +37,13 @@ function badRequestJson(message: string): Response {
   );
 }
 
+function unauthorizedJson(message: string): Response {
+  return NextResponse.json(
+    { ok: false, error: "unauthorized", message },
+    { status: 401 }
+  );
+}
+
 function serverErrorJson(message: string): Response {
   return NextResponse.json(
     { ok: false, error: "server_error", message },
@@ -37,30 +51,53 @@ function serverErrorJson(message: string): Response {
   );
 }
 
+// Helper: reuse /api/whoami to resolve current user from cookies.
+async function getCurrentUserId(req: NextRequest): Promise<number | null> {
+  const url = new URL(req.url);
+  url.pathname = "/api/whoami";
+
+  const cookieHeader = req.headers.get("cookie") ?? "";
+
+  const res = await fetch(url.toString(), {
+    headers: {
+      cookie: cookieHeader,
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    return null;
+  }
+
+  const json = (await res.json()) as WhoAmIResponse;
+  return json.ok && json.userId !== null ? json.userId : null;
+}
+
 //=========================
 // GET /api/user-song
-// Query: ?userId=123&songId=456
+// Query: ?songId=456
+// Uses current authenticated user from cookies.
 // Calls: user_song_get(p_user_id, p_song_id)
 // Returns: { ok: true, data: UserSongRow | null }
 //=========================*/
 export async function GET(req: NextRequest): Promise<Response> {
   try {
     const url = new URL(req.url);
-    const userIdParam = url.searchParams.get("userId");
     const songIdParam = url.searchParams.get("songId");
 
-    if (!userIdParam || !songIdParam) {
-      return badRequestJson("userId and songId query parameters are required");
+    if (!songIdParam) {
+      return badRequestJson("songId query parameter is required");
     }
 
-    const userId = Number(userIdParam);
     const songId = Number(songIdParam);
 
-    if (!Number.isInteger(userId) || userId <= 0) {
-      return badRequestJson("userId must be a positive integer");
-    }
     if (!Number.isInteger(songId) || songId <= 0) {
       return badRequestJson("songId must be a positive integer");
+    }
+
+    const userId = await getCurrentUserId(req);
+    if (!userId) {
+      return unauthorizedJson("You must be signed in");
     }
 
     const supabaseAdmin = getSupabaseAdmin();
@@ -102,17 +139,14 @@ export async function GET(req: NextRequest): Promise<Response> {
 
 //=========================
 // POST /api/user-song
-// Body: { songId: number, userId: number }
+// Body: { songId: number }
 // Behavior:
-//   - Uses service_role client to call user_song_upsert(p_user_id, p_user_email=null, p_song_id).
-//   - No Supabase auth here; ViewerClient already resolved userId via /api/whoami.
+//   - Resolves current user from cookies via /api/whoami.
+//   - Calls user_song_upsert(p_user_id, p_user_email=null, p_song_id).
 // Returns: { ok: true, data: UserSongRow | null } on success
 //=========================*/
 export async function POST(req: NextRequest): Promise<Response> {
   try {
-    // --------------------------------------------
-    // Safely read and log the incoming request body
-    // --------------------------------------------
     let raw: unknown;
     try {
       raw = await req.json();
@@ -121,18 +155,13 @@ export async function POST(req: NextRequest): Promise<Response> {
       return badRequestJson("Invalid JSON body");
     }
 
-    // Ensure raw is an object before destructuring
     if (typeof raw !== "object" || raw === null) {
       return badRequestJson("Request body must be an object");
     }
 
     const body = raw as Record<string, unknown>;
     const songId = body.songId;
-    const userId = body.userId;
 
-    // --------------------------------------------
-    // Validation
-    // --------------------------------------------
     if (
       typeof songId !== "number" ||
       !Number.isInteger(songId) ||
@@ -142,18 +171,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       return badRequestJson("songId must be a positive integer");
     }
 
-    if (
-      typeof userId !== "number" ||
-      !Number.isInteger(userId) ||
-      userId <= 0
-    ) {
-      console.error("[user-song POST] Invalid userId:", userId);
-      return badRequestJson("userId must be a positive integer");
+    const userId = await getCurrentUserId(req);
+    if (!userId) {
+      return unauthorizedJson("You must be signed in to edit annotations.");
     }
 
-    // --------------------------------------------
-    // Perform RPC call (same as before)
-    // --------------------------------------------
     const supabaseAdmin = getSupabaseAdmin();
 
     const { data, error } = await supabaseAdmin
@@ -173,7 +195,6 @@ export async function POST(req: NextRequest): Promise<Response> {
     const row = rows.length > 0 ? rows[0] : null;
 
     return NextResponse.json({ ok: true, data: row }, { status: 200 });
-
   } catch (e: unknown) {
     console.error("[user-song POST] route error:", e);
     const message =
