@@ -13,10 +13,7 @@ export default function ViewerClient(): React.ReactElement {
   const params = useSearchParams();
 
   const idParam = params.get("id");
-  const uidParam = params.get("uid");      // <-- this is the key line
-
   const id = isPositiveIntString(idParam) ? Number(idParam) : undefined;
-  const userId = isPositiveIntString(uidParam) ? Number(uidParam) : null;  // authoritative
 
   if (id === undefined) {
     return (
@@ -28,34 +25,6 @@ export default function ViewerClient(): React.ReactElement {
 
   const src = `/api/song/${id}`;
 
-  //
-  // If there is NO uid, this is a read-only viewer
-  //
-  if (userId === null) {
-    return (
-      <div
-        style={{
-          position: "relative",
-          background: "#fff",
-          width: "100%",
-          minHeight: 0,
-        }}
-      >
-        <p style={{ color: "crimson" }}>
-          You must be signed in to view or edit annotations.
-        </p>
-
-        {/* provider stays mounted but in read-only mode */}
-        <AnnotationsProvider songId={id} userId={null}>
-          <ScoreViewer src={src} />
-        </AnnotationsProvider>
-      </div>
-    );
-  }
-
-  //
-  // Normal: uid was passed in the URL
-  //
   return (
     <div
       style={{
@@ -65,7 +34,7 @@ export default function ViewerClient(): React.ReactElement {
         minHeight: 0,
       }}
     >
-      <AnnotationsProvider songId={id} userId={userId}>
+      <AnnotationsProvider songId={id}>
         <ScoreViewer src={src} />
       </AnnotationsProvider>
     </div>
