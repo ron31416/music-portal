@@ -10,7 +10,6 @@ import { fetchSongList } from "@/lib/songListFetch";
 import AuthHeaderClient from "@/components/auth/AuthHeaderClient";
 
 // --- Config ---
-//                 First   Last    Title   Level
 const GRID_COLS_PX = [140, 140, 260, 120] as const;
 const GRID_COLS: React.CSSProperties["gridTemplateColumns"] =
   GRID_COLS_PX.map((n) => `${n}px`).join(" ");
@@ -23,42 +22,49 @@ const SONG_LIST_ENDPOINT = "/api/song";
 type SortDir = "asc" | "desc";
 
 export default function HomeClient(): React.ReactElement {
-  // Data/state
+  // Song list state
   const [rows, setRows] = React.useState<SongListItem[]>([]);
   const [listLoading, setListLoading] = React.useState(false);
   const [listError, setListError] = React.useState("");
 
-  // Sorting
   const [sort, setSort] = React.useState<SongColToken | null>(DEFAULT_SORT);
   const [sortDir, setSortDir] = React.useState<SortDir>(DEFAULT_DIR);
 
-  // NEW: userId for the viewer tab
-  const [viewerUserId, setViewerUserId] = React.useState<number | null>(null);
-
-  // Fetch lifecycle
   const listAbortRef = React.useRef<AbortController | null>(null);
   const listSeqRef = React.useRef(0);
 
-  // NEW: Load userId for viewer
+  // NEW: viewer user ID (passed to /viewer?uid=###)
+  const [viewerUserId, setViewerUserId] = React.useState<number | null>(null);
+
+  // Load current user ID from /api/whoami
   React.useEffect(() => {
-    async function loadWho() {
+    let alive = true;
+
+    async function loadUser() {
       try {
         const res = await fetch("/api/whoami", {
-          cache: "no-store",
           credentials: "include",
+          cache: "no-store",
         });
+
         if (!res.ok) { return; }
 
         const json = await res.json();
-        setViewerUserId(json.userId ?? null);
+        if (alive) {
+          setViewerUserId(json.userId ?? null);
+        }
       } catch {
-        setViewerUserId(null);
+        /* ignore — treat as signed-out */
       }
     }
-    loadWho();
+
+    loadUser();
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  // Fetch song list
+  // --- Fetch song list ---
   const refreshSongList = React.useCallback(
     async (
       overrideSort?: SongColToken | null,
@@ -68,10 +74,13 @@ export default function HomeClient(): React.ReactElement {
       setListError("");
       if (showSpinner) { setListLoading(true); }
 
-      if (listAbortRef.current !== null) { listAbortRef.current.abort(); }
+      if (listAbortRef.current !== null) {
+        listAbortRef.current.abort();
+      }
 
       const controller = new AbortController();
       listAbortRef.current = controller;
+
       const seq = listSeqRef.current + 1;
       listSeqRef.current = seq;
 
@@ -90,8 +99,8 @@ export default function HomeClient(): React.ReactElement {
 
         setRows(data);
       } catch (e: unknown) {
-        const name = (e as { name?: string } | null)?.name ?? "";
-        if (name !== "AbortError") {
+        const isAbort = e instanceof Error && e.name === "AbortError";
+        if (!isAbort) {
           setListError(e instanceof Error ? e.message : String(e));
           setRows([]);
         }
@@ -102,27 +111,33 @@ export default function HomeClient(): React.ReactElement {
     [sort, sortDir]
   );
 
-  // Initial list load
+  // Load list on mount
   React.useEffect(() => {
     void refreshSongList();
     return () => {
-      if (listAbortRef.current !== null) { listAbortRef.current.abort(); }
+      if (listAbortRef.current !== null) {
+        listAbortRef.current.abort();
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Sorting handler
   const toggleSort = (key: SongColToken): void => {
     const nextDir: SortDir =
       sort === key ? (sortDir === "asc" ? "desc" : "asc") : "asc";
+
     setSort(key);
     setSortDir(nextDir);
+
     void refreshSongList(key, nextDir);
   };
 
-  // NEW: open viewer with uid=userId GET param
+  // --- NEW: Open viewer WITH uid passed in URL ---
   const openInNewTab = (id: number): void => {
     const tabId = Date.now().toString(36);
-    const uid = viewerUserId ?? "";
+    const uid = viewerUserId ?? ""; // If null, send empty
+
     window.open(
       `/viewer?tab=${tabId}&id=${id}&uid=${uid}`,
       "_blank",
@@ -141,7 +156,9 @@ export default function HomeClient(): React.ReactElement {
         sort={sort}
         sortDir={sortDir}
         onToggleSort={toggleSort}
-        onRowClick={(row) => openInNewTab(row.song_id)}
+        onRowClick={(row) => {
+          openInNewTab(row.song_id);
+        }}
         gridCols={GRID_COLS}
         tableMinPx={TABLE_MIN_PX}
         rowPx={TABLE_ROW_PX}
