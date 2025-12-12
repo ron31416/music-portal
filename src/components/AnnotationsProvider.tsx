@@ -16,20 +16,26 @@ import {
 
 // Note-relative anchor:
 //   dxRel, dyRel are offsets expressed in units of notehead height.
-export interface NoteAnchorRef {
-  type: "note";
+export interface TextAnchorRef {
   noteId: string;     // matches NoteAnchor.id in ScoreViewer
   dxRel: number;      // offset from note center X in units of note height
   dyRel: number;      // offset from note center Y in units of note height
   baseNoteH?: number; // notehead height at creation time, in px
 }
 
+//TEST
+export interface PedalAnchorRef {
+  noteId: string;     // matches NoteAnchor.id in ScoreViewer
+  dxRel: number;      // offset from note center X in units of note height
+}
+//TEST
+
 // One text mark inside a measure, always anchored to a note.
 export interface AnnotationTextItem {
   kind: "text";
   text: string;
   style?: string;
-  anchor: NoteAnchorRef;  // required now: always note-anchored
+  anchor: TextAnchorRef;  // required now: always note-anchored
 }
 
 // One pedal run "segment" for a measure.
@@ -37,9 +43,10 @@ export interface AnnotationTextItem {
 // - active: this measure is part of the continuous pedal run
 export interface AnnotationPedalItem {
   kind: "pedal";
-  left?: NoteAnchorRef;
-  right?: NoteAnchorRef;
+  left?: PedalAnchorRef;
+  right?: PedalAnchorRef;
   active?: boolean;
+  order?: number;         //TEST
 }
 
 // Union of all annotation items.

@@ -9,7 +9,9 @@ import type {
   AnnotationItem,
   AnnotationTextItem,
   AnnotationPedalItem,
-  NoteAnchorRef,
+  TextAnchorRef,
+  PedalAnchorRef,
+  AnnotationMap,          //TEST
 } from "@/components/AnnotationsProvider";
 
 // ---------- Props & Types ----------
@@ -106,6 +108,188 @@ function pointHitsAnyRectWithMargin(
   return false;
 }
 
+//TEST
+function buildPedalMarkIndexFromAnnotations(map: AnnotationMap): PedalMarkIndex {
+  const marks: PedalMark[] = [];
+  const byStartKey = new Map<string, PedalMark>();
+
+  // Measures sorted numerically
+  const measureNumbers = Object.keys(map)
+    .map((k) => Number(k))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+
+  let openStart: PedalEndpointKey | null = null;
+
+  // Diagnostics
+  let missingOrderCount = 0;
+  let duplicateOrderCount = 0;
+  let boundaryItemCount = 0;
+
+  for (const measureNumber of measureNumbers) {
+    const payload = map[measureNumber];
+    const items = Array.isArray(payload?.items) ? payload!.items : [];
+
+    // Collect pedal boundary items for this measure and sort them.
+    type PedalBoundary = {
+      item: AnnotationPedalItem;
+      index: number;          // original array index (stable tiebreak)
+      order: number | null;   // explicit order if present
+      hasLeft: boolean;
+      hasRight: boolean;
+    };
+
+    const boundaries: PedalBoundary[] = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const raw = items[i];
+      if (!raw || raw.kind !== "pedal") {
+        continue;
+      }
+
+      const item = raw as AnnotationPedalItem;
+      const hasLeft = !!item.left;
+      const hasRight = !!item.right;
+
+      // Active-only (no endpoints) doesn’t affect the global index.
+      if (!hasLeft && !hasRight) {
+        continue;
+      }
+
+      boundaryItemCount++;
+
+      const hasOrder =
+        typeof item.order === "number" &&
+        Number.isFinite(item.order);
+
+      if (!hasOrder) {
+        missingOrderCount++;
+      }
+
+      boundaries.push({
+        item,
+        index: i,
+        order: hasOrder ? (item.order as number) : null,
+        hasLeft,
+        hasRight,
+      });
+    }
+
+    // Detect duplicate order values (only among items that actually have order)
+    {
+      const seen = new Set<number>();
+      for (const b of boundaries) {
+        if (b.order === null) {
+          continue;
+        }
+        if (seen.has(b.order)) {
+          duplicateOrderCount++;
+          break; // one warning per measure is enough
+        }
+        seen.add(b.order);
+      }
+    }
+
+    // Sort boundaries by explicit order if present; otherwise keep stable by original index.
+    boundaries.sort((a, b) => {
+      // Items with an explicit order come first (so legacy items don’t scramble things)
+      if (a.order !== null && b.order === null) {
+        return -1;
+      }
+      if (a.order === null && b.order !== null) {
+        return 1;
+      }
+
+      // Both have order → numeric sort
+      if (a.order !== null && b.order !== null) {
+        if (a.order !== b.order) {
+          return a.order - b.order;
+        }
+        // tie-break: stable
+        return a.index - b.index;
+      }
+
+      // Neither has order → preserve array order
+      return a.index - b.index;
+    });
+
+    // Now process this measure’s pedal boundary items in sorted order.
+    for (const entry of boundaries) {
+      const item = entry.item;
+      const hasLeft = entry.hasLeft;
+      const hasRight = entry.hasRight;
+
+      // If an item has both ends in one measure, treat it as a single-measure pedal mark.
+      if (hasLeft && hasRight) {
+        if (openStart !== null) {
+          console.warn(
+            "[pedal-index] Unexpected: openStart exists but found pedal with both left+right",
+            { openStart, measureNumber }
+          );
+          // We do not guess; abandon pairing.
+          openStart = null;
+        }
+
+        const start = endpointFromPedalAnchor(measureNumber, item.left!);
+        const end = endpointFromPedalAnchor(measureNumber, item.right!);
+
+        const mark: PedalMark = { start, end };
+        marks.push(mark);
+        byStartKey.set(pedalEndpointKeyToString(start), mark);
+        continue;
+      }
+
+      if (hasLeft) {
+        if (openStart !== null) {
+          console.warn(
+            "[pedal-index] Overlap/nesting detected (left encountered while a mark is already open).",
+            { openStart, newLeftMeasure: measureNumber, newLeft: item.left }
+          );
+          // Overlap is forbidden → drop the old open mark.
+          openStart = null;
+        }
+
+        openStart = endpointFromPedalAnchor(measureNumber, item.left!);
+        continue;
+      }
+
+      if (hasRight) {
+        if (openStart === null) {
+          console.warn("[pedal-index] Unmatched right endpoint (no open start).", {
+            measureNumber,
+            right: item.right,
+          });
+          continue;
+        }
+
+        const end = endpointFromPedalAnchor(measureNumber, item.right!);
+        const mark: PedalMark = { start: openStart, end };
+        marks.push(mark);
+        byStartKey.set(pedalEndpointKeyToString(openStart), mark);
+        openStart = null;
+        continue;
+      }
+    }
+  }
+
+  if (openStart !== null) {
+    console.warn("[pedal-index] Unterminated pedal mark (start found but no end).", { openStart });
+  }
+
+  // One compact diagnostic log so you can confirm it’s doing what you expect.
+  if (isDiagOn()) {
+    void logStep(
+      `[pedal-index] rebuilt ` +
+      `marks=${marks.length} ` +
+      `boundaryItems=${boundaryItemCount} ` +
+      `missingOrder=${missingOrderCount} ` +
+      `duplicateOrderMeasures=${duplicateOrderCount}`
+    );
+  }
+
+  return { marks, byStartKey };
+}
+//TEST
 
 async function withTimeout<T>(p: Promise<T>, ms: number, tag: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -769,6 +953,44 @@ type GetAnnotationsForMeasure = (
   measureNumber: number
 ) => MeasureAnnotation | undefined;
 
+//TEST
+// =======================
+// Pedal mark index (global)
+// =======================
+
+type PedalEndpointKey = {
+  measureNumber: number; // 1-based
+  noteId: string;        // "n0", "n1", ...
+  dxRel: number;         // units of noteH
+};
+
+type PedalMark = {
+  start: PedalEndpointKey;
+  end: PedalEndpointKey;
+};
+
+type PedalMarkIndex = {
+  marks: PedalMark[];
+  byStartKey: Map<string, PedalMark>;
+};
+
+function pedalEndpointKeyToString(k: PedalEndpointKey): string {
+  // dxRel stringified to reduce float noise in map keys.
+  // Keep enough precision to distinguish user intent.
+  return `${k.measureNumber}|${k.noteId}|${k.dxRel.toFixed(6)}`;
+}
+
+function endpointFromPedalAnchor(
+  measureNumber: number,
+  ref: PedalAnchorRef
+): PedalEndpointKey {
+  return {
+    measureNumber,
+    noteId: ref.noteId,
+    dxRel: ref.dxRel,
+  };
+}
+//TEST
 
 // Pure geometry helper: computes the measure-box rectangles for the
 // *current page* using the same logic drawMeasureBoxes used before.
@@ -1254,32 +1476,53 @@ function drawAnnotationBoxes(
     }
   }
 
-  // Resolve a NoteAnchorRef to an X coordinate in px for this measure, or null if it can't be resolved.
-  function resolveNoteAnchorX(
-    ref: NoteAnchorRef | null | undefined,
+  // Resolve a PedalAnchorRef to an X coordinate in px for this measure, or null if it can't be resolved.
+  function resolvePedalAnchorX(
+    ref: PedalAnchorRef | null | undefined,
     boxId: string,
     noteAnchorsByMeasure?: Record<string, NoteAnchor[]>
   ): number | null {
-    if (!ref || ref.type !== "note") {
+    // Strict shape validation
+    if (!ref) {
+      return null;
+    }
+
+    if (typeof ref.noteId !== "string" || ref.noteId.length === 0) {
+      console.error("[pedal] Invalid pedal anchor: missing/invalid noteId", { ref, boxId });
+      if (isDiagOn()) { throw new Error("Invalid pedal anchor: noteId"); }
+      return null;
+    }
+
+    if (typeof ref.dxRel !== "number" || !Number.isFinite(ref.dxRel)) {
+      console.error("[pedal] Invalid pedal anchor: missing/invalid dxRel", { ref, boxId });
+      if (isDiagOn()) { throw new Error("Invalid pedal anchor: dxRel"); }
       return null;
     }
 
     if (!noteAnchorsByMeasure) {
+      console.error("[pedal] noteAnchorsByMeasure missing; cannot resolve pedal anchor", { boxId });
+      if (isDiagOn()) { throw new Error("noteAnchorsByMeasure missing"); }
       return null;
     }
 
     const anchorsForMeasure = noteAnchorsByMeasure[boxId];
-    if (!anchorsForMeasure || !anchorsForMeasure.length) {
+    if (!anchorsForMeasure || anchorsForMeasure.length === 0) {
+      console.error("[pedal] No note anchors found for measure; cannot resolve pedal anchor", { boxId });
+      if (isDiagOn()) { throw new Error("No note anchors for measure"); }
       return null;
     }
 
     const anchorNote = anchorsForMeasure.find((a) => a.id === ref.noteId);
     if (!anchorNote) {
+      console.error("[pedal] Anchor noteId not found in this measure", { boxId, noteId: ref.noteId });
+      if (isDiagOn()) { throw new Error("Anchor noteId not found"); }
       return null;
     }
 
     const noteH = anchorNote.h;
     if (!(noteH > 0 && Number.isFinite(noteH))) {
+      console.error("[pedal] Bad anchor note geometry (noteH)", { boxId, noteId: ref.noteId, noteH });
+      if (isDiagOn()) { throw new Error("Bad note geometry"); }
       return null;
     }
 
@@ -1287,6 +1530,8 @@ function drawAnnotationBoxes(
     const anchorPxX = anchorNote.x + dxPx;
 
     if (!Number.isFinite(anchorPxX)) {
+      console.error("[pedal] Computed pedal X is not finite", { boxId, ref, noteH, anchorPxX });
+      if (isDiagOn()) { throw new Error("Computed pedal X not finite"); }
       return null;
     }
 
@@ -1444,7 +1689,6 @@ function drawAnnotationBoxes(
         // We now require a note anchor; if it's missing or invalid, skip.
         if (
           !anchor ||
-          anchor.type !== "note" ||
           !noteAnchorsByMeasure ||
           !noteAnchorsByMeasure[box.id]
         ) {
@@ -1525,8 +1769,8 @@ function drawAnnotationBoxes(
         const leftRef = item.left ?? null;
         const rightRef = item.right ?? null;
 
-        const leftXFromAnchor = resolveNoteAnchorX(leftRef, box.id, noteAnchorsByMeasure);
-        const rightXFromAnchor = resolveNoteAnchorX(rightRef, box.id, noteAnchorsByMeasure);
+        const leftXFromAnchor = resolvePedalAnchorX(leftRef, box.id, noteAnchorsByMeasure);
+        const rightXFromAnchor = resolvePedalAnchorX(rightRef, box.id, noteAnchorsByMeasure);
 
         const isActive = item.active === true;
 
@@ -1600,8 +1844,8 @@ function drawAnnotationBoxes(
         }
 
         // Vertical placement near the bottom of the measure box
-        const PEDAL_MARGIN_FROM_BOTTOM = 3; // px above box bottom
-        const PEDAL_TICK_HEIGHT = 6;        // height of the little "legs"
+        const PEDAL_MARGIN_FROM_BOTTOM = 3 * zoom; // px above box bottom (scaled)
+        const PEDAL_TICK_HEIGHT = 6 * zoom;        // leg height (scaled)
 
         const runBottomY =
           pedalBaselineByMeasureId[box.id] ?? (box.y + box.h);
@@ -2053,9 +2297,24 @@ function buildNoteAnchorsForMeasure(
     .filter((g) => (g.glyphTag ?? "").toLowerCase().includes("notehead"))
     // Sort for stable indexing: left-to-right, then top-to-bottom
     .sort((a, b) => {
-      const dx = a.x - b.x;
-      if (dx !== 0) { return dx; }
-      return a.y - b.y;
+      const EPS = 0.0001;
+
+      const cmp = (u: number, v: number): number => {
+        const d = u - v;
+        if (Math.abs(d) <= EPS) { return 0; }
+        return d < 0 ? -1 : 1;
+      };
+
+      let c = cmp(a.x, b.x);
+      if (c !== 0) { return c; }
+
+      c = cmp(a.y, b.y);
+      if (c !== 0) { return c; }
+
+      c = cmp(a.w, b.w);
+      if (c !== 0) { return c; }
+
+      return cmp(a.h, b.h);
     });
 
   const anchors: NoteAnchor[] = [];
@@ -2094,8 +2353,6 @@ export default function ScoreViewer({
     isAuthenticated,
     ensureUserSongRow,
   } = useAnnotations();
-
-  //const { ensureUserSongRow } = useAnnotations(); //TEST
 
   // Always use the latest getAnnotationsForMeasure, even from stable callbacks / pipeline
   const getAnnotationsForMeasureRef = useRef<GetAnnotationsForMeasure>(
@@ -2154,7 +2411,7 @@ export default function ScoreViewer({
         rects.find((r) => r.measureNumber === measureNumber) ?? null;
 
       // Start with no anchor; we’ll try to fill this in.
-      let anchorRef: NoteAnchorRef | undefined;
+      let anchorRef: TextAnchorRef | undefined;
 
       if (box) {
         const tipX = box.x + point.xRel * box.w;
@@ -2193,7 +2450,6 @@ export default function ScoreViewer({
 
           if (h > 0 && Number.isFinite(h)) {
             anchorRef = {
-              type: "note",
               noteId: best.id,
               dxRel: dx / h,
               dyRel: dy / h,
@@ -2422,6 +2678,15 @@ export default function ScoreViewer({
   const measureGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({});
   // Per-page cache of note anchors, keyed by measureId (same ids as measureGlyphRectsRef)
   const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({});
+
+  //TEST
+  // Global pedal index derived from annotationsByMeasure.
+  // Lives in a ref so we can use it in rendering + edit flows without rerender loops.
+  const pedalMarkIndexRef = useRef<PedalMarkIndex>({
+    marks: [],
+    byStartKey: new Map<string, PedalMark>(),
+  });
+  //TEST
 
   const measureAllGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({});
 
@@ -3509,6 +3774,18 @@ export default function ScoreViewer({
     if (!outer) {
       return;
     }
+
+    //TEST
+    const idx = buildPedalMarkIndexFromAnnotations(annotationsByMeasure);
+    pedalMarkIndexRef.current = idx;
+
+    if (isDiagOn()) {
+      void logStep(
+        `[pedal-index] marks=${idx.marks.length} byStartKey=${idx.byStartKey.size}`,
+        { outer }
+      );
+    }
+    //TEST
 
     const currentPage = Math.max(0, pageIdxRef.current || 0);
 
