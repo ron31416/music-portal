@@ -8,54 +8,89 @@ export type CurrentUserInfo = {
   role: string | null;
   isAdmin: boolean;
   userId: number | null;
+  devBypass?: boolean;
 };
 
 export async function getCurrentUserInfo(): Promise<CurrentUserInfo> {
   const supabase = await getSupabaseServerClient();
 
-  // 1) Auth user from cookie-bound server client
+  // ------------------------------------------
+  // 1) Try to read real user via Supabase auth
+  // ------------------------------------------
   const { data: ures, error: uerr } = await supabase.auth.getUser();
   const user = ures?.user ?? null;
   const email = (user?.email as string | null) ?? null;
 
-  if (uerr || !user || !email) {
-    return { email: null, role: null, isAdmin: false, userId: null };
-  }
+  // If we DO have a real auth user → normal production flow
+  if (!uerr && user && email) {
+    const adminClient = getSupabaseAdmin();
+    let role: string | null = null;
+    let userId: number | null = null;
 
-  // 2) DB lookup via service_role RPC: user_get
-  const adminClient = getSupabaseAdmin();
+    try {
+      const { data, error: getErr } = await adminClient
+        .schema(DB_SCHEMA)
+        .rpc("user_get", {
+          p_user_id: null,
+          p_user_email: email,
+        });
 
-  let role: string | null = null;
-  let userId: number | null = null;
+      if (!getErr && Array.isArray(data) && data.length > 0) {
+        const row = data[0] as {
+          user_role_name?: string | null;
+          user_id?: number | null;
+        };
 
-  try {
-    const { data, error: getErr } = await adminClient
-      .schema(DB_SCHEMA)
-      .rpc("user_get", {
-        p_user_id: null,
-        p_user_email: email,
-      });
+        if (row.user_role_name !== null) {
+          role = String(row.user_role_name).toLowerCase();
+        }
 
-    if (!getErr && Array.isArray(data) && data.length > 0) {
-      const row = data[0] as {
-        user_role_name?: string | null;
-        user_id?: number | null;
-      };
-
-      if (row.user_role_name !== null) {
-        role = String(row.user_role_name).toLowerCase();
+        if (typeof row.user_id === "number") {
+          userId = row.user_id;
+        }
       }
-
-      if (row.user_id !== null && typeof row.user_id === "number") {
-        userId = row.user_id;
-      }
+    } catch {
+      /* ignore DB errors → fall back to signed-out */
     }
-  } catch {
-    role = null;
-    userId = null;
+
+    const isAdmin = role === "admin";
+    return { email, role, isAdmin, userId };
   }
 
-  const isAdmin = role === "admin";
+  // ----------------------------------------------------
+  // Local dev bypass — trust the environment variables
+  // ----------------------------------------------------
+  const fakeIdRaw = process.env.DEV_FAKE_USER_ID;
+  const fakeEmail = process.env.DEV_FAKE_USER_EMAIL;
+  const fakeRole = process.env.DEV_FAKE_USER_ROLE;
+  const fakeIsAdminRaw = process.env.DEV_FAKE_USER_ISADMIN;
 
-  return { email, role, isAdmin, userId };
+  // Only trigger bypass when DEV_FAKE_USER_ID is present
+  if (fakeIdRaw && fakeEmail && fakeRole && fakeIsAdminRaw) {
+    const fakeId = Number(fakeIdRaw);
+    const fakeIsAdmin = fakeIsAdminRaw === "1";
+
+    console.warn(
+      `getCurrentUserInfo: fakeId=${fakeId}, fakeEmail=${fakeEmail}, fakeRole=${fakeRole}, fakeIsAdmin=${fakeIsAdmin}`
+    );
+
+    return {
+      email: fakeEmail,
+      role: fakeRole,
+      isAdmin: fakeIsAdmin,
+      userId: fakeId,
+      devBypass: true,
+    };
+  }
+
+  // ------------------------------------------
+  // 3) Normal signed-out fallback
+  // ------------------------------------------
+  return {
+    email: null,
+    role: null,
+    isAdmin: false,
+    userId: null,
+    devBypass: false,
+  };
 }
