@@ -54,22 +54,24 @@ export async function getCurrentUserInfo(): Promise<CurrentUserInfo> {
     }
 
     const isAdmin = role === "admin";
+
     return { email, role, isAdmin, userId };
   }
 
   // ----------------------------------------------------
-  // Local dev bypass — trust the environment variables
+  // 2) Local dev bypass — trust the environment variables
   // ----------------------------------------------------
   const fakeIdRaw = process.env.DEV_FAKE_USER_ID;
   const fakeEmail = process.env.DEV_FAKE_USER_EMAIL;
   const fakeRole = process.env.DEV_FAKE_USER_ROLE;
-  const fakeIsAdminRaw = process.env.DEV_FAKE_USER_ISADMIN;
 
-  // Only trigger bypass when DEV_FAKE_USER_ID is present
-  if (fakeIdRaw && fakeEmail && fakeRole && fakeIsAdminRaw) {
-    const fakeId = Number(fakeIdRaw);
-    const fakeIsAdmin = fakeIsAdminRaw === "1";
+  const fakeId = Number(fakeIdRaw);
+  const fakeIsAdmin = fakeRole === "admin";
+  console.warn(
+    `getCurrentUserInfo: fakeIdRaw=${fakeIdRaw}, fakeEmail=${fakeEmail}, fakeRole=${fakeRole}, fakeIsAdmin=${fakeIsAdmin}`
+  );
 
+  if (fakeId && fakeEmail && fakeRole) {
     console.warn(
       `getCurrentUserInfo: fakeId=${fakeId}, fakeEmail=${fakeEmail}, fakeRole=${fakeRole}, fakeIsAdmin=${fakeIsAdmin}`
     );
