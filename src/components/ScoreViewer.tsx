@@ -11,7 +11,7 @@ import type {
   AnnotationPedalItem,
   TextAnchorRef,
   PedalAnchorRef,
-  AnnotationMap,          //TEST
+  AnnotationMap,
 } from "@/components/AnnotationsProvider";
 
 // ---------- Props & Types ----------
@@ -108,7 +108,7 @@ function pointHitsAnyRectWithMargin(
   return false;
 }
 
-//TEST
+
 function buildPedalMarkIndexFromAnnotations(map: AnnotationMap): PedalMarkIndex {
   const marks: PedalMark[] = [];
   const byStartKey = new Map<string, PedalMark>();
@@ -289,7 +289,7 @@ function buildPedalMarkIndexFromAnnotations(map: AnnotationMap): PedalMarkIndex 
 
   return { marks, byStartKey };
 }
-//TEST
+
 
 async function withTimeout<T>(p: Promise<T>, ms: number, tag: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -953,7 +953,6 @@ type GetAnnotationsForMeasure = (
   measureNumber: number
 ) => MeasureAnnotation | undefined;
 
-//TEST
 // =======================
 // Pedal mark index (global)
 // =======================
@@ -990,7 +989,6 @@ function endpointFromPedalAnchor(
     dxRel: ref.dxRel,
   };
 }
-//TEST
 
 // Pure geometry helper: computes the measure-box rectangles for the
 // *current page* using the same logic drawMeasureBoxes used before.
@@ -1687,18 +1685,12 @@ function drawAnnotationBoxes(
         const anchor = item.anchor;
 
         // We now require a note anchor; if it's missing or invalid, skip.
-        if (
-          !anchor ||
-          !noteAnchorsByMeasure ||
-          !noteAnchorsByMeasure[box.id]
-        ) {
+        if (!anchor || !noteAnchorsByMeasure || !noteAnchorsByMeasure[box.id]) {
           continue;
         }
 
         const anchorsForMeasure = noteAnchorsByMeasure[box.id]!;
-        const anchorNote = anchorsForMeasure.find(
-          (a) => a.id === anchor.noteId
-        );
+        const anchorNote = anchorsForMeasure.find((a) => a.id === anchor.noteId);
 
         if (!anchorNote) {
           // Note no longer exists / couldn't be found → skip this item
@@ -1711,25 +1703,24 @@ function drawAnnotationBoxes(
           continue;
         }
 
-        // Convert relative offsets back to px in the *current* layout
+        // Convert relative offsets back to px in the *current* layout (note-based)
         const dxPx = anchor.dxRel * noteH;
         const dyPx = anchor.dyRel * noteH;
 
+        // Anchor point in page-local px
         const pxX = anchorNote.x + dxPx;
         const pxY = anchorNote.y + dyPx;
 
         // --- Font sizing: relative to note size *change*, not absolute size ---
-        const BASE_FONT_PX = 16;   // tweak to taste
+        const BASE_FONT_PX = 16; // tweak to taste
         const MIN_FONT_PX = 8;
         const MAX_FONT_PX = 30;
 
-        let fontPx = BASE_FONT_PX * zoom; // default
+        let fontPx = BASE_FONT_PX; // default (do NOT multiply by zoom)
 
         const currentH = anchorNote.h;
         const baseH =
-          anchor.baseNoteH &&
-            Number.isFinite(anchor.baseNoteH) &&
-            anchor.baseNoteH > 0
+          anchor.baseNoteH && Number.isFinite(anchor.baseNoteH) && anchor.baseNoteH > 0
             ? anchor.baseNoteH
             : currentH;
 
@@ -1740,7 +1731,7 @@ function drawAnnotationBoxes(
           Number.isFinite(baseH)
         ) {
           const relScale = currentH / baseH;
-          let candidate = BASE_FONT_PX * zoom * relScale;
+          let candidate = BASE_FONT_PX * relScale;
 
           if (candidate < MIN_FONT_PX) { candidate = MIN_FONT_PX; }
           if (candidate > MAX_FONT_PX) { candidate = MAX_FONT_PX; }
@@ -1755,8 +1746,12 @@ function drawAnnotationBoxes(
         t.setAttribute("fill", "black");
         t.setAttribute("font-size", String(fontPx));
         t.setAttribute("font-family", "sans-serif");
-        t.setAttribute("dominant-baseline", "middle");
         t.setAttribute("text-anchor", "middle");
+
+        // Avoid dominant-baseline="middle" (unstable across zoom/font-size).
+        // Use alphabetic baseline + dy in ems for consistent visual centering.
+        t.setAttribute("dominant-baseline", "alphabetic");
+        t.setAttribute("dy", "0.35em");
 
         g.appendChild(t);
         continue;
@@ -2286,7 +2281,6 @@ function findSafePointRelForTap(
 // Note: this operates in the same page-local coordinate system as GlyphRect
 // and MeasureBoxRect.
 function buildNoteAnchorsForMeasure(
-  measureId: string,
   glyphs: readonly GlyphRect[]
 ): NoteAnchor[] {
   if (!glyphs.length) {
@@ -2337,6 +2331,7 @@ interface Props {
   src: string;
 }
 
+
 // ---------- Component ----------
 
 export default function ScoreViewer({
@@ -2381,7 +2376,6 @@ export default function ScoreViewer({
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(null);
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
 
-  //TEST
   // ==============================
   // Pedal creation (two-drop flow)
   // ==============================
@@ -2419,9 +2413,8 @@ export default function ScoreViewer({
     setSelectedMeasureNumber,
     setSelectedPointRel,
   ]);
-  //TEST
 
-  //TEST chg
+
   const promptAndSaveAnnotation = React.useCallback(
     async (measureNumber: number, point: PointRel): Promise<void> => {
       if (!isEditModeRef.current) {
@@ -2653,13 +2646,13 @@ export default function ScoreViewer({
           const dy = tipY - best.y;
           const h = best.h;
 
-          if (h > 0 && Number.isFinite(h)) {
-            anchorRef = {
-              noteId: best.id,
-              dxRel: dx / h,
-              dyRel: dy / h,
-            };
-          }
+          anchorRef = {
+            noteId: best.id,
+            dxRel: dx / h,
+            dyRel: dy / h,
+            baseNoteH: h, // <-- capture creation-time notehead height (px) to use for scaling font size
+          };
+
           // If h is bogus, we just skip anchoring and fall back to box-relative.
         }
       }
@@ -2710,7 +2703,6 @@ export default function ScoreViewer({
       setSelectedPointRel,
     ],
   );
-  //TEST chg
 
   const [glyphDebugRects, setGlyphDebugRects] =
     useState<Record<string, GlyphRect[]>>({});
@@ -2887,14 +2879,12 @@ export default function ScoreViewer({
   // Per-page cache of note anchors, keyed by measureId (same ids as measureGlyphRectsRef)
   const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({});
 
-  //TEST
   // Global pedal index derived from annotationsByMeasure.
   // Lives in a ref so we can use it in rendering + edit flows without rerender loops.
   const pedalMarkIndexRef = useRef<PedalMarkIndex>({
     marks: [],
     byStartKey: new Map<string, PedalMark>(),
   });
-  //TEST
 
   const measureAllGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({});
 
@@ -3454,6 +3444,11 @@ export default function ScoreViewer({
       const nextAnchors: Record<string, NoteAnchor[]> = {};
       const nextAllGlyphs: Record<string, GlyphRect[]> = {};
 
+      const boxById = new Map<string, MeasureBoxRect>();
+      for (const b of rects) {
+        boxById.set(b.id, b);
+      }
+
       for (const [measureId, glyphs] of perMeasure.entries()) {
         if (glyphs.length) {
           // All glyphs (for avoidance / diagnostics)
@@ -3463,7 +3458,7 @@ export default function ScoreViewer({
           next[measureId] = glyphs;
 
           // build note anchors for this measure from its glyphs
-          const anchors = buildNoteAnchorsForMeasure(measureId, glyphs);
+          const anchors = buildNoteAnchorsForMeasure(glyphs);
           if (anchors.length) {
             nextAnchors[measureId] = anchors;
           }
@@ -3983,7 +3978,6 @@ export default function ScoreViewer({
       return;
     }
 
-    //TEST
     const idx = buildPedalMarkIndexFromAnnotations(annotationsByMeasure);
     pedalMarkIndexRef.current = idx;
 
@@ -3993,7 +3987,6 @@ export default function ScoreViewer({
         { outer }
       );
     }
-    //TEST
 
     const currentPage = Math.max(0, pageIdxRef.current || 0);
 
