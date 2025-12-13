@@ -2381,23 +2381,228 @@ export default function ScoreViewer({
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(null);
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
 
-  // Prompt for content and save an annotation at a given measure + point.
-  // This replaces the old useEffect that auto-prompted whenever selection changed.
-  // Prompt for content and save an annotation at a given measure + point.
-  // Now also tries to anchor to the nearest notehead so the mark will
-  // follow that note across re-layouts/zooms.
+  //TEST
+  // ==============================
+  // Pedal creation (two-drop flow)
+  // ==============================
+  type PendingPedalStart = {
+    measureNumber: number;
+    anchor: PedalAnchorRef;
+    order: number;
+  };
+
+  const [pendingPedalStart, setPendingPedalStart] =
+    React.useState<PendingPedalStart | null>(null);
+
+  // Unique-ish order values across a session (helps pedal index sorting/pairing).
+  const nextPedalOrderRef = React.useRef<number>(Date.now());
+
+  React.useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (pendingPedalStart !== null) {
+          setPendingPedalStart(null);
+          // Optional: clear selection too, to avoid any stray UI state.
+          setSelectedMeasureNumber(null);
+          setSelectedPointRel(null);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [
+    pendingPedalStart,
+    setPendingPedalStart,
+    setSelectedMeasureNumber,
+    setSelectedPointRel,
+  ]);
+  //TEST
+
+  //TEST chg
   const promptAndSaveAnnotation = React.useCallback(
     async (measureNumber: number, point: PointRel): Promise<void> => {
       if (!isEditModeRef.current) {
         return;
       }
 
-      // Ask for text (debug, temporary)
+      const computePedalAnchorRef = (
+        measureNumberIn: number,
+        pointIn: PointRel
+      ): PedalAnchorRef | null => {
+        const rects = pageMeasureRectsRef.current ?? [];
+        const box =
+          rects.find((r) => r.measureNumber === measureNumberIn) ?? null;
+
+        if (!box) {
+          return null;
+        }
+
+        const tipX = box.x + pointIn.xRel * box.w;
+        const tipY = box.y + pointIn.yRel * box.h;
+
+        const anchorsForMeasure =
+          measureNoteAnchorsRef.current?.[box.id] ?? [];
+
+        if (anchorsForMeasure.length === 0) {
+          return null;
+        }
+
+        // Nearest notehead/rest in this measure
+        let best = anchorsForMeasure[0] as NoteAnchor;
+        let bestDistSq =
+          (tipX - best.x) * (tipX - best.x) +
+          (tipY - best.y) * (tipY - best.y);
+
+        for (let i = 1; i < anchorsForMeasure.length; i++) {
+          const cand = anchorsForMeasure[i]!;
+          const dx = tipX - cand.x;
+          const dy = tipY - cand.y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq < bestDistSq) {
+            best = cand;
+            bestDistSq = distSq;
+          }
+        }
+
+        const dx = tipX - best.x;
+        const h = best.h;
+
+        if (!(h > 0) || !Number.isFinite(h)) {
+          return null;
+        }
+
+        return {
+          noteId: best.id,
+          dxRel: dx / h,
+        };
+      };
+
+      // ==========================================================
+      // If a pedal is pending, this drop selects the RIGHT endpoint
+      // ==========================================================
+      const start = pendingPedalStart;
+      if (start !== null) {
+        const endAnchor = computePedalAnchorRef(measureNumber, point);
+        if (!endAnchor) {
+          window.alert(
+            "No note anchor found for pedal end. Try dropping closer to a notehead/rest."
+          );
+          return;
+        }
+
+        const startMeasure = start.measureNumber;
+        const endMeasure = measureNumber;
+
+        const lo = Math.min(startMeasure, endMeasure);
+        const hi = Math.max(startMeasure, endMeasure);
+
+        for (let m = lo; m <= hi; m++) {
+          const isStart = m === startMeasure;
+          const isEnd = m === endMeasure;
+
+          // Build the per-measure pedal segment item
+          let pedalItem: AnnotationPedalItem;
+
+          if (startMeasure === endMeasure) {
+            // single-measure pedal mark: both endpoints live in this measure
+            pedalItem = {
+              kind: "pedal",
+              left: start.anchor,
+              right: endAnchor,
+              active: true,
+              order: start.order,
+            };
+          } else if (isStart) {
+            pedalItem = {
+              kind: "pedal",
+              left: start.anchor,
+              active: true,
+              order: start.order,
+            };
+          } else if (isEnd) {
+            pedalItem = {
+              kind: "pedal",
+              right: endAnchor,
+              active: true,
+              order: start.order,
+            };
+          } else {
+            pedalItem = {
+              kind: "pedal",
+              active: true,
+            };
+          }
+
+          const existing = getAnnotationsForMeasure(m);
+          const existingItems: AnnotationItem[] = Array.isArray(existing?.items)
+            ? existing!.items.slice()
+            : [];
+
+          const nextPayload: MeasureAnnotation = {
+            ...(existing ?? { items: [] as AnnotationItem[] }),
+            items: [...existingItems, pedalItem],
+          };
+
+          // Save each affected measure
+          await saveAnnotationsForMeasure(m, nextPayload);
+        }
+
+        // Done: clear pending + selection
+        setPendingPedalStart(null);
+        setSelectedMeasureNumber(null);
+        setSelectedPointRel(null);
+        return;
+      }
+
+      // ==========================================================
+      // No pending pedal: prompt user for Text vs Pedal (Phase 1)
+      // ==========================================================
+      const modeRaw = window.prompt(
+        "Create: (T)ext or (P)edal mark?",
+        "t"
+      );
+      if (modeRaw === null) {
+        return; // canceled
+      }
+      const mode = modeRaw.trim().toLowerCase();
+
+      const isPedal =
+        mode === "p" || mode === "pedal" || mode.startsWith("p");
+
+      if (isPedal) {
+        const startAnchor = computePedalAnchorRef(measureNumber, point);
+        if (!startAnchor) {
+          window.alert(
+            "No note anchor found for pedal start. Try dropping closer to a notehead/rest."
+          );
+          return;
+        }
+
+        const order = nextPedalOrderRef.current++;
+        setPendingPedalStart({
+          measureNumber,
+          anchor: startAnchor,
+          order,
+        });
+
+        // Clear selection so we don’t double-fire
+        setSelectedMeasureNumber(null);
+        setSelectedPointRel(null);
+
+        window.alert("Pedal start set. Now select the pedal end (second drop).");
+        return;
+      }
+
+      // Existing text path (unchanged)
       const label = window.prompt("Annotation text (e.g. mf, p, f)?", "");
       if (label === null) {
         // User canceled
         return;
       }
+
       const trimmed = label.trim();
       if (trimmed.length === 0) {
         return;
@@ -2499,10 +2704,13 @@ export default function ScoreViewer({
     [
       getAnnotationsForMeasure,
       saveAnnotationsForMeasure,
+      pendingPedalStart,
+      setPendingPedalStart,
       setSelectedMeasureNumber,
       setSelectedPointRel,
     ],
   );
+  //TEST chg
 
   const [glyphDebugRects, setGlyphDebugRects] =
     useState<Record<string, GlyphRect[]>>({});
