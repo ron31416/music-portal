@@ -56,11 +56,11 @@ const REFLOW = {
 //
 // All measurements in px. These define the visual shape and also the math
 // that maps finger position → caret tip (the true annotation point).
-const HANDLE_STEM_WIDTH = 24;       // width of the draggable “pill”
-const HANDLE_STEM_HEIGHT = 48;      // height of the draggable stem
+const HANDLE_STEM_WIDTH = 40;       // width of the draggable “pill”
+const HANDLE_STEM_HEIGHT = 40;      // height of the draggable stem
 const HANDLE_TIP_WIDTH = 10;        // half-width of the triangle at the base
-const HANDLE_TIP_HEIGHT = 14;       // height of the triangle tip
-const HANDLE_BORDER_RADIUS = 9999;
+const HANDLE_TIP_HEIGHT = 20;       // height of the triangle tip
+//const HANDLE_BORDER_RADIUS = 9999;
 
 // How close we allow the caret tip to get to a glyph, in px.
 const AVOID_GLYPH_MARGIN_PX = 4;
@@ -2793,15 +2793,26 @@ export default function ScoreViewer({
               yPage,
               glyphsForMeasure,
             );
-
+            //TEST
             if (safe) {
+              // Place the handle so the *stem center* lands at the tap point.
+              // We store the handle TIP point in selectedPointRel, so we shift the stored yRel down.
+              const STEM_CENTER_TO_TIP_PX =
+                HANDLE_TIP_HEIGHT + (HANDLE_STEM_HEIGHT / 2);
+
+              const yRelAdjusted =
+                box.h > 0
+                  ? clamp01(safe.yRel - (STEM_CENTER_TO_TIP_PX / box.h))
+                  : safe.yRel;
+
               setSelectedMeasureNumber(measureNumber);
-              setSelectedPointRel(safe);
+              setSelectedPointRel({ xRel: safe.xRel, yRel: yRelAdjusted });
             } else {
               // Everything nearby is congested; keep measure selected but no point yet.
               setSelectedMeasureNumber(measureNumber);
               setSelectedPointRel(null);
             }
+            //TEST
           } else {
             setSelectedMeasureNumber(null);
             setSelectedPointRel(null);
@@ -6314,9 +6325,8 @@ export default function ScoreViewer({
       const box = dragMeasureBoxRef.current;
       const handleNode = annotationHandleRef.current;
 
-      if (!outer || !box || !handleNode) {
-        return;
-      }
+      if (!outer || !box || !handleNode
+      ) { return; }
 
       const outerBox = outer.getBoundingClientRect();
 
@@ -6326,7 +6336,7 @@ export default function ScoreViewer({
 
       // We treat the pointer as being at the *bottom* of the stem.
       // Caret tip is above by HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT.
-      const DRAG_ANCHOR_OFFSET = HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT;
+      const DRAG_ANCHOR_OFFSET = HANDLE_TIP_HEIGHT + (HANDLE_STEM_HEIGHT / 2);
 
       let tipX = pointerX;
       let tipY = pointerY - DRAG_ANCHOR_OFFSET;
@@ -6621,7 +6631,7 @@ export default function ScoreViewer({
                   transform: "translateX(-50%)",
                   width: HANDLE_STEM_WIDTH,
                   height: HANDLE_STEM_HEIGHT,
-                  borderRadius: HANDLE_BORDER_RADIUS,
+                  borderRadius: 9999,                  //HANDLE_BORDER_RADIUS,
                   background: "rgba(0,0,0,0.85)",
                   border: "2px solid #fff",
                   boxShadow: "0 0 6px rgba(0,0,0,0.5)",
