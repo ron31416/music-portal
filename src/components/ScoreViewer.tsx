@@ -1,6 +1,8 @@
 // src/components/ScoreViewer.tsx 
 "use client";
 
+// imports
+
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
 import { useAnnotations } from "@/components/AnnotationsProvider";
@@ -14,7 +16,8 @@ import type {
   AnnotationMap,
 } from "@/components/AnnotationsProvider";
 
-// ---------- Props & Types ----------
+
+// types
 
 // Extend the Window type without using `any`
 declare global {
@@ -30,6 +33,107 @@ interface Rect { x: number; y: number; w: number; h: number }
 
 // Type: function stored in a ref
 type ReflowCallback = () => Promise<void>;
+
+type RectPx = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+// Module-scope: shared by scan phase and drawMeasureBoxes
+type BarCand = {
+  el: SVGGraphicsElement;
+  bb: { x: number; y: number; width: number; height: number }; // page-local px (pre-translate)
+  thin: boolean;
+  yTop: number;  // page-local (pre-translate)
+  yBot: number;  // page-local (pre-translate)
+  hinted: boolean;
+};
+
+// Cached geometry per measure (pre-translate, page-local px)
+type MeasureInterval = { left: number; right: number };
+
+type MeasureGeom = {
+  id: string;              // measure id (e.g., "measure-12")
+  tileIndex: number;       // system index this measure belongs to
+  interval: MeasureInterval; // horizontal span from barlines
+  top: number;             // vertical extent (px, pre-translate)
+  bottom: number;          // vertical extent (px, pre-translate)
+};
+
+type MeasureBoxRect = {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  // 1-based OSMD measure number, or -1 if we couldn't parse one
+  measureNumber: number;
+};
+
+// ===== Measure preview popup state =====
+type SimpleRect = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+// Normalized point inside a measure box (0..1 in both directions)
+type PointRel = {
+  xRel: number;
+  yRel: number;
+};
+
+// One rendered glyph (notehead, rest, etc.) in page-local coordinates
+type GlyphRect = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  glyphTag?: string;   // renamed from debug
+};
+
+type NoteAnchor = {
+  id: string;   // stable within a measure, e.g. "n0", "n1"
+  x: number;    // notehead center X (page-local px)
+  y: number;    // notehead center Y (page-local px)
+  w: number;    // notehead width
+  h: number;    // notehead height
+};
+
+// We use the shared payload directly from AnnotationsProvider.
+type MeasureAnnotation = AnnotationPayload;
+
+// drawAnnotationBoxes just needs whatever the provider returns.
+type GetAnnotationsForMeasure = (
+  measureNumber: number
+) => MeasureAnnotation | undefined;
+
+type PedalEndpointKey = {
+  measureNumber: number; // 1-based
+  noteId: string;        // "n0", "n1", ...
+  dxRel: number;         // units of noteH
+};
+
+type PedalMark = {
+  start: PedalEndpointKey;
+  end: PedalEndpointKey;
+};
+
+type PedalMarkIndex = {
+  marks: PedalMark[];
+  byStartKey: Map<string, PedalMark>;
+};
+
+// Props for the score viewer; currently just the song source ID.
+interface Props {
+  src: string;
+}
+
+
+// constants
 
 // Central pagination/masking knobs (tuned for Hi/Lo DPR). Change here, not inline.
 const REFLOW = {
@@ -65,12 +169,16 @@ const HANDLE_TIP_HEIGHT = 20;       // height of the triangle tip
 // How close we allow the caret tip to get to a glyph, in px.
 const AVOID_GLYPH_MARGIN_PX = 4;
 
-type RectPx = {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-};
+// URL flags (read once at module import; change URL + Reload to apply)
+const URL_LOG = readDebugFlag("log", false);
+const URL_DIAG = readDebugFlag("diag", false);
+
+// Effective switches: pagination diag implies logging
+const isLogOn = () => URL_LOG || URL_DIAG;
+const isDiagOn = () => URL_DIAG;
+
+
+// helper functions
 
 // Expand a rect by `margin` in all directions and test if (x, y) is inside.
 function pointHitsRectWithMargin(x: number, y: number, rect: RectPx, margin: number): boolean {
@@ -109,7 +217,7 @@ function pointHitsAnyRectWithMargin(
 }
 
 
-function buildPedalMarkIndexFromAnnotations(map: AnnotationMap): PedalMarkIndex {
+function buildPedalMarkIndex(map: AnnotationMap): PedalMarkIndex {
   const marks: PedalMark[] = [];
   const byStartKey = new Map<string, PedalMark>();
 
@@ -372,28 +480,6 @@ function getSvg(outer: HTMLDivElement): SVGSVGElement | null {
 }
 
 
-// Module-scope: shared by scan phase and drawMeasureBoxes
-type BarCand = {
-  el: SVGGraphicsElement;
-  bb: { x: number; y: number; width: number; height: number }; // page-local px (pre-translate)
-  thin: boolean;
-  yTop: number;  // page-local (pre-translate)
-  yBot: number;  // page-local (pre-translate)
-  hinted: boolean;
-};
-
-// Cached geometry per measure (pre-translate, page-local px)
-type MeasureInterval = { left: number; right: number };
-
-type MeasureGeom = {
-  id: string;              // measure id (e.g., "measure-12")
-  tileIndex: number;       // system index this measure belongs to
-  interval: MeasureInterval; // horizontal span from barlines
-  top: number;             // vertical extent (px, pre-translate)
-  bottom: number;          // vertical extent (px, pre-translate)
-};
-
-
 function withSvgAtUnitScale<T>(outer: HTMLDivElement, fn: (svg: SVGSVGElement) => T): T | null {
   const svg = getSvg(outer);
   if (!svg) {
@@ -458,16 +544,9 @@ function readDebugFlag(name: string, fallback = false): boolean {
   } catch { }
   return fallback;
 }
-// URL flags (read once at module import; change URL + Reload to apply)
-const URL_LOG = readDebugFlag("log", false);
-const URL_PAG = readDebugFlag("diag", false);
-
-// Effective switches: pagination diag implies logging
-const isLogOn = () => URL_LOG || URL_PAG;
-const isDiagOn = () => URL_PAG;
 
 
-export async function logStep(
+async function logStep(
   message: string,
   opts: { outer?: HTMLDivElement | null; caller?: string } = {}
 ): Promise<void> {
@@ -902,77 +981,6 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
 }
 
 
-// --- Annotation types ---
-
-type MeasureBoxRect = {
-  id: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  // 1-based OSMD measure number, or -1 if we couldn't parse one
-  measureNumber: number;
-};
-
-// ===== Measure preview popup state =====
-type SimpleRect = {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-};
-
-// Normalized point inside a measure box (0..1 in both directions)
-type PointRel = {
-  xRel: number;
-  yRel: number;
-};
-
-// One rendered glyph (notehead, rest, etc.) in page-local coordinates
-type GlyphRect = {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  glyphTag?: string;   // renamed from debug
-};
-
-type NoteAnchor = {
-  id: string;   // stable within a measure, e.g. "n0", "n1"
-  x: number;    // notehead center X (page-local px)
-  y: number;    // notehead center Y (page-local px)
-  w: number;    // notehead width
-  h: number;    // notehead height
-};
-
-// We use the shared payload directly from AnnotationsProvider.
-type MeasureAnnotation = AnnotationPayload;
-
-// drawAnnotationBoxes just needs whatever the provider returns.
-type GetAnnotationsForMeasure = (
-  measureNumber: number
-) => MeasureAnnotation | undefined;
-
-// =======================
-// Pedal mark index (global)
-// =======================
-
-type PedalEndpointKey = {
-  measureNumber: number; // 1-based
-  noteId: string;        // "n0", "n1", ...
-  dxRel: number;         // units of noteH
-};
-
-type PedalMark = {
-  start: PedalEndpointKey;
-  end: PedalEndpointKey;
-};
-
-type PedalMarkIndex = {
-  marks: PedalMark[];
-  byStartKey: Map<string, PedalMark>;
-};
-
 function pedalEndpointKeyToString(k: PedalEndpointKey): string {
   // dxRel stringified to reduce float noise in map keys.
   // Keep enough precision to distinguish user intent.
@@ -989,6 +997,7 @@ function endpointFromPedalAnchor(
     dxRel: ref.dxRel,
   };
 }
+
 
 // Pure geometry helper: computes the measure-box rectangles for the
 // *current page* using the same logic drawMeasureBoxes used before.
@@ -1667,16 +1676,6 @@ function drawAnnotationBoxes(
       continue;
     }
 
-    /*
-    if (noteAnchorsByMeasure && noteAnchorsByMeasure[box.id]) {
-      console.log(
-        "Note anchors for measure",
-        box.id,
-        noteAnchorsByMeasure[box.id]
-      );
-    }
-    */
-
     for (const item of items) {
       // =======================
       // TEXT ITEMS
@@ -1845,20 +1844,6 @@ function drawAnnotationBoxes(
         const runBottomY =
           pedalBaselineByMeasureId[box.id] ?? (box.y + box.h);
 
-        /*
-        console.log("[pedal-baseline-debug]", {
-          measureNumber: box.measureNumber,
-          boxId: box.id,
-          boxY: box.y,
-          boxH: box.h,
-          boxBottom: box.y + box.h,
-          baselineForMeasure: pedalBaselineByMeasureId[box.id] ?? null,
-          isActive,
-          hasLeftAnchor: leftXFromAnchor !== null,
-          hasRightAnchor: rightXFromAnchor !== null,
-        });
-        */
-
         const pedalY = runBottomY - PEDAL_MARGIN_FROM_BOTTOM;
         const tickTopY = pedalY - PEDAL_TICK_HEIGHT;
 
@@ -1909,6 +1894,7 @@ function drawAnnotationBoxes(
     // ignore
   }
 }
+
 
 // Remove the annotation overlay layer if present.
 function clearAnnotationBoxes(outer: HTMLDivElement): void {
@@ -1992,6 +1978,8 @@ function hasZoomProp(o: unknown): o is { Zoom: number } {
 }
 
 
+// perf blocks (module-scope; reusable)
+
 function perfMark(n: string) { try { performance.mark(n); } catch { } }
 
 function perfMeasure(n: string, a: string, b: string) {
@@ -2003,7 +1991,6 @@ function perfLastMs(name: string) {
   return Math.round(e[e.length - 1]?.duration || 0);
 }
 
-// --------- Perf blocks (module-scope; reusable) ---------
 function perfBlock<T>(
   uid: string,
   work: () => T,
@@ -2053,6 +2040,8 @@ async function perfBlockAsync<T>(
 }
 
 
+// measure/page mapping helpers
+
 function rebuildMeasureToPageMapping(
   bands: ReadonlyArray<Band>,
   starts: ReadonlyArray<number>,
@@ -2100,7 +2089,7 @@ function rebuildMeasureToPageMapping(
 // 
 // The name is intentionally generic so we can later change the strategy
 // (e.g., choose the middle measure on that page).
-export function findAnchorMeasure(
+function findAnchorMeasure(
   measureToPage: ReadonlyArray<number>,
   pageIndex: number
 ): number | null {
@@ -2116,7 +2105,8 @@ export function findAnchorMeasure(
   return Number.isFinite(lowest) ? lowest : null;
 }
 
-function clamp01(v: number): number {
+
+function clampUnitInterval(v: number): number {
   if (v < 0) {
     return 0;
   }
@@ -2140,8 +2130,8 @@ function findSafePointRelForTap(
 ): PointRel | null {
   // If we have no glyph data, accept as-is (nothing to avoid).
   if (!glyphs.length) {
-    const xRel0 = clamp01((xPage - box.x) / box.w);
-    const yRel0 = clamp01((yPage - box.y) / box.h);
+    const xRel0 = clampUnitInterval((xPage - box.x) / box.w);
+    const yRel0 = clampUnitInterval((yPage - box.y) / box.h);
     return { xRel: xRel0, yRel: yRel0 };
   }
 
@@ -2155,8 +2145,8 @@ function findSafePointRelForTap(
   const startY = Math.max(boxTop, Math.min(yPage, boxBottom));
 
   const toRel = (x: number, y: number): PointRel => ({
-    xRel: clamp01((x - box.x) / box.w),
-    yRel: clamp01((y - box.y) / box.h),
+    xRel: clampUnitInterval((x - box.x) / box.w),
+    yRel: clampUnitInterval((y - box.y) / box.h),
   });
 
   const pointInRect = (x: number, y: number, r: GlyphRect): boolean =>
@@ -2326,17 +2316,14 @@ function buildNoteAnchorsForMeasure(
   return anchors;
 }
 
-// Props for the score viewer; currently just the song source ID.
-interface Props {
-  src: string;
-}
 
-
-// ---------- Component ----------
+// component
 
 export default function ScoreViewer({
   src,
 }: Props) {
+
+  // dependencies
 
   // Pull annotation helpers from the provider.
   // This is the ONLY source of truth for annotation data.
@@ -2358,6 +2345,9 @@ export default function ScoreViewer({
     getAnnotationsForMeasureRef.current = getAnnotationsForMeasure;
   }, [getAnnotationsForMeasure]);
 
+
+  // top-level state
+
   const [showGlyphDebug, setShowGlyphDebug] = useState(false);
   useEffect(() => {
     // Run only on the client, after hydration
@@ -2376,9 +2366,15 @@ export default function ScoreViewer({
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(null);
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
 
-  // ==============================
-  // Pedal creation (two-drop flow)
-  // ==============================
+
+  // constants
+
+  const LEFT_PADDING_PX = 6;      // tunable
+  const MIN_BOX_WIDTH_PX = 4;     // safety net to avoid degenerate boxes
+
+
+  // annotation creation
+
   type PendingPedalStart = {
     measureNumber: number;
     anchor: PedalAnchorRef;
@@ -2704,6 +2700,9 @@ export default function ScoreViewer({
     ],
   );
 
+
+  // event handlers
+
   const [glyphDebugRects, setGlyphDebugRects] =
     useState<Record<string, GlyphRect[]>>({});
 
@@ -2802,7 +2801,7 @@ export default function ScoreViewer({
 
               const yRelAdjusted =
                 box.h > 0
-                  ? clamp01(safe.yRel - (STEM_CENTER_TO_TIP_PX / box.h))
+                  ? clampUnitInterval(safe.yRel - (STEM_CENTER_TO_TIP_PX / box.h))
                   : safe.yRel;
 
               setSelectedMeasureNumber(measureNumber);
@@ -2882,6 +2881,9 @@ export default function ScoreViewer({
     []
   );
 
+
+  // runtime state
+
   // Current page's measure rectangles (used for hit-testing in edit mode)
   const measureRectsRef = useRef<ReadonlyArray<MeasureBoxRect>>([]);
 
@@ -2958,6 +2960,7 @@ export default function ScoreViewer({
   useEffect(() => { busyRef.current = busy; }, [busy]);
 
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
+
   const toggleEditMode = useCallback((): void => {
     setIsEditMode((prev) => {
       const next = !prev;
@@ -2998,7 +3001,7 @@ export default function ScoreViewer({
     rects: ReadonlyArray<MeasureBoxRect>;
   } | null>(null);
 
-  // When edit mode toggles, redraw the boxes for the current page
+  // redraw the boxes for the current page when edit mode toggles
   useEffect(() => {
     // Keep ref in sync with latest state
     isEditModeRef.current = isEditMode;
@@ -3032,6 +3035,9 @@ export default function ScoreViewer({
     } catch { }
   }, [isEditMode]);
 
+
+  // perf and init guards
+
   // Stable per-instance ID (for perf marks), plus a monotonic per-run sequence elsewhere
   const instanceIdRef = useRef<string>(`viewer-${Math.random().toString(36).slice(2, 8)}`);
   const perfSeqRef = useRef(0);
@@ -3054,6 +3060,9 @@ export default function ScoreViewer({
   const reflowAgainRef = useRef<"none" | "width" | "height">("none");
   const reflowQueuedCauseRef = useRef<string>("");   // ← remember why a reflow was queued
   const repaginationRunningRef = useRef(false);      // guards height-only repagination
+
+
+  // zoom-related refs
 
   // Track browser zoom relative to mount
   const baseScaleRef = useRef<number>(1);
@@ -3105,6 +3114,9 @@ export default function ScoreViewer({
     }
   }, []);
 
+
+  // debug wiring
+
   useEffect(() => {
     // Install debug function
     window.debugShowMeasurePreview = (x: number, y: number, w: number, h: number) => {
@@ -3118,7 +3130,9 @@ export default function ScoreViewer({
   }, [openMeasurePreview]);
 
 
-  // --- WIDTH-SANDBOXED RENDER (safe) ---
+
+  // render and layout pipeline
+
   // Render OSMD at a computed “layout width” derived from wrapper width and current zoom.
   // We temporarily pin the inner host <div> to that width (the “sandbox”), invoke osmd.render(),
   // then restore the host’s styles in finally. No persistent DOM/CSS changes.
@@ -3199,11 +3213,13 @@ export default function ScoreViewer({
     [applyZoomFromRef, nextPerfUID]
   );
 
+
+  //busy spinner
+
   const hideBusy = useCallback(() => {
     setBusy(false);
     setBusyMsg(DEFAULT_BUSY_MSG);
   }, []);
-
 
   // Spinner helpers config (used by both init + reflow)
   const SPINNER_FAILSAFE_MS = 9000 as const;
@@ -3273,6 +3289,9 @@ export default function ScoreViewer({
     [hideBusy]
   );
 
+
+  // reflow plumbing
+
   // ---- callback ref proxies (used by queued window.setTimeouts) ----
   const reflowFnRef = useRef<ReflowCallback>(async () => { });
   const repagFnRef = useRef<() => void>(() => { });
@@ -3316,6 +3335,8 @@ export default function ScoreViewer({
     [visiblePageHeight]
   );
 
+
+  // page geometry
 
   const measuresRef = useRef<ReadonlyArray<{ id: string; rect: Rect }>>([]);
   const barCandsRef = useRef<ReadonlyArray<BarCand>>([]);
@@ -3501,9 +3522,8 @@ export default function ScoreViewer({
     [showGlyphDebug, setGlyphDebugRects]
   );
 
-  const LEFT_PADDING_PX = 6;      // tunable
-  const MIN_BOX_WIDTH_PX = 4;     // safety net to avoid degenerate boxes
 
+  // page application
 
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
   // May recompute page starts and re-apply to preserve whole systems; bounded recursion prevents oscillation.
@@ -3974,6 +3994,8 @@ export default function ScoreViewer({
   );
 
 
+  // annotation redraw effects
+
   // When annotations finish loading or change, re-render the current page
   // so that drawAnnotationBoxes runs again with fresh annotation data.
   useEffect(() => {
@@ -3989,7 +4011,7 @@ export default function ScoreViewer({
       return;
     }
 
-    const idx = buildPedalMarkIndexFromAnnotations(annotationsByMeasure);
+    const idx = buildPedalMarkIndex(annotationsByMeasure);
     pedalMarkIndexRef.current = idx;
 
     if (isDiagOn()) {
@@ -4017,6 +4039,8 @@ export default function ScoreViewer({
     }
   }, [annotationsLoading, annotationsByMeasure, layoutReady, applyPage]);
 
+
+  // layout pipeline helpers
 
   // Hide the SVG host while we do heavy work, then restore previous styles.
   const withHostHidden = useCallback(async <T,>(
@@ -4799,7 +4823,7 @@ export default function ScoreViewer({
   }, [nextPerfUID, renderViewer, withHostHidden, applyPage, visiblePageHeight, topGutterPx, bottomGutterPx, layoutReady]);
 
 
-  // --- HEIGHT-ONLY REPAGINATION (no OSMD re-init) ---
+  // height-only repagination, no OSMD rendeer
   const paginateViewer = useCallback((): void => {
     const outer = wrapRef.current;
     if (!outer) { return; }
@@ -5152,6 +5176,9 @@ export default function ScoreViewer({
     };
   }, [computeZoomFactor]);
 
+
+  // initialization
+
   // initViewer
   // One-time boot for the component:
   // - feature checks, dynamic import of OSMD
@@ -5495,7 +5522,7 @@ export default function ScoreViewer({
   }, [src]);
 
 
-  // ---------- Paging helpers ----------
+  // paging helpers
 
   // Ignore page turns if the originating event target is inside a UI control.
   const shouldIgnorePageTurn = (e?: unknown): boolean => {
@@ -5653,23 +5680,6 @@ export default function ScoreViewer({
       window.removeEventListener("keydown", onKey);
     };
   }, [applyPage, goNext, goPrev]);
-
-  // Small "halo" so a tap right on the edge still counts
-  const MEASURE_HIT_TOLERANCE = 8; // tweak if you like
-
-  function pointInMeasureRect(
-    xPage: number,
-    yPage: number,
-    box: { x: number; y: number; w: number; h: number },
-    tol = MEASURE_HIT_TOLERANCE
-  ): boolean {
-    return (
-      xPage >= box.x - tol &&
-      xPage <= box.x + box.w + tol &&
-      yPage >= box.y - tol &&
-      yPage <= box.y + box.h + tol
-    );
-  }
 
   // Touch swipe paging + two-finger pinch zoom (disabled while busy)
   useEffect(() => {
@@ -5978,6 +5988,9 @@ export default function ScoreViewer({
     };
   }, [goNext]);
 
+
+  // viewport/reflow coordination
+
   // Recompute pagination when the visual viewport changes (URL bar, IME, orientation, etc.)
   useEffect(() => {
     const vv = typeof window !== "undefined" ? window.visualViewport : undefined;
@@ -6198,7 +6211,26 @@ export default function ScoreViewer({
   };
 
 
-  // --- Annotation handle position (page-local px) ---
+  // annotation interactions
+
+  // Small "halo" so a tap right on the edge still counts
+  const MEASURE_HIT_TOLERANCE = 8; // tweak if you like
+
+  function pointInMeasureRect(
+    xPage: number,
+    yPage: number,
+    box: { x: number; y: number; w: number; h: number },
+    tol = MEASURE_HIT_TOLERANCE
+  ): boolean {
+    return (
+      xPage >= box.x - tol &&
+      xPage <= box.x + box.w + tol &&
+      yPage >= box.y - tol &&
+      yPage <= box.y + box.h + tol
+    );
+  }
+
+  // annotation handle position (page-local px)
   let handlePxX: number | null = null;
   let handlePxY: number | null = null;
 
@@ -6296,8 +6328,8 @@ export default function ScoreViewer({
       const { xRel, yRel } = dragRel;
 
       // Clamp again defensively, just in case
-      const clampedXRel = clamp01(xRel);
-      const clampedYRel = clamp01(yRel);
+      const clampedXRel = clampUnitInterval(xRel);
+      const clampedYRel = clampUnitInterval(yRel);
 
       const finalRel = { xRel: clampedXRel, yRel: clampedYRel };
 
@@ -6397,6 +6429,9 @@ export default function ScoreViewer({
     },
     [getAvoidanceGlyphsForMeasure],
   );
+
+
+  // render output (JSX)
 
   return (
     <div
