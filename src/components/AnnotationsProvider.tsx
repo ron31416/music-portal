@@ -149,6 +149,11 @@ interface AnnotationsContextValue {
     payload: AnnotationPayload
   ) => Promise<void>;
 
+  // Save a batch of measures with ONE optimistic state merge (prevents applyPage N-times).
+  saveAnnotationsForMeasures: (
+    updates: Record<MeasureNumber, AnnotationPayload>
+  ) => Promise<void>;
+
   // Called by the Edit button to ensure the parent `user_song` row exists
   // for the current user + song (via POST /api/user-song → user_song_upsert).
   ensureUserSongRow: () => Promise<void>;
@@ -461,6 +466,98 @@ export function AnnotationsProvider({
     [isAuthenticated, songId]
   );
 
+  const saveAnnotationsForMeasures = useCallback(
+    async (updates: Record<MeasureNumber, AnnotationPayload>): Promise<void> => {
+      if (!songId) {
+        console.warn("saveAnnotationsForMeasures: no songId; ignoring");
+        return;
+      }
+      if (!isAuthenticated) {
+        setErrorMessage("You must be signed in to edit annotations.");
+        return;
+      }
+
+      const measureNumbers = Object.keys(updates)
+        .map((k) => Number(k))
+        .filter((n) => Number.isFinite(n) && n > 0);
+
+      if (measureNumbers.length === 0) {
+        return;
+      }
+
+      // ONE optimistic merge for all measures.
+      setAnnotationsByMeasure((prev: AnnotationMap) => ({
+        ...prev,
+        ...updates,
+      }));
+
+      setIsSaving(true);
+      setErrorMessage(null);
+
+      try {
+        await Promise.all(
+          measureNumbers.map(async (measureNumber) => {
+            const payload = updates[measureNumber]!;
+            const body: SaveAnnotationsRequestBody = {
+              songId,
+              measureNumber,
+              annotations: payload,
+            };
+
+            const response = await fetch("/api/user-song-measure", {
+              method: "PUT",
+              credentials: "include",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(body),
+            });
+
+            if (!response.ok) {
+              if (response.status === 401) {
+                setIsAuthenticated(false);
+                setErrorMessage("You must be signed in to edit annotations.");
+                return;
+              }
+
+              const text = await response.text();
+              console.error(
+                "saveAnnotationsForMeasures: HTTP error",
+                response.status,
+                text
+              );
+              setErrorMessage(
+                "Unable to save annotations; they may not persist after reload."
+              );
+              return;
+            }
+
+            const data =
+              (await response.json()) as SaveAnnotationsResponseBody;
+
+            if (!data.ok) {
+              console.error(
+                "saveAnnotationsForMeasures: API error",
+                data.error
+              );
+              setErrorMessage(
+                data.error ??
+                "Unable to save annotations; they may not persist after reload."
+              );
+            }
+          })
+        );
+      } catch (err) {
+        console.error("saveAnnotationsForMeasures: network error", err);
+        setErrorMessage("Network error while saving annotations.");
+      } finally {
+        setIsSaving(false);
+      }
+    },
+    [isAuthenticated, songId]
+  );
+
+
   const contextValue: AnnotationsContextValue = useMemo(
     () => ({
       isLoading,
@@ -471,6 +568,7 @@ export function AnnotationsProvider({
       annotationsByMeasure,
       getAnnotationsForMeasure,
       saveAnnotationsForMeasure,
+      saveAnnotationsForMeasures,
       ensureUserSongRow,
     }),
     [
@@ -482,6 +580,7 @@ export function AnnotationsProvider({
       isLoading,
       isSaving,
       saveAnnotationsForMeasure,
+      saveAnnotationsForMeasures,
       ensureUserSongRow,
     ]
   );

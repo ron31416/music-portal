@@ -2330,6 +2330,7 @@ export default function ScoreViewer({
   const {
     getAnnotationsForMeasure,
     saveAnnotationsForMeasure,
+    saveAnnotationsForMeasures,
     annotationsByMeasure,
     isLoading: annotationsLoading,
     isAuthenticated,
@@ -2472,6 +2473,8 @@ export default function ScoreViewer({
       // ==========================================================
       // If a pedal is pending, this drop selects the RIGHT endpoint
       // ==========================================================
+
+      const updates: Record<number, MeasureAnnotation> = {};
       const start = pendingPedalStart;
       if (start !== null) {
         const endAnchor = computePedalAnchorRef(measureNumber, point);
@@ -2535,9 +2538,12 @@ export default function ScoreViewer({
             items: [...existingItems, pedalItem],
           };
 
-          // Save each affected measure
-          await saveAnnotationsForMeasure(m, nextPayload);
+          // Collect updates; we'll save them in one batch after the loop.
+          updates[m] = nextPayload;
         }
+
+        // Save all affected measures with ONE optimistic merge (prevents applyPage blink-blink-blink).
+        await saveAnnotationsForMeasures(updates);
 
         // Done: clear pending + selection
         setPendingPedalStart(null);
@@ -2693,6 +2699,7 @@ export default function ScoreViewer({
     [
       getAnnotationsForMeasure,
       saveAnnotationsForMeasure,
+      saveAnnotationsForMeasures,
       pendingPedalStart,
       setPendingPedalStart,
       setSelectedMeasureNumber,
@@ -3994,7 +4001,7 @@ export default function ScoreViewer({
   );
 
 
-  // annotation redraw effects
+  // annotation redraw effect
 
   // When annotations finish loading or change, re-render the current page
   // so that drawAnnotationBoxes runs again with fresh annotation data.
@@ -4024,11 +4031,11 @@ export default function ScoreViewer({
     const currentPage = Math.max(0, pageIdxRef.current || 0);
 
     const prevFunc = outer.dataset.viewerFunc ?? "";
-    outer.dataset.viewerFunc = "annotationsChanged";
+    outer.dataset.viewerFunc = "annotation redraw";
 
     try {
       void logStep(
-        `annotationsChanged: page=${currentPage} measures=${Object.keys(
+        `page=${currentPage} measures=${Object.keys(
           annotationsByMeasure
         ).length}`,
         { outer }
