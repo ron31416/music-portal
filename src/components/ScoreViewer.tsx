@@ -1,7 +1,7 @@
 // src/components/ScoreViewer.tsx 
 "use client";
 
-// imports
+// NAV: ----- imports
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
@@ -17,7 +17,7 @@ import type {
 } from "@/components/AnnotationsProvider";
 
 
-// types
+// NAV: ----- types
 
 // Extend the Window type without using `any`
 declare global {
@@ -133,7 +133,7 @@ interface Props {
 }
 
 
-// constants
+// NAV: ----- constants
 
 // Central pagination/masking knobs (tuned for Hi/Lo DPR). Change here, not inline.
 const REFLOW = {
@@ -178,9 +178,10 @@ const isLogOn = () => URL_LOG || URL_DIAG;
 const isDiagOn = () => URL_DIAG;
 
 
-// helper functions
+// NAV: ----- helper functions
 
 // Expand a rect by `margin` in all directions and test if (x, y) is inside.
+// NAV: function pointHitsRectWithMargin
 function pointHitsRectWithMargin(x: number, y: number, rect: RectPx, margin: number): boolean {
   const left = rect.x - margin;
   const right = rect.x + rect.w + margin;
@@ -202,6 +203,7 @@ function pointHitsRectWithMargin(x: number, y: number, rect: RectPx, margin: num
   return true;
 }
 
+// NAV: function pointHitsAnyRectWithMargin
 function pointHitsAnyRectWithMargin(
   x: number,
   y: number,
@@ -216,7 +218,7 @@ function pointHitsAnyRectWithMargin(
   return false;
 }
 
-
+// NAV: function buildPedalMarkIndex
 function buildPedalMarkIndex(map: AnnotationMap): PedalMarkIndex {
   const marks: PedalMark[] = [];
   const byStartKey = new Map<string, PedalMark>();
@@ -398,7 +400,7 @@ function buildPedalMarkIndex(map: AnnotationMap): PedalMarkIndex {
   return { marks, byStartKey };
 }
 
-
+// NAV: function withTimeout
 async function withTimeout<T>(p: Promise<T>, ms: number, tag: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = window.setTimeout(() => reject(new Error(tag)), ms);
@@ -407,9 +409,8 @@ async function withTimeout<T>(p: Promise<T>, ms: number, tag: string): Promise<T
   });
 }
 
-
 // Await osmd.load(...) whether it returns void or a Promise.
-// (No "maybe" checks needed.)
+// NAV: function loadOSMD
 async function loadOSMD(
   osmd: OpenSheetMusicDisplay,
   input: string | Document | ArrayBuffer | Uint8Array
@@ -429,7 +430,8 @@ async function loadOSMD(
 }
 
 
-// --- Instance-scoped afterPaint factory (safe for multiple components) ---
+// Instance-scoped afterPaint factory (safe for multiple components)
+// NAV: function makeAfterPaint
 function makeAfterPaint(outer: HTMLDivElement) {
   return function afterPaintLocal(label?: string, timeoutMs = 300): Promise<void> {
     return new Promise((resolve) => {
@@ -474,12 +476,12 @@ function makeAfterPaint(outer: HTMLDivElement) {
   };
 }
 
-
+// NAV: function getSvg
 function getSvg(outer: HTMLDivElement): SVGSVGElement | null {
   return outer.querySelector("svg");
 }
 
-
+// NAV: function withSvgAtUnitScale
 function withSvgAtUnitScale<T>(outer: HTMLDivElement, fn: (svg: SVGSVGElement) => T): T | null {
   const svg = getSvg(outer);
   if (!svg) {
@@ -499,6 +501,7 @@ function withSvgAtUnitScale<T>(outer: HTMLDivElement, fn: (svg: SVGSVGElement) =
 
 
 // Best-effort "wait until the browser can paint" (bounded)
+// NAV: function waitForPaint
 async function waitForPaint(timeoutMs = 450): Promise<void> {
   try {
     await new Promise<void>(r => window.setTimeout(r, 0)); // macrotask
@@ -517,6 +520,7 @@ async function waitForPaint(timeoutMs = 450): Promise<void> {
 
 
 // URL-driven debug flags: #log or #diag 
+// NAV: function readDebugFlag
 function readDebugFlag(name: string, fallback = false): boolean {
   try {
     const read = (s: string) => {
@@ -545,7 +549,7 @@ function readDebugFlag(name: string, fallback = false): boolean {
   return fallback;
 }
 
-
+// NAV: function logStep
 async function logStep(
   message: string,
   opts: { outer?: HTMLDivElement | null; caller?: string } = {}
@@ -596,7 +600,7 @@ async function logStep(
   } catch { }
 }
 
-
+// NAV: function drawBandGuides
 function drawBandGuides(
   svg: SVGSVGElement,
   bands: Band[],
@@ -685,6 +689,7 @@ function drawBandGuides(
 
 
 // Wait for web fonts to be ready (bounded; prevents rare long hangs)
+// NAV: function waitForFonts
 async function waitForFonts(): Promise<void> {
   try {
     const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
@@ -699,6 +704,7 @@ async function waitForFonts(): Promise<void> {
 
 
 // Track the *visible* viewport height (accounts for mobile URL/tool bars)
+// NAV: function useVisibleViewportHeight
 function useVisibleViewportHeight() {
   const vpRef = useRef<number>(0);
   const [, force] = React.useReducer((x: number) => x + 1, 0);
@@ -735,7 +741,7 @@ function useVisibleViewportHeight() {
   return vpRef; // latest visible height in px
 }
 
-
+// NAV: function dynamicBandGapPx
 function dynamicBandGapPx(): number {
   // Tighten the merge threshold: only bridge true micro-gaps from rounding/jitter.
   const dpr = (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1;
@@ -743,7 +749,7 @@ function dynamicBandGapPx(): number {
   return dpr >= 2 ? 2 : 1;
 }
 
-
+// NAV: function scanSystemsPx
 function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "scanSystemsPx";
@@ -815,6 +821,7 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
 }
 
 // Typed SVG factory (TS strict-friendly)
+// NAV: function createSvgEl
 function createSvgEl<K extends keyof SVGElementTagNameMap>(
   tag: K,
   ns = "http://www.w3.org/2000/svg"
@@ -822,9 +829,9 @@ function createSvgEl<K extends keyof SVGElementTagNameMap>(
   return document.createElementNS(ns, tag) as SVGElementTagNameMap[K];
 }
 
-
 // Return a *new* Band[] whose top/bottom are expanded for annotation headroom.
 // Pads are capped by the page gutters so we never ask for more space than exists.
+// NAV: function derivePaddedBands
 function derivePaddedBands(
   raw: Band[],
   topGutterPx: number,
@@ -848,7 +855,7 @@ function derivePaddedBands(
   return out;
 }
 
-
+// NAV: function validateBandSpacing
 function validateBandSpacing(
   outer: HTMLDivElement,
   bands: Band[],
@@ -897,10 +904,10 @@ function validateBandSpacing(
   try { outer.dataset.viewerFunc = prevFuncTag; } catch { }
 }
 
-
 // Scan measure groups from the current OSMD SVG, union staves within the same measure,
 // and return unified per-measure rectangles relative to the wrapper host.
 // Runs AFTER pagination transform so boxes align with what you see.
+// NAV: function scanMeasuresPx
 function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ id: string; rect: Rect }> {
   const prevFuncTag = outer.dataset.viewerFunc ?? "";
   outer.dataset.viewerFunc = "scanMeasuresPx";
@@ -980,13 +987,14 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
   }
 }
 
-
+// NAV: function pedalEndpointKeyToString
 function pedalEndpointKeyToString(k: PedalEndpointKey): string {
   // dxRel stringified to reduce float noise in map keys.
   // Keep enough precision to distinguish user intent.
   return `${k.measureNumber}|${k.noteId}|${k.dxRel.toFixed(6)}`;
 }
 
+// NAV: function endpointFromPedalAnchor
 function endpointFromPedalAnchor(
   measureNumber: number,
   ref: PedalAnchorRef
@@ -998,10 +1006,10 @@ function endpointFromPedalAnchor(
   };
 }
 
-
 // Pure geometry helper: computes the measure-box rectangles for the
 // *current page* using the same logic drawMeasureBoxes used before.
 // No DOM/side effects — just numbers we can reuse (e.g. for annotations).
+// NAV: function computeMeasureBoxRectsForPage
 function computeMeasureBoxRectsForPage(
   measuresIn: ReadonlyArray<{ id: string; rect: Rect }>,
   geomIn: ReadonlyMap<string, MeasureGeom>,
@@ -1032,7 +1040,7 @@ function computeMeasureBoxRectsForPage(
     },
   }));
 
-  // --- Build seps[] exactly as in the original drawMeasureBoxes ---
+  // Build seps[] exactly as in the original drawMeasureBoxes
 
   const seps: number[] = [];
   const topG = Math.max(0, topGutterPx);
@@ -1096,7 +1104,7 @@ function computeMeasureBoxRectsForPage(
   const pageBottom = seps[seps.length - 1]!;
   const lastTileIndex = seps.length - 2;
 
-  // --- Bucket measures by tile (system) exactly the way you were doing it ---
+  // Bucket measures by tile (system) exactly the way you were doing it
 
   type BucketItem = { m: (typeof measures)[number]; k: number };
   const buckets = new Map<number, BucketItem[]>();
@@ -1149,7 +1157,7 @@ function computeMeasureBoxRectsForPage(
     }
   }
 
-  // --- Geometry lookup: same normalization strategy as before ---
+  // Geometry lookup: same normalization strategy as before
 
   const normKey = (id: string): string => {
     // Accept "measure-12", "measure_12", "measure 12", or plain "12" → normalize to "measure-12"
@@ -1183,7 +1191,7 @@ function computeMeasureBoxRectsForPage(
     return undefined;
   };
 
-  // --- Walk tiles in order, compute rects exactly as before ---
+  // Walk tiles in order, compute rects exactly as before
 
   for (let k = 0; k <= lastTileIndex; k++) {
     const items = buckets.get(k);
@@ -1264,10 +1272,10 @@ function computeMeasureBoxRectsForPage(
   return rects;
 }
 
-
 // Draw/refresh a lightweight SVG overlay of measure rectangles (stroke-only),
 // snapping vertical bounds to per-system page separators so boxes tile cleanly.
 // STRICT TS SAFE (noUncheckedIndexedAccess compatible).
+// NAV: function drawMeasureBoxes
 function drawMeasureBoxes(
   outer: HTMLDivElement,
   svgRoot: SVGSVGElement,
@@ -1412,13 +1420,14 @@ function drawMeasureBoxes(
 
 
 // Remove the measure overlay layer if present.
+// NAV: function clearMeasureBoxes
 function clearMeasureBoxes(outer: HTMLDivElement): void {
   outer.querySelectorAll("[data-viewer-measureboxes='1']").forEach(n => n.remove());
 }
 
-
 // Filled annotation overlay (per-measure), using the exact same geometry
 // as measure boxes. Separate layer so we can style/clear independently.
+// NAV: function drawAnnotationBoxes
 function drawAnnotationBoxes(
   outer: HTMLDivElement,
   rects: ReadonlyArray<MeasureBoxRect>,
@@ -1484,6 +1493,7 @@ function drawAnnotationBoxes(
   }
 
   // Resolve a PedalAnchorRef to an X coordinate in px for this measure, or null if it can't be resolved.
+  // NAV: .... function resolvePedalAnchorX
   function resolvePedalAnchorX(
     ref: PedalAnchorRef | null | undefined,
     boxId: string,
@@ -1545,10 +1555,10 @@ function drawAnnotationBoxes(
     return anchorPxX;
   }
 
-
   // Compute vertical baselines for pedal runs, but only per *system* (line).
   // We infer systems purely from geometry: boxes whose top y are "close"
   // belong to the same system.
+  // NAV: .... function computePedalBaselinesForRects
   function computePedalBaselinesForRects(
     rects: ReadonlyArray<MeasureBoxRect>,
     getAnnotationsForMeasure: GetAnnotationsForMeasure
@@ -1657,7 +1667,6 @@ function drawAnnotationBoxes(
 
     return byMeasureId;
   }
-
 
   const pedalBaselineByMeasureId = computePedalBaselinesForRects(
     rects,
@@ -1895,14 +1904,14 @@ function drawAnnotationBoxes(
   }
 }
 
-
 // Remove the annotation overlay layer if present.
+// NAV: function clearAnnotationBoxes
 function clearAnnotationBoxes(outer: HTMLDivElement): void {
   outer.querySelectorAll("[data-viewer-annotations='1']").forEach((n) => n.remove());
 }
 
-
 // Deterministic page starts from measured system rectangles (strict, bottom-based).
+// NAV: function computePageStarts
 function computePageStarts(
   outer: HTMLDivElement,
   bands: Band[],
@@ -1918,7 +1927,7 @@ function computePageStarts(
       return [0];
     }
 
-    // --- Same “usable height” model as applyPage ---
+    // Same “usable height” model as applyPage
     // 1) DPR tolerance (you already had this)
     const TOL = (window.devicePixelRatio || 1) >= 2 ? 2 : 1;
 
@@ -1970,7 +1979,7 @@ function computePageStarts(
   }
 }
 
-
+// NAV: function hasZoomProp
 function hasZoomProp(o: unknown): o is { Zoom: number } {
   if (typeof o !== "object" || o === null) { return false; }
   const maybe = o as { Zoom?: unknown };
@@ -1978,7 +1987,7 @@ function hasZoomProp(o: unknown): o is { Zoom: number } {
 }
 
 
-// perf blocks (module-scope; reusable)
+// NAV: ----- perf blocks
 
 function perfMark(n: string) { try { performance.mark(n); } catch { } }
 
@@ -2040,8 +2049,9 @@ async function perfBlockAsync<T>(
 }
 
 
-// measure/page mapping helpers
+// NAV: ----- measure/page mapping helpers
 
+// NAV: function rebuildMeasureToPageMapping
 function rebuildMeasureToPageMapping(
   bands: ReadonlyArray<Band>,
   starts: ReadonlyArray<number>,
@@ -2080,7 +2090,6 @@ function rebuildMeasureToPageMapping(
   return measureToPage;
 }
 
-
 // Given a measure→page mapping and a target page index, choose
 // an "anchor" measure on that page.
 // 
@@ -2089,6 +2098,7 @@ function rebuildMeasureToPageMapping(
 // 
 // The name is intentionally generic so we can later change the strategy
 // (e.g., choose the middle measure on that page).
+// NAV: function findAnchorMeasure
 function findAnchorMeasure(
   measureToPage: ReadonlyArray<number>,
   pageIndex: number
@@ -2105,7 +2115,7 @@ function findAnchorMeasure(
   return Number.isFinite(lowest) ? lowest : null;
 }
 
-
+// NAV: function clampUnitInterval
 function clampUnitInterval(v: number): number {
   if (v < 0) {
     return 0;
@@ -2116,12 +2126,12 @@ function clampUnitInterval(v: number): number {
   return v;
 }
 
-
 // Given a tap inside a measure box, find a nearby point that does NOT land on
 // top of a "hard" glyph (noteheads, rests, stems, etc.). Thin horizontal staff
 // lines are treated as *soft* constraints: we prefer points that land between
 // them, but don't block them outright. Returns normalized coords, or falls
 // back to the original point if nothing better is found.
+// NAV: function findSafePointRelForTap
 function findSafePointRelForTap(
   box: MeasureBoxRect,
   xPage: number,
@@ -2264,12 +2274,14 @@ function findSafePointRelForTap(
   return toRel(startX, startY);
 }
 
-// ---- Note anchor helpers ----------------------------------------------------
+
+// NAV: ----- note anchor helpers
 
 // Build a stable list of note anchors for a given measure from its glyph cloud.
 // We treat any glyph whose tag contains "notehead" as a candidate.
 // Note: this operates in the same page-local coordinate system as GlyphRect
 // and MeasureBoxRect.
+// NAV: function buildNoteAnchorsForMeasure
 function buildNoteAnchorsForMeasure(
   glyphs: readonly GlyphRect[]
 ): NoteAnchor[] {
@@ -2317,13 +2329,14 @@ function buildNoteAnchorsForMeasure(
 }
 
 
-// component
+// NAV: ----- component
 
+// NAV: function ScoreViewer
 export default function ScoreViewer({
   src,
 }: Props) {
 
-  // dependencies
+  // NAV: ----------- dependencies
 
   // Pull annotation helpers from the provider.
   // This is the ONLY source of truth for annotation data.
@@ -2347,7 +2360,7 @@ export default function ScoreViewer({
   }, [getAnnotationsForMeasure]);
 
 
-  // top-level state
+  // NAV: ----------- top-level state
 
   const [showGlyphDebug, setShowGlyphDebug] = useState(false);
   useEffect(() => {
@@ -2368,13 +2381,13 @@ export default function ScoreViewer({
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
 
 
-  // constants
+  // NAV: ----------- constants
 
   const LEFT_PADDING_PX = 6;      // tunable
   const MIN_BOX_WIDTH_PX = 4;     // safety net to avoid degenerate boxes
 
 
-  // annotation creation
+  // NAV: ----------- annotation creation
 
   type PendingPedalStart = {
     measureNumber: number;
@@ -2411,13 +2424,14 @@ export default function ScoreViewer({
     setSelectedPointRel,
   ]);
 
-
+  // NAV: .... function promptAndSaveAnnotation
   const promptAndSaveAnnotation = React.useCallback(
     async (measureNumber: number, point: PointRel): Promise<void> => {
       if (!isEditModeRef.current) {
         return;
       }
 
+      // NAV: ........ const computePedalAnchorRef
       const computePedalAnchorRef = (
         measureNumberIn: number,
         pointIn: PointRel
@@ -2708,7 +2722,7 @@ export default function ScoreViewer({
   );
 
 
-  // event handlers
+  // NAV: ----------- event handlers
 
   const [glyphDebugRects, setGlyphDebugRects] =
     useState<Record<string, GlyphRect[]>>({});
@@ -2726,6 +2740,7 @@ export default function ScoreViewer({
     setMeasurePreviewRect(null);
   }, []);
 
+  // NAV: .... const handleViewerPointerDownCapture
   const handleViewerPointerDownCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       // Mouse/pen only; touch is handled via touch events
@@ -2837,6 +2852,7 @@ export default function ScoreViewer({
     [setSelectedMeasureNumber, setSelectedPointRel],
   );
 
+  // NAV: .... const handleViewerPointerUpCapture
   const handleViewerPointerUpCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       if (!isEditModeRef.current) {
@@ -2867,6 +2883,7 @@ export default function ScoreViewer({
     [openMeasurePreview]
   );
 
+  // NAV: .... const handleViewerClickCapture
   const handleViewerClickCapture = useCallback(
     (ev: React.MouseEvent<HTMLDivElement>): void => {
       if (!isEditModeRef.current) {
@@ -2889,7 +2906,7 @@ export default function ScoreViewer({
   );
 
 
-  // runtime state
+  // NAV: ----------- runtime state
 
   // Current page's measure rectangles (used for hit-testing in edit mode)
   const measureRectsRef = useRef<ReadonlyArray<MeasureBoxRect>>([]);
@@ -2918,6 +2935,7 @@ export default function ScoreViewer({
   // For placement/avoidance, we want:
   //   all glyphs that intersect the measure
   //   EXCEPT staff lines (vf-measure).
+  // NAV: .... const getAvoidanceGlyphsForMeasure
   const getAvoidanceGlyphsForMeasure = useCallback(
     (measureId: string): GlyphRect[] => {
       const all: GlyphRect[] = measureAllGlyphRectsRef.current[measureId] ?? [];
@@ -2994,6 +3012,7 @@ export default function ScoreViewer({
 
   // Cache the last page's box-draw inputs so we can redraw boxes
   // without repagination when edit mode toggles.
+  // NAV: .... const lastBoxDrawArgsRef
   const lastBoxDrawArgsRef = useRef<{
     outer: HTMLDivElement;
     svgNN: SVGSVGElement;
@@ -3043,7 +3062,7 @@ export default function ScoreViewer({
   }, [isEditMode]);
 
 
-  // perf and init guards
+  // NAV: ----------- perf and init guards
 
   // Stable per-instance ID (for perf marks), plus a monotonic per-run sequence elsewhere
   const instanceIdRef = useRef<string>(`viewer-${Math.random().toString(36).slice(2, 8)}`);
@@ -3069,7 +3088,7 @@ export default function ScoreViewer({
   const repaginationRunningRef = useRef(false);      // guards height-only repagination
 
 
-  // zoom-related refs
+  // NAV: ----------- zoom-related refs
 
   // Track browser zoom relative to mount
   const baseScaleRef = useRef<number>(1);
@@ -3090,6 +3109,7 @@ export default function ScoreViewer({
 
   const clampZoom = (z: number) => Math.max(0.5, Math.min(3, z));
 
+  // NAV: .... const computeZoomFactor
   const computeZoomFactor = useCallback((): number => {
     const vv = typeof window !== "undefined" ? window.visualViewport : undefined;
     const scaleNow = (vv && typeof vv.scale === "number") ? vv.scale : (window.devicePixelRatio || 1);
@@ -3100,6 +3120,7 @@ export default function ScoreViewer({
     return Math.max(0.5, Math.min(3, raw));
   }, []);
 
+  // NAV: .... const applyZoomFromRef
   const applyZoomFromRef = useCallback((): void => {
     const inst = osmdRef.current;
     if (!inst) { return; }
@@ -3122,7 +3143,7 @@ export default function ScoreViewer({
   }, []);
 
 
-  // debug wiring
+  // NAV: ----------- debug wiring
 
   useEffect(() => {
     // Install debug function
@@ -3137,13 +3158,13 @@ export default function ScoreViewer({
   }, [openMeasurePreview]);
 
 
-
-  // render and layout pipeline
+  // NAV: ----------- render and layout pipeline
 
   // Render OSMD at a computed “layout width” derived from wrapper width and current zoom.
   // We temporarily pin the inner host <div> to that width (the “sandbox”), invoke osmd.render(),
   // then restore the host’s styles in finally. No persistent DOM/CSS changes.
   // Safe to call from both init and reflow paths.
+  // NAV: .... const renderViewer
   const renderViewer = useCallback(
     async (
       outer: HTMLDivElement,
@@ -3221,7 +3242,7 @@ export default function ScoreViewer({
   );
 
 
-  //busy spinner
+  // NAV: ----------- busy spinner
 
   const hideBusy = useCallback(() => {
     setBusy(false);
@@ -3274,6 +3295,7 @@ export default function ScoreViewer({
     [hideBusy]
   );
 
+  // NAV: .... const stopSpinner
   const stopSpinner = useCallback(
     async (): Promise<void> => {
       spinnerOwnerRef.current = null;
@@ -3297,7 +3319,7 @@ export default function ScoreViewer({
   );
 
 
-  // reflow plumbing
+  // NAV: ----------- reflow plumbing
 
   // ---- callback ref proxies (used by queued window.setTimeouts) ----
   const reflowFnRef = useRef<ReflowCallback>(async () => { });
@@ -3343,7 +3365,7 @@ export default function ScoreViewer({
   );
 
 
-  // page geometry
+  // NAV: ----------- page geometry
 
   const measuresRef = useRef<ReadonlyArray<{ id: string; rect: Rect }>>([]);
   const barCandsRef = useRef<ReadonlyArray<BarCand>>([]);
@@ -3366,6 +3388,7 @@ export default function ScoreViewer({
   // For each visible SVG graphics element, we compute its page-local bounding box
   // and associate it with every measure box it intersects. Results are cached in
   // measureGlyphRectsRef by measureId.
+  // NAV: .... const populateGlyphRectsForPage
   const populateGlyphRectsForPage = useCallback(
     (outer: HTMLDivElement, rects: ReadonlyArray<MeasureBoxRect>): void => {
 
@@ -3460,7 +3483,7 @@ export default function ScoreViewer({
           y: gy,
           w: effW,
           h: effH,
-          glyphTag: glyphKind,            // ⬅️ this is what refineMeasure... uses
+          glyphTag: glyphKind,   // this is what refineMeasure... uses
         };
 
         for (const box of rects) {
@@ -3530,10 +3553,11 @@ export default function ScoreViewer({
   );
 
 
-  // page application
+  // NAV: ----------- page application
 
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
   // May recompute page starts and re-apply to preserve whole systems; bounded recursion prevents oscillation.
+  // NAV: .... const applyPage
   const applyPage = useCallback(
     (pageIdx: number): void => {
       const outer = wrapRef.current;
@@ -4001,7 +4025,7 @@ export default function ScoreViewer({
   );
 
 
-  // annotation redraw effect
+  // NAV: ----------- annotation redraw effect
 
   // When annotations finish loading or change, re-render the current page
   // so that drawAnnotationBoxes runs again with fresh annotation data.
@@ -4047,9 +4071,10 @@ export default function ScoreViewer({
   }, [annotationsLoading, annotationsByMeasure, layoutReady, applyPage]);
 
 
-  // layout pipeline helpers
+  // NAV: ----------- layout pipeline helpers
 
   // Hide the SVG host while we do heavy work, then restore previous styles.
+  // NAV: .... const withHostHidden
   const withHostHidden = useCallback(async <T,>(
     outer: HTMLDivElement,
     work: () => Promise<T>
@@ -4076,11 +4101,11 @@ export default function ScoreViewer({
     }
   }, []);
 
-
   // Full layout pipeline:
   // renderViewer()  → scanSystemsPx() → computePageStarts() → applyPage(0)
   // Optionally double-applies page 1 to settle masking; bounded by a paint gate.
   // Returns {bands, starts} for callers to stash.
+  // NAV: .... const layoutViewer
   const layoutViewer = useCallback(async (
     outer: HTMLDivElement,
     osmd: OpenSheetMusicDisplay,
@@ -4286,6 +4311,7 @@ export default function ScoreViewer({
 
         // Collect inner-edge X positions of vertical barlines that belong to a given tile.
         // expectedBars = measures_in_tile + 1
+        // NAV: ........ function computeMeasureIntervals
         function computeMeasureIntervals(
           yTop: number,
           yBot: number,
@@ -4522,6 +4548,7 @@ export default function ScoreViewer({
             return rows;
           })();
 
+          // NAV: ........ function computeMeasureVerticalExtents
           function computeMeasureVerticalExtents(
             intervalLeft: number,
             intervalRight: number,
@@ -4693,7 +4720,6 @@ export default function ScoreViewer({
       );
       measureToPageRef.current = measureToPage;
 
-      // Optional diag
       if (isDiagOn()) {
         const sampleParts: string[] = [];
         for (let m = 0; m < measureToPage.length && sampleParts.length < 20; m++) {
@@ -4831,6 +4857,7 @@ export default function ScoreViewer({
 
 
   // height-only repagination, no OSMD rendeer
+  // NAV: .... const paginateViewer
   const paginateViewer = useCallback((): void => {
     const outer = wrapRef.current;
     if (!outer) { return; }
@@ -4983,11 +5010,10 @@ export default function ScoreViewer({
     repagFnRef.current = paginateViewer;
   }, [paginateViewer]);
 
-
-  // reflowViewer
   // Heavy path for when effective layout width changes (width/zoom/DPR etc.).
   // Shows spinner, bumps run#, calls layoutViewer(), drains any queued work.
   // Concurrency-safe via reflowRunningRef; may queue a follow-up if invoked again mid-run.
+  // NAV: .... const reflowViewer
   const reflowViewer = useCallback(
     async function reflowViewer(): Promise<void> {
       const outer = wrapRef.current;
@@ -5184,14 +5210,14 @@ export default function ScoreViewer({
   }, [computeZoomFactor]);
 
 
-  // initialization
+  // NAV: ----------- initialization
 
-  // initViewer
   // One-time boot for the component:
   // - feature checks, dynamic import of OSMD
   // - load MusicXML (MXL/URL), wait for fonts
   // - first layout via layoutViewer, then height-only repagination
   // - marks ready & clears the spinner
+  // NAV: .... function initViewer
   useEffect(function initViewer() {
     (async () => {
       const host = svgHostRef.current;
@@ -5529,9 +5555,10 @@ export default function ScoreViewer({
   }, [src]);
 
 
-  // paging helpers
+  // NAV: ----------- paging helpers
 
   // Ignore page turns if the originating event target is inside a UI control.
+  // NAV: .... const shouldIgnorePageTurn
   const shouldIgnorePageTurn = (e?: unknown): boolean => {
     if (!e) { return false; }
 
@@ -5562,6 +5589,7 @@ export default function ScoreViewer({
   };
 
   // Core page-turn handler (goNext/goPrev). On rare layout shifts, retries next frame.
+  // NAV: .... const turnPage
   const turnPage = useCallback(
     (dir: 1 | -1, e?: unknown) => {
       // If this was a touch/pen tap on a UI control, ignore it.
@@ -5660,6 +5688,7 @@ export default function ScoreViewer({
       }
     };
 
+    // NAV: .... const onKey
     const onKey = (e: KeyboardEvent) => {
       if (!readyRef.current || busyRef.current) {
         return;
@@ -5708,6 +5737,7 @@ export default function ScoreViewer({
       return Math.hypot(dx, dy);
     };
 
+    // NAV: .... const queueWidthReflowFromPinch
     const queueWidthReflowFromPinch = () => {
       // If heavy work is already in flight, just queue a follow-up and bail.
       if (reflowRunningRef.current || repaginationRunningRef.current || busyRef.current) {
@@ -5722,6 +5752,7 @@ export default function ScoreViewer({
       reflowFnRef.current();
     };
 
+    // NAV: .... const onTouchStart
     const onTouchStart = (e: TouchEvent) => {
       if (!readyRef.current || busyRef.current || e.touches.length === 0) {
         return;
@@ -5759,6 +5790,7 @@ export default function ScoreViewer({
       startT = performance.now();
     };
 
+    // NAV: .... const onTouchMove
     const onTouchMove = (e: TouchEvent) => {
       if (!readyRef.current || busyRef.current) {
         return;
@@ -5813,6 +5845,7 @@ export default function ScoreViewer({
     // EDIT MODE: for short taps, decide between "edit tap" (inside measure → highlight)
     // and "page-turn tap" (outside all measures → goNext).
     // Non-edit: always treat as page-turn tap.
+    // NAV: .... const onTouchEnd
     const onTouchEnd = (e: TouchEvent) => {
       // Mark the time of this touch gesture so we can ignore the follow-up mouse events
       lastTouchEndRef.current = performance.now();
@@ -5937,6 +5970,7 @@ export default function ScoreViewer({
   // NOTE: ignores double-click so we can reserve it for future edit mode
   // NOTE: In edit mode, pointerdown inside a measure calls preventDefault,
   // which suppresses these mouse events so we can show the measure overlay instead.
+  // NAV: .... useEffect single-click
   useEffect(() => {
     const outer = wrapRef.current;
     if (!outer) { return; }
@@ -5950,6 +5984,7 @@ export default function ScoreViewer({
     const CLICK_MAX_MS = 250;
     const CLICK_MAX_MOVE_PX = 12;
 
+    // NAV: ........ const onMouseDown
     const onMouseDown = (e: MouseEvent) => {
       if (!readyRef.current || busyRef.current) { return; }
       if (e.button !== 0) { return; }          // left click only
@@ -5966,6 +6001,7 @@ export default function ScoreViewer({
       downT = performance.now();
     };
 
+    // NAV: ........ const onMouseUp
     const onMouseUp = (e: MouseEvent) => {
       if (!armed) { return; }
       armed = false;
@@ -5996,9 +6032,10 @@ export default function ScoreViewer({
   }, [goNext]);
 
 
-  // viewport/reflow coordination
+  // NAV: ----------- viewport/reflow coordination
 
   // Recompute pagination when the visual viewport changes (URL bar, IME, orientation, etc.)
+  // NAV: .... useEffect visual viewport change
   useEffect(() => {
     const vv = typeof window !== "undefined" ? window.visualViewport : undefined;
     if (!vv) { return; }
@@ -6097,6 +6134,7 @@ export default function ScoreViewer({
 
   // Auto-clear busy if we linger too long *outside* heavy phases.
   // Heavy phases are exactly: "render" and "scan".
+  // NAV: .... useEffect auto-clear
   useEffect(() => {
     if (!busy) { return; }
 
@@ -6179,7 +6217,7 @@ export default function ScoreViewer({
   }, [hideBusy]);
 
 
-  // ---------- Styles ----------
+  // NAV: ----------- styles
 
   const outerStyle: React.CSSProperties = {
     width: "100%",
@@ -6218,7 +6256,7 @@ export default function ScoreViewer({
   };
 
 
-  // annotation interactions
+  // NAV: ----------- annotation interactions
 
   // Small "halo" so a tap right on the edge still counts
   const MEASURE_HIT_TOLERANCE = 8; // tweak if you like
@@ -6251,6 +6289,7 @@ export default function ScoreViewer({
     }
   }
 
+  // NAV: .... const handleAnnotationHandlePointerDown
   const handleAnnotationHandlePointerDown = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       if (!isEditModeRef.current) {
@@ -6294,6 +6333,7 @@ export default function ScoreViewer({
     [selectedMeasureNumber]
   );
 
+  // NAV: .... const handleAnnotationHandlePointerUp
   const handleAnnotationHandlePointerUp = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       const dragId = dragPointerIdRef.current;
@@ -6349,6 +6389,7 @@ export default function ScoreViewer({
     [promptAndSaveAnnotation, selectedMeasureNumber, setSelectedPointRel]
   );
 
+  // NAV: .... const handleViewerPointerMoveCapture
   const handleViewerPointerMoveCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       const dragId = dragPointerIdRef.current;
@@ -6438,7 +6479,7 @@ export default function ScoreViewer({
   );
 
 
-  // render output (JSX)
+  // NAV: ----------- render output (JSX)
 
   return (
     <div
