@@ -1,7 +1,7 @@
 // src/components/ScoreViewer.tsx 
 "use client";
 
-// NAV: ----- imports
+// NAV: -----------------imports
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenSheetMusicDisplay } from "opensheetmusicdisplay";
@@ -17,7 +17,7 @@ import type {
 } from "@/components/AnnotationsProvider";
 
 
-// NAV: ----- types
+// NAV: -----------------types
 
 // Extend the Window type without using `any`
 declare global {
@@ -133,7 +133,7 @@ interface Props {
 }
 
 
-// NAV: ----- constants
+// NAV: -----------------constants
 
 // Central pagination/masking knobs (tuned for Hi/Lo DPR). Change here, not inline.
 const REFLOW = {
@@ -178,7 +178,7 @@ const isLogOn = () => URL_LOG || URL_DIAG;
 const isDiagOn = () => URL_DIAG;
 
 
-// NAV: ----- helper functions
+// NAV: -----------------helper functions
 
 // Expand a rect by `margin` in all directions and test if (x, y) is inside.
 // NAV: function pointHitsRectWithMargin
@@ -1493,7 +1493,7 @@ function drawAnnotationBoxes(
   }
 
   // Resolve a PedalAnchorRef to an X coordinate in px for this measure, or null if it can't be resolved.
-  // NAV: .... function resolvePedalAnchorX
+  // NAV: __ function resolvePedalAnchorX
   function resolvePedalAnchorX(
     ref: PedalAnchorRef | null | undefined,
     boxId: string,
@@ -1558,7 +1558,7 @@ function drawAnnotationBoxes(
   // Compute vertical baselines for pedal runs, but only per *system* (line).
   // We infer systems purely from geometry: boxes whose top y are "close"
   // belong to the same system.
-  // NAV: .... function computePedalBaselinesForRects
+  // NAV: __ function computePedalBaselinesForRects
   function computePedalBaselinesForRects(
     rects: ReadonlyArray<MeasureBoxRect>,
     getAnnotationsForMeasure: GetAnnotationsForMeasure
@@ -1987,7 +1987,7 @@ function hasZoomProp(o: unknown): o is { Zoom: number } {
 }
 
 
-// NAV: ----- perf blocks
+// NAV: -----------------perf blocks
 
 function perfMark(n: string) { try { performance.mark(n); } catch { } }
 
@@ -2049,7 +2049,7 @@ async function perfBlockAsync<T>(
 }
 
 
-// NAV: ----- measure/page mapping helpers
+// NAV: -----------------measure/page mapping helpers
 
 // NAV: function rebuildMeasureToPageMapping
 function rebuildMeasureToPageMapping(
@@ -2275,7 +2275,7 @@ function findSafePointRelForTap(
 }
 
 
-// NAV: ----- note anchor helpers
+// NAV: -----------------note anchor helpers
 
 // Build a stable list of note anchors for a given measure from its glyph cloud.
 // We treat any glyph whose tag contains "notehead" as a candidate.
@@ -2329,14 +2329,14 @@ function buildNoteAnchorsForMeasure(
 }
 
 
-// NAV: ----- component
+// NAV: -----------------component
 
 // NAV: function ScoreViewer
 export default function ScoreViewer({
   src,
 }: Props) {
 
-  // NAV: ----------- dependencies
+  // NAV: ------------------------- dependencies
 
   // Pull annotation helpers from the provider.
   // This is the ONLY source of truth for annotation data.
@@ -2360,7 +2360,7 @@ export default function ScoreViewer({
   }, [getAnnotationsForMeasure]);
 
 
-  // NAV: ----------- top-level state
+  // NAV: ------------------------- top-level state
 
   const [showGlyphDebug, setShowGlyphDebug] = useState(false);
   useEffect(() => {
@@ -2381,13 +2381,13 @@ export default function ScoreViewer({
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
 
 
-  // NAV: ----------- constants
+  // NAV: ------------------------- constants
 
   const LEFT_PADDING_PX = 6;      // tunable
   const MIN_BOX_WIDTH_PX = 4;     // safety net to avoid degenerate boxes
 
 
-  // NAV: ----------- annotation creation
+  // NAV: ------------------------- annotation creation
 
   type PendingPedalStart = {
     measureNumber: number;
@@ -2424,14 +2424,14 @@ export default function ScoreViewer({
     setSelectedPointRel,
   ]);
 
-  // NAV: .... function promptAndSaveAnnotation
+  // NAV: __ function promptAndSaveAnnotation
   const promptAndSaveAnnotation = React.useCallback(
     async (measureNumber: number, point: PointRel): Promise<void> => {
       if (!isEditModeRef.current) {
         return;
       }
 
-      // NAV: ........ const computePedalAnchorRef
+      // NAV: ____ const computePedalAnchorRef
       const computePedalAnchorRef = (
         measureNumberIn: number,
         pointIn: PointRel
@@ -2722,7 +2722,7 @@ export default function ScoreViewer({
   );
 
 
-  // NAV: ----------- event handlers
+  // NAV: ------------------------- event handlers
 
   const [glyphDebugRects, setGlyphDebugRects] =
     useState<Record<string, GlyphRect[]>>({});
@@ -2740,7 +2740,7 @@ export default function ScoreViewer({
     setMeasurePreviewRect(null);
   }, []);
 
-  // NAV: .... const handleViewerPointerDownCapture
+  // NAV: __ const handleViewerPointerDownCapture
   const handleViewerPointerDownCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       // Mouse/pen only; touch is handled via touch events
@@ -2852,7 +2852,7 @@ export default function ScoreViewer({
     [setSelectedMeasureNumber, setSelectedPointRel],
   );
 
-  // NAV: .... const handleViewerPointerUpCapture
+  // NAV: __ const handleViewerPointerUpCapture
   const handleViewerPointerUpCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       if (!isEditModeRef.current) {
@@ -2883,7 +2883,7 @@ export default function ScoreViewer({
     [openMeasurePreview]
   );
 
-  // NAV: .... const handleViewerClickCapture
+  // NAV: __ const handleViewerClickCapture
   const handleViewerClickCapture = useCallback(
     (ev: React.MouseEvent<HTMLDivElement>): void => {
       if (!isEditModeRef.current) {
@@ -2906,7 +2906,7 @@ export default function ScoreViewer({
   );
 
 
-  // NAV: ----------- runtime state
+  // NAV: ------------------------- runtime state
 
   // Current page's measure rectangles (used for hit-testing in edit mode)
   const measureRectsRef = useRef<ReadonlyArray<MeasureBoxRect>>([]);
@@ -2935,7 +2935,7 @@ export default function ScoreViewer({
   // For placement/avoidance, we want:
   //   all glyphs that intersect the measure
   //   EXCEPT staff lines (vf-measure).
-  // NAV: .... const getAvoidanceGlyphsForMeasure
+  // NAV: __ const getAvoidanceGlyphsForMeasure
   const getAvoidanceGlyphsForMeasure = useCallback(
     (measureId: string): GlyphRect[] => {
       const all: GlyphRect[] = measureAllGlyphRectsRef.current[measureId] ?? [];
@@ -3012,7 +3012,7 @@ export default function ScoreViewer({
 
   // Cache the last page's box-draw inputs so we can redraw boxes
   // without repagination when edit mode toggles.
-  // NAV: .... const lastBoxDrawArgsRef
+  // NAV: __ const lastBoxDrawArgsRef
   const lastBoxDrawArgsRef = useRef<{
     outer: HTMLDivElement;
     svgNN: SVGSVGElement;
@@ -3062,7 +3062,7 @@ export default function ScoreViewer({
   }, [isEditMode]);
 
 
-  // NAV: ----------- perf and init guards
+  // NAV: ------------------------- perf and init guards
 
   // Stable per-instance ID (for perf marks), plus a monotonic per-run sequence elsewhere
   const instanceIdRef = useRef<string>(`viewer-${Math.random().toString(36).slice(2, 8)}`);
@@ -3088,7 +3088,7 @@ export default function ScoreViewer({
   const repaginationRunningRef = useRef(false);      // guards height-only repagination
 
 
-  // NAV: ----------- zoom-related refs
+  // NAV: ------------------------- zoom-related refs
 
   // Track browser zoom relative to mount
   const baseScaleRef = useRef<number>(1);
@@ -3109,7 +3109,7 @@ export default function ScoreViewer({
 
   const clampZoom = (z: number) => Math.max(0.5, Math.min(3, z));
 
-  // NAV: .... const computeZoomFactor
+  // NAV: __ const computeZoomFactor
   const computeZoomFactor = useCallback((): number => {
     const vv = typeof window !== "undefined" ? window.visualViewport : undefined;
     const scaleNow = (vv && typeof vv.scale === "number") ? vv.scale : (window.devicePixelRatio || 1);
@@ -3120,7 +3120,7 @@ export default function ScoreViewer({
     return Math.max(0.5, Math.min(3, raw));
   }, []);
 
-  // NAV: .... const applyZoomFromRef
+  // NAV: __ const applyZoomFromRef
   const applyZoomFromRef = useCallback((): void => {
     const inst = osmdRef.current;
     if (!inst) { return; }
@@ -3143,7 +3143,7 @@ export default function ScoreViewer({
   }, []);
 
 
-  // NAV: ----------- debug wiring
+  // NAV: ------------------------- debug wiring
 
   useEffect(() => {
     // Install debug function
@@ -3158,13 +3158,13 @@ export default function ScoreViewer({
   }, [openMeasurePreview]);
 
 
-  // NAV: ----------- render and layout pipeline
+  // NAV: ------------------------- render and layout pipeline
 
   // Render OSMD at a computed “layout width” derived from wrapper width and current zoom.
   // We temporarily pin the inner host <div> to that width (the “sandbox”), invoke osmd.render(),
   // then restore the host’s styles in finally. No persistent DOM/CSS changes.
   // Safe to call from both init and reflow paths.
-  // NAV: .... const renderViewer
+  // NAV: __ const renderViewer
   const renderViewer = useCallback(
     async (
       outer: HTMLDivElement,
@@ -3242,7 +3242,7 @@ export default function ScoreViewer({
   );
 
 
-  // NAV: ----------- busy spinner
+  // NAV: ------------------------- busy spinner
 
   const hideBusy = useCallback(() => {
     setBusy(false);
@@ -3295,7 +3295,7 @@ export default function ScoreViewer({
     [hideBusy]
   );
 
-  // NAV: .... const stopSpinner
+  // NAV: __ const stopSpinner
   const stopSpinner = useCallback(
     async (): Promise<void> => {
       spinnerOwnerRef.current = null;
@@ -3319,7 +3319,7 @@ export default function ScoreViewer({
   );
 
 
-  // NAV: ----------- reflow plumbing
+  // NAV: ------------------------- reflow plumbing
 
   // ---- callback ref proxies (used by queued window.setTimeouts) ----
   const reflowFnRef = useRef<ReflowCallback>(async () => { });
@@ -3365,7 +3365,7 @@ export default function ScoreViewer({
   );
 
 
-  // NAV: ----------- page geometry
+  // NAV: ------------------------- page geometry
 
   const measuresRef = useRef<ReadonlyArray<{ id: string; rect: Rect }>>([]);
   const barCandsRef = useRef<ReadonlyArray<BarCand>>([]);
@@ -3388,7 +3388,7 @@ export default function ScoreViewer({
   // For each visible SVG graphics element, we compute its page-local bounding box
   // and associate it with every measure box it intersects. Results are cached in
   // measureGlyphRectsRef by measureId.
-  // NAV: .... const populateGlyphRectsForPage
+  // NAV: __ const populateGlyphRectsForPage
   const populateGlyphRectsForPage = useCallback(
     (outer: HTMLDivElement, rects: ReadonlyArray<MeasureBoxRect>): void => {
 
@@ -3553,11 +3553,11 @@ export default function ScoreViewer({
   );
 
 
-  // NAV: ----------- page application
+  // NAV: ------------------------- page application
 
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
   // May recompute page starts and re-apply to preserve whole systems; bounded recursion prevents oscillation.
-  // NAV: .... const applyPage
+  // NAV: __ const applyPage
   const applyPage = useCallback(
     (pageIdx: number): void => {
       const outer = wrapRef.current;
@@ -3762,7 +3762,7 @@ export default function ScoreViewer({
           //   - Prefer noteheads + rests as “structural” anchors.
           //   - Position the box LEFT_PADDING_PX to the left of that glyph,
           //     clamped to the original barline envelope.
-          // NAV: ........ refineMeasureBoxRectsWithGlyphs
+          // NAV: ____ refineMeasureBoxRectsWithGlyphs
           const refineMeasureBoxRectsWithGlyphs = (
             rawRects: ReadonlyArray<MeasureBoxRect>,
             glyphsByMeasure: Record<string, GlyphRect[]> | undefined
@@ -4026,7 +4026,7 @@ export default function ScoreViewer({
   );
 
 
-  // NAV: ----------- annotation redraw effect
+  // NAV: ------------------------- annotation redraw effect
 
   // When annotations finish loading or change, re-render the current page
   // so that drawAnnotationBoxes runs again with fresh annotation data.
@@ -4072,10 +4072,10 @@ export default function ScoreViewer({
   }, [annotationsLoading, annotationsByMeasure, layoutReady, applyPage]);
 
 
-  // NAV: ----------- layout pipeline helpers
+  // NAV: ------------------------- layout pipeline helpers
 
   // Hide the SVG host while we do heavy work, then restore previous styles.
-  // NAV: .... const withHostHidden
+  // NAV: __ const withHostHidden
   const withHostHidden = useCallback(async <T,>(
     outer: HTMLDivElement,
     work: () => Promise<T>
@@ -4106,7 +4106,7 @@ export default function ScoreViewer({
   // renderViewer()  → scanSystemsPx() → computePageStarts() → applyPage(0)
   // Optionally double-applies page 1 to settle masking; bounded by a paint gate.
   // Returns {bands, starts} for callers to stash.
-  // NAV: .... const layoutViewer
+  // NAV: __ const layoutViewer
   const layoutViewer = useCallback(async (
     outer: HTMLDivElement,
     osmd: OpenSheetMusicDisplay,
@@ -4312,7 +4312,7 @@ export default function ScoreViewer({
 
         // Collect inner-edge X positions of vertical barlines that belong to a given tile.
         // expectedBars = measures_in_tile + 1
-        // NAV: ........ function computeMeasureIntervals
+        // NAV: ____ function computeMeasureIntervals
         function computeMeasureIntervals(
           yTop: number,
           yBot: number,
@@ -4549,7 +4549,7 @@ export default function ScoreViewer({
             return rows;
           })();
 
-          // NAV: ........ function computeMeasureVerticalExtents
+          // NAV: ____ function computeMeasureVerticalExtents
           function computeMeasureVerticalExtents(
             intervalLeft: number,
             intervalRight: number,
@@ -4858,7 +4858,7 @@ export default function ScoreViewer({
 
 
   // height-only repagination, no OSMD rendeer
-  // NAV: .... const paginateViewer
+  // NAV: __ const paginateViewer
   const paginateViewer = useCallback((): void => {
     const outer = wrapRef.current;
     if (!outer) { return; }
@@ -5014,7 +5014,7 @@ export default function ScoreViewer({
   // Heavy path for when effective layout width changes (width/zoom/DPR etc.).
   // Shows spinner, bumps run#, calls layoutViewer(), drains any queued work.
   // Concurrency-safe via reflowRunningRef; may queue a follow-up if invoked again mid-run.
-  // NAV: .... const reflowViewer
+  // NAV: __ const reflowViewer
   const reflowViewer = useCallback(
     async function reflowViewer(): Promise<void> {
       const outer = wrapRef.current;
@@ -5211,14 +5211,14 @@ export default function ScoreViewer({
   }, [computeZoomFactor]);
 
 
-  // NAV: ----------- initialization
+  // NAV: ------------------------- initialization
 
   // One-time boot for the component:
   // - feature checks, dynamic import of OSMD
   // - load MusicXML (MXL/URL), wait for fonts
   // - first layout via layoutViewer, then height-only repagination
   // - marks ready & clears the spinner
-  // NAV: .... function initViewer
+  // NAV: __ function initViewer
   useEffect(function initViewer() {
     (async () => {
       const host = svgHostRef.current;
@@ -5556,10 +5556,10 @@ export default function ScoreViewer({
   }, [src]);
 
 
-  // NAV: ----------- paging helpers
+  // NAV: ------------------------- paging helpers
 
   // Ignore page turns if the originating event target is inside a UI control.
-  // NAV: .... const shouldIgnorePageTurn
+  // NAV: __ const shouldIgnorePageTurn
   const shouldIgnorePageTurn = (e?: unknown): boolean => {
     if (!e) { return false; }
 
@@ -5590,7 +5590,7 @@ export default function ScoreViewer({
   };
 
   // Core page-turn handler (goNext/goPrev). On rare layout shifts, retries next frame.
-  // NAV: .... const turnPage
+  // NAV: __ const turnPage
   const turnPage = useCallback(
     (dir: 1 | -1, e?: unknown) => {
       // If this was a touch/pen tap on a UI control, ignore it.
@@ -5689,7 +5689,7 @@ export default function ScoreViewer({
       }
     };
 
-    // NAV: .... const onKey
+    // NAV: __ const onKey
     const onKey = (e: KeyboardEvent) => {
       if (!readyRef.current || busyRef.current) {
         return;
@@ -5738,7 +5738,7 @@ export default function ScoreViewer({
       return Math.hypot(dx, dy);
     };
 
-    // NAV: .... const queueWidthReflowFromPinch
+    // NAV: __ const queueWidthReflowFromPinch
     const queueWidthReflowFromPinch = () => {
       // If heavy work is already in flight, just queue a follow-up and bail.
       if (reflowRunningRef.current || repaginationRunningRef.current || busyRef.current) {
@@ -5753,7 +5753,7 @@ export default function ScoreViewer({
       reflowFnRef.current();
     };
 
-    // NAV: .... const onTouchStart
+    // NAV: __ const onTouchStart
     const onTouchStart = (e: TouchEvent) => {
       if (!readyRef.current || busyRef.current || e.touches.length === 0) {
         return;
@@ -5791,7 +5791,7 @@ export default function ScoreViewer({
       startT = performance.now();
     };
 
-    // NAV: .... const onTouchMove
+    // NAV: __ const onTouchMove
     const onTouchMove = (e: TouchEvent) => {
       if (!readyRef.current || busyRef.current) {
         return;
@@ -5846,7 +5846,7 @@ export default function ScoreViewer({
     // EDIT MODE: for short taps, decide between "edit tap" (inside measure → highlight)
     // and "page-turn tap" (outside all measures → goNext).
     // Non-edit: always treat as page-turn tap.
-    // NAV: .... const onTouchEnd
+    // NAV: __ const onTouchEnd
     const onTouchEnd = (e: TouchEvent) => {
       // Mark the time of this touch gesture so we can ignore the follow-up mouse events
       lastTouchEndRef.current = performance.now();
@@ -5971,7 +5971,7 @@ export default function ScoreViewer({
   // NOTE: ignores double-click so we can reserve it for future edit mode
   // NOTE: In edit mode, pointerdown inside a measure calls preventDefault,
   // which suppresses these mouse events so we can show the measure overlay instead.
-  // NAV: .... useEffect single-click
+  // NAV: __ useEffect single-click
   useEffect(() => {
     const outer = wrapRef.current;
     if (!outer) { return; }
@@ -5985,7 +5985,7 @@ export default function ScoreViewer({
     const CLICK_MAX_MS = 250;
     const CLICK_MAX_MOVE_PX = 12;
 
-    // NAV: ........ const onMouseDown
+    // NAV: ____ const onMouseDown
     const onMouseDown = (e: MouseEvent) => {
       if (!readyRef.current || busyRef.current) { return; }
       if (e.button !== 0) { return; }          // left click only
@@ -6002,7 +6002,7 @@ export default function ScoreViewer({
       downT = performance.now();
     };
 
-    // NAV: ........ const onMouseUp
+    // NAV: ____ const onMouseUp
     const onMouseUp = (e: MouseEvent) => {
       if (!armed) { return; }
       armed = false;
@@ -6033,10 +6033,10 @@ export default function ScoreViewer({
   }, [goNext]);
 
 
-  // NAV: ----------- viewport/reflow coordination
+  // NAV: ------------------------- viewport/reflow coordination
 
   // Recompute pagination when the visual viewport changes (URL bar, IME, orientation, etc.)
-  // NAV: .... useEffect visual viewport change
+  // NAV: __ useEffect visual viewport change
   useEffect(() => {
     const vv = typeof window !== "undefined" ? window.visualViewport : undefined;
     if (!vv) { return; }
@@ -6135,7 +6135,7 @@ export default function ScoreViewer({
 
   // Auto-clear busy if we linger too long *outside* heavy phases.
   // Heavy phases are exactly: "render" and "scan".
-  // NAV: .... useEffect auto-clear
+  // NAV: __ useEffect auto-clear
   useEffect(() => {
     if (!busy) { return; }
 
@@ -6218,7 +6218,7 @@ export default function ScoreViewer({
   }, [hideBusy]);
 
 
-  // NAV: ----------- styles
+  // NAV: ------------------------- styles
 
   const outerStyle: React.CSSProperties = {
     width: "100%",
@@ -6257,7 +6257,7 @@ export default function ScoreViewer({
   };
 
 
-  // NAV: ----------- annotation interactions
+  // NAV: ------------------------- annotation interactions
 
   // Small "halo" so a tap right on the edge still counts
   const MEASURE_HIT_TOLERANCE = 8; // tweak if you like
@@ -6290,7 +6290,7 @@ export default function ScoreViewer({
     }
   }
 
-  // NAV: .... const handleAnnotationHandlePointerDown
+  // NAV: __ const handleAnnotationHandlePointerDown
   const handleAnnotationHandlePointerDown = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       if (!isEditModeRef.current) {
@@ -6334,7 +6334,7 @@ export default function ScoreViewer({
     [selectedMeasureNumber]
   );
 
-  // NAV: .... const handleAnnotationHandlePointerUp
+  // NAV: __ const handleAnnotationHandlePointerUp
   const handleAnnotationHandlePointerUp = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       const dragId = dragPointerIdRef.current;
@@ -6390,7 +6390,7 @@ export default function ScoreViewer({
     [promptAndSaveAnnotation, selectedMeasureNumber, setSelectedPointRel]
   );
 
-  // NAV: .... const handleViewerPointerMoveCapture
+  // NAV: __ const handleViewerPointerMoveCapture
   const handleViewerPointerMoveCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       const dragId = dragPointerIdRef.current;
@@ -6480,7 +6480,7 @@ export default function ScoreViewer({
   );
 
 
-  // NAV: ----------- render output (JSX)
+  // NAV: ------------------------- render output (JSX)
 
   return (
     <div
