@@ -190,10 +190,12 @@ export async function POST(req: NextRequest): Promise<Response> {
       return serverErrorJson(error.message ?? "Failed to upsert user_song row");
     }
 
-    const rows = Array.isArray(data) ? (data as UserSongRow[]) : [];
-    const row = rows.length > 0 ? rows[0] : null;
+    if (typeof data !== "number" || !Number.isFinite(data) || data <= 0) {
+      console.error("[user-song POST] user_song_upsert returned invalid id:", data);
+      return serverErrorJson("user_song_upsert returned invalid id");
+    }
 
-    return NextResponse.json({ ok: true, data: row }, { status: 200 });
+    return NextResponse.json({ ok: true, data }, { status: 200 });
   } catch (e: unknown) {
     console.error("[user-song POST] route error:", e);
     const message =

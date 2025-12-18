@@ -108,15 +108,7 @@ interface SaveAnnotationsResponseBody {
 
 type UserSongApiResponse = {
   ok: boolean;
-  data:
-  | {
-    user_song_id: number;
-    user_id: number;
-    song_id: number;
-    inserted_datetime: string | null;
-    updated_datetime: string | null;
-  }
-  | null;
+  data: number | null; // user_song_id
   error?: string;
   message?: string;
 };
@@ -382,11 +374,10 @@ export function AnnotationsProvider({
 
       const json = (await response.json()) as UserSongApiResponse;
 
-      if (json.ok && json.data) {
+      if (json.ok && typeof json.data === "number") {
         setHasUserSongRow(true);
       } else {
-        console.warn("user-song upsert POST returned no row", json);
-        // leave hasUserSongRow as-is
+        console.warn("user-song upsert POST returned no id", json);
       }
     } catch (e) {
       console.error("ensureUserSongRow: network error", e);
