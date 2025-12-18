@@ -2743,23 +2743,15 @@ export default function ScoreViewer({
   // NAV: __ const handleViewerPointerDownCapture
   const handleViewerPointerDownCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
-      // Mouse/pen only; touch is handled via touch events
-      if (ev.pointerType === "touch") {
-        return;
-      }
-
       const target = ev.target as HTMLElement | null;
       const isHandle =
         !!target && !!target.closest("[data-annotation-handle='1']");
 
       // If the pointer-down started on the draggable annotation handle,
-      // let the handle-specific logic take over. We ONLY mark this as an
-      // "edit" gesture so page-turn logic won’t fire, but we do NOT
-      // re-run hit-testing or swallow the event here.
+      // let the handle-specific logic take over.
       if (isHandle) {
         suppressPageTurnRef.current = true;
         suppressClickRef.current = true;
-        // Don’t touch pendingMeasureRectRef or selection here.
         return;
       }
 
@@ -2789,60 +2781,88 @@ export default function ScoreViewer({
         const withinX = xPage >= box.x && xPage <= box.x + box.w;
         const withinY = yPage >= box.y && yPage <= box.y + box.h;
 
-        if (withinX && withinY) {
-          // This gesture started inside a measure → treat as "edit", not "turn page"
-          suppressPageTurnRef.current = true;
-          suppressClickRef.current = true;
+        if (!withinX || !withinY) {
+          continue;
+        }
 
-          pendingMeasureRectRef.current = {
-            x: box.x,
-            y: box.y,
-            w: box.w,
-            h: box.h,
-          };
+        // This gesture started inside a measure → treat as "edit", not "turn page"
+        suppressPageTurnRef.current = true;
+        suppressClickRef.current = true;
 
-          const measureNumber = box.measureNumber;
-          if (measureNumber > 0 && Number.isFinite(measureNumber)) {
-            // Look up glyph cloud for this measure
-            const glyphsForMeasure =
-              measureGlyphRectsRef.current[box.id] ?? [];
+        pendingMeasureRectRef.current = {
+          x: box.x,
+          y: box.y,
+          w: box.w,
+          h: box.h,
+        };
 
-            // Find a nearby non-glyph point inside this measure
-            const safe = findSafePointRelForTap(
-              box,
-              xPage,
-              yPage,
-              glyphsForMeasure,
-            );
-            //TEST
-            if (safe) {
-              // Place the handle so the *stem center* lands at the tap point.
-              // We store the handle TIP point in selectedPointRel, so we shift the stored yRel down.
-              const STEM_CENTER_TO_TIP_PX =
-                HANDLE_TIP_HEIGHT + (HANDLE_STEM_HEIGHT / 2);
-
-              const yRelAdjusted =
-                box.h > 0
-                  ? clampUnitInterval(safe.yRel - (STEM_CENTER_TO_TIP_PX / box.h))
-                  : safe.yRel;
-
-              setSelectedMeasureNumber(measureNumber);
-              setSelectedPointRel({ xRel: safe.xRel, yRel: yRelAdjusted });
-            } else {
-              // Everything nearby is congested; keep measure selected but no point yet.
-              setSelectedMeasureNumber(measureNumber);
-              setSelectedPointRel(null);
-            }
-            //TEST
-          } else {
-            setSelectedMeasureNumber(null);
-            setSelectedPointRel(null);
-          }
-
+        const measureNumber = box.measureNumber;
+        if (!(measureNumber > 0) || !Number.isFinite(measureNumber)) {
+          setSelectedMeasureNumber(null);
+          setSelectedPointRel(null);
           ev.preventDefault();
           ev.stopPropagation();
           return;
         }
+
+        // Look up glyph cloud for this measure
+        const glyphsForMeasure = measureGlyphRectsRef.current[box.id] ?? [];
+
+        // Find a nearby non-glyph point inside this measure
+        const safe = findSafePointRelForTap(
+          box,
+          xPage,
+          yPage,
+          glyphsForMeasure,
+        );
+
+        if (safe) {
+          // Place the handle so the *stem center* lands at the tap point.
+          const STEM_CENTER_TO_TIP_PX =
+            HANDLE_TIP_HEIGHT + (HANDLE_STEM_HEIGHT / 2);
+
+          const yRelAdjusted =
+            box.h > 0
+              ? clampUnitInterval(safe.yRel - (STEM_CENTER_TO_TIP_PX / box.h))
+              : safe.yRel;
+
+          setSelectedMeasureNumber(measureNumber);
+          setSelectedPointRel({ xRel: safe.xRel, yRel: yRelAdjusted });
+
+          // Arm dragging immediately for this gesture (mouse/pen/touch).
+          dragPointerIdRef.current = ev.pointerId;
+          dragMeasureBoxRef.current = box;
+          dragRelRef.current = { xRel: safe.xRel, yRel: yRelAdjusted };
+          dragStartPageRef.current = { x: xPage, y: yPage };
+          dragHasMovedRef.current = false;
+
+          try {
+            (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+          } catch {
+            // ignore
+          }
+
+          // ✅ Touch improvement: arm dragging immediately on touch down
+          if (ev.pointerType === "touch") {
+            dragPointerIdRef.current = ev.pointerId;
+            dragMeasureBoxRef.current = box;
+            dragRelRef.current = null;
+
+            try {
+              (outer as unknown as HTMLElement).setPointerCapture(ev.pointerId);
+            } catch {
+              // ignore
+            }
+          }
+        } else {
+          // Everything nearby is congested; keep measure selected but no point yet.
+          setSelectedMeasureNumber(measureNumber);
+          setSelectedPointRel(null);
+        }
+
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
       }
 
       // Click started outside any measure
@@ -2860,13 +2880,43 @@ export default function ScoreViewer({
       }
 
       if (!suppressPageTurnRef.current) {
-        // Pointer-down didn’t hit a measure box → normal page-turn
         return;
       }
 
       const rect = pendingMeasureRectRef.current;
 
-      // Clear pointer flags for next gesture
+      // Eat this gesture so it does NOT become a page turn
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      // If this pointer-up ends an active drag, decide tap vs drag
+      if (dragPointerIdRef.current === ev.pointerId) {
+        const measureNumber = selectedMeasureNumber;
+        const rel = dragRelRef.current ?? selectedPointRel;
+
+        // Clear drag state
+        dragPointerIdRef.current = null;
+        dragMeasureBoxRef.current = null;
+        dragStartPageRef.current = null;
+        dragHasMovedRef.current = false;
+
+        suppressPageTurnRef.current = false;
+        pendingMeasureRectRef.current = null;
+
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        // If we have a valid point, commit/prompt on release (this replaces the old handle-up path)
+        if (measureNumber !== null && rel !== null) {
+          void promptAndSaveAnnotation(measureNumber, rel);
+        }
+
+        // We intentionally do NOT open measure preview here.
+        // Drag or tap both act as "drop" for the annotation pointer.
+        return;
+      }
+
+      // Non-drag gesture: original behavior
       suppressPageTurnRef.current = false;
       pendingMeasureRectRef.current = null;
 
@@ -2874,13 +2924,9 @@ export default function ScoreViewer({
         return;
       }
 
-      // Eat this gesture so it does NOT become a page turn via pointer events
-      ev.preventDefault();
-      ev.stopPropagation();
-
       openMeasurePreview(rect);
     },
-    [openMeasurePreview]
+    [openMeasurePreview, promptAndSaveAnnotation, selectedMeasureNumber, selectedPointRel]
   );
 
   // NAV: __ const handleViewerClickCapture
@@ -3383,6 +3429,9 @@ export default function ScoreViewer({
   // Live drag position in *relative* measure coordinates during a drag.
   // When not dragging, this may be null.
   const dragRelRef = useRef<{ xRel: number; yRel: number } | null>(null);
+
+  const dragStartPageRef = useRef<{ x: number; y: number } | null>(null);
+  const dragHasMovedRef = useRef<boolean>(false);
 
   // Build a “glyph cloud” for the measures on the current page.
   // For each visible SVG graphics element, we compute its page-local bounding box
@@ -6406,14 +6455,24 @@ export default function ScoreViewer({
       const box = dragMeasureBoxRef.current;
       const handleNode = annotationHandleRef.current;
 
-      if (!outer || !box || !handleNode
-      ) { return; }
+      if (!outer || !box || !handleNode) {
+        return;
+      }
 
       const outerBox = outer.getBoundingClientRect();
 
       // Pointer position in "page" coords (viewer-local)
       const pointerX = ev.clientX - outerBox.left;
       const pointerY = ev.clientY - outerBox.top;
+
+      const start = dragStartPageRef.current;
+      if (start) {
+        const dx = pointerX - start.x;
+        const dy = pointerY - start.y;
+        if ((dx * dx + dy * dy) > (3 * 3)) {
+          dragHasMovedRef.current = true;
+        }
+      }
 
       // We treat the pointer as being at the *bottom* of the stem.
       // Caret tip is above by HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT.
@@ -6473,10 +6532,18 @@ export default function ScoreViewer({
       handleNode.style.left = `${finalTipX - HANDLE_STEM_WIDTH / 2}px`;
       handleNode.style.top = `${finalTipY}px`;
 
+      // Keep React state in sync so subsequent "drop" logic uses the dragged point.
+      if (box.w > 0 && box.h > 0) {
+        setSelectedPointRel({
+          xRel: clampUnitInterval((finalTipX - box.x) / box.w),
+          yRel: clampUnitInterval((finalTipY - box.y) / box.h),
+        });
+      }
+
       ev.preventDefault();
       ev.stopPropagation();
     },
-    [getAvoidanceGlyphsForMeasure],
+    [getAvoidanceGlyphsForMeasure, setSelectedPointRel],
   );
 
 
