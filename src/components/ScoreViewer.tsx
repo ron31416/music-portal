@@ -3762,6 +3762,7 @@ export default function ScoreViewer({
           //   - Prefer noteheads + rests as “structural” anchors.
           //   - Position the box LEFT_PADDING_PX to the left of that glyph,
           //     clamped to the original barline envelope.
+          // NAV: ........ refineMeasureBoxRectsWithGlyphs
           const refineMeasureBoxRectsWithGlyphs = (
             rawRects: ReadonlyArray<MeasureBoxRect>,
             glyphsByMeasure: Record<string, GlyphRect[]> | undefined
