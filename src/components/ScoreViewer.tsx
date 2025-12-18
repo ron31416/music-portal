@@ -235,8 +235,7 @@ function buildPedalMarkIndex(map: AnnotationMap): PedalMarkIndex {
   let openStart: PedalEndpointKey | null = null;
 
   // Diagnostics
-  let missingOrderCount = 0;
-  let duplicateOrderCount = 0;
+  let missingXRelCount = 0;
   let boundaryItemCount = 0;
 
   for (const measureNumber of measureNumbers) {
@@ -246,8 +245,8 @@ function buildPedalMarkIndex(map: AnnotationMap): PedalMarkIndex {
     // Collect pedal boundary items for this measure and sort them.
     type PedalBoundary = {
       item: AnnotationPedalItem;
-      index: number;          // original array index (stable tiebreak)
-      order: number | null;   // explicit order if present
+      index: number;        // original array index (stable tiebreak)
+      xRel: number | null;  // endpoint x position in measure, if present
       hasLeft: boolean;
       hasRight: boolean;
     };
@@ -271,58 +270,50 @@ function buildPedalMarkIndex(map: AnnotationMap): PedalMarkIndex {
 
       boundaryItemCount++;
 
-      const hasOrder =
-        typeof item.order === "number" &&
-        Number.isFinite(item.order);
+      // Prefer left endpoint for xRel when present; otherwise use right endpoint.
+      // (Single-measure left+right items will sort by left.xRel, as desired.)
+      const endpointXRel =
+        (hasLeft ? item.left?.xRel : undefined) ??
+        (hasRight ? item.right?.xRel : undefined) ??
+        null;
 
-      if (!hasOrder) {
-        missingOrderCount++;
+      const hasXRel =
+        typeof endpointXRel === "number" &&
+        Number.isFinite(endpointXRel);
+
+      if (!hasXRel) {
+        missingXRelCount++;
       }
 
       boundaries.push({
         item,
         index: i,
-        order: hasOrder ? (item.order as number) : null,
+        xRel: hasXRel ? (endpointXRel as number) : null,
         hasLeft,
         hasRight,
       });
     }
 
-    // Detect duplicate order values (only among items that actually have order)
-    {
-      const seen = new Set<number>();
-      for (const b of boundaries) {
-        if (b.order === null) {
-          continue;
-        }
-        if (seen.has(b.order)) {
-          duplicateOrderCount++;
-          break; // one warning per measure is enough
-        }
-        seen.add(b.order);
-      }
-    }
-
-    // Sort boundaries by explicit order if present; otherwise keep stable by original index.
+    // Sort boundaries by xRel if present; otherwise keep stable by original index.
     boundaries.sort((a, b) => {
-      // Items with an explicit order come first (so legacy items don’t scramble things)
-      if (a.order !== null && b.order === null) {
+      // Items with an explicit xRel come first (so legacy items don’t scramble things)
+      if (a.xRel !== null && b.xRel === null) {
         return -1;
       }
-      if (a.order === null && b.order !== null) {
+      if (a.xRel === null && b.xRel !== null) {
         return 1;
       }
 
-      // Both have order → numeric sort
-      if (a.order !== null && b.order !== null) {
-        if (a.order !== b.order) {
-          return a.order - b.order;
+      // Both have xRel → numeric sort
+      if (a.xRel !== null && b.xRel !== null) {
+        if (a.xRel !== b.xRel) {
+          return a.xRel - b.xRel;
         }
         // tie-break: stable
         return a.index - b.index;
       }
 
-      // Neither has order → preserve array order
+      // Neither has xRel → preserve array order
       return a.index - b.index;
     });
 
@@ -395,8 +386,7 @@ function buildPedalMarkIndex(map: AnnotationMap): PedalMarkIndex {
       `[pedal-index] rebuilt ` +
       `marks=${marks.length} ` +
       `boundaryItems=${boundaryItemCount} ` +
-      `missingOrder=${missingOrderCount} ` +
-      `duplicateOrderMeasures=${duplicateOrderCount}`
+      `missingXRel=${missingXRelCount}`
     );
   }
 
@@ -2647,14 +2637,14 @@ export default function ScoreViewer({
   type PendingPedalStart = {
     measureNumber: number;
     anchor: PedalAnchorRef;
-    order: number;
   };
 
   const [pendingPedalStart, setPendingPedalStart] =
     React.useState<PendingPedalStart | null>(null);
 
-  // Unique-ish order values across a session (helps pedal index sorting/pairing).
-  const nextPedalOrderRef = React.useRef<number>(Date.now());
+  // Guards against touch double-fire when starting/finishing pedal creation.
+  const beginPedalInFlightRef = React.useRef<boolean>(false);
+  const finalizePedalInFlightRef = React.useRef<boolean>(false);
 
   React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -2733,9 +2723,13 @@ export default function ScoreViewer({
           return null;
         }
 
+        const xRel =
+          box.w > 0 ? clampUnitInterval((tipX - box.x) / box.w) : pointIn.xRel;
+
         return {
           noteId: best.id,
           dxRel: dx / h,
+          xRel,
         };
       };
 
@@ -2873,80 +2867,158 @@ export default function ScoreViewer({
         return anchor;
       };
 
+      const PEDAL_X_EPS = 0.002; // allow "touching" without counting as overlap
+
+      // NAV: ____ const pedalIntervalForMeasure
+      const pedalIntervalForMeasure = (
+        it: AnnotationPedalItem
+      ): { a: number; b: number } | null => {
+        const lx = it.left?.xRel;
+        const rx = it.right?.xRel;
+
+        // Middle-measure fragment: occupies the whole measure.
+        if (it.left === undefined && it.right === undefined) {
+          return { a: 0, b: 1 };
+        }
+
+        // Single-measure pedal
+        if (lx !== undefined && rx !== undefined) {
+          const a = Math.min(lx, rx);
+          const b = Math.max(lx, rx);
+          return { a, b };
+        }
+
+        // Start-measure fragment
+        if (lx !== undefined) {
+          return { a: lx, b: 1 };
+        }
+
+        // End-measure fragment
+        if (rx !== undefined) {
+          return { a: 0, b: rx };
+        }
+
+        // If we somehow have anchors but no xRel, we can't do geometry-free overlap checks.
+        return null;
+      };
+
+      const intervalsOverlap = (
+        x: { a: number; b: number },
+        y: { a: number; b: number }
+      ): boolean => {
+        // Allow adjacency: [0.2,0.4] touching [0.4,0.6] is OK.
+        return x.a < y.b - PEDAL_X_EPS && y.a < x.b - PEDAL_X_EPS;
+      };
+
       // ==========================================================
       // If a pedal is pending, this drop selects the RIGHT endpoint
       // ==========================================================
       const updates: Record<number, MeasureAnnotation> = {};
       const start = pendingPedalStart;
+
       if (start !== null) {
-        const endAnchor = computePedalAnchorRef(measureNumber, point);
-        if (!endAnchor) {
-          window.alert(
-            "No note anchor found for pedal end. Try dropping closer to a notehead/rest."
-          );
+        // Re-entrancy guard: touch devices can double-fire quickly
+        if (finalizePedalInFlightRef.current) {
           return;
         }
+        finalizePedalInFlightRef.current = true;
 
-        const startMeasure = start.measureNumber;
-        const endMeasure = measureNumber;
+        // Clear immediately so a second invocation cannot "complete" again
+        setPendingPedalStart(null);
 
-        const lo = Math.min(startMeasure, endMeasure);
-        const hi = Math.max(startMeasure, endMeasure);
+        try {
+          const endAnchor = computePedalAnchorRef(measureNumber, point);
+          if (!endAnchor) {
+            // Optional: restore so the user can try dropping the end again
+            setPendingPedalStart(start);
 
-        for (let m = lo; m <= hi; m++) {
-          const isStart = m === startMeasure;
-          const isEnd = m === endMeasure;
-
-          let pedalItem: AnnotationPedalItem;
-
-          if (startMeasure === endMeasure) {
-            pedalItem = {
-              kind: "pedal",
-              left: start.anchor,
-              right: endAnchor,
-              active: true,
-              order: start.order,
-            };
-          } else if (isStart) {
-            pedalItem = {
-              kind: "pedal",
-              left: start.anchor,
-              active: true,
-              order: start.order,
-            };
-          } else if (isEnd) {
-            pedalItem = {
-              kind: "pedal",
-              right: endAnchor,
-              active: true,
-              order: start.order,
-            };
-          } else {
-            pedalItem = {
-              kind: "pedal",
-              active: true,
-            };
+            window.alert(
+              "No note anchor found for pedal end. Try dropping closer to a notehead/rest."
+            );
+            return;
           }
 
-          const existing = getAnnotationsForMeasure(m);
-          const existingItems: AnnotationItem[] = Array.isArray(existing?.items)
-            ? existing!.items.slice()
-            : [];
+          const startMeasure = start.measureNumber;
+          const endMeasure = measureNumber;
 
-          const nextPayload: MeasureAnnotation = {
-            ...(existing ?? { items: [] as AnnotationItem[] }),
-            items: [...existingItems, pedalItem],
-          };
+          const lo = Math.min(startMeasure, endMeasure);
+          const hi = Math.max(startMeasure, endMeasure);
 
-          updates[m] = nextPayload;
+          for (let m = lo; m <= hi; m++) {
+            const isStart = m === startMeasure;
+            const isEnd = m === endMeasure;
+
+            let pedalItem: AnnotationPedalItem;
+
+            if (startMeasure === endMeasure) {
+              pedalItem = {
+                kind: "pedal",
+                left: start.anchor,
+                right: endAnchor,
+                active: true,
+              };
+            } else if (isStart) {
+              pedalItem = {
+                kind: "pedal",
+                left: start.anchor,
+                active: true,
+              };
+            } else if (isEnd) {
+              pedalItem = {
+                kind: "pedal",
+                right: endAnchor,
+                active: true,
+              };
+            } else {
+              pedalItem = {
+                kind: "pedal",
+                active: true,
+              };
+            }
+
+            const existing = getAnnotationsForMeasure(m);
+            const existingItems: AnnotationItem[] = Array.isArray(existing?.items)
+              ? existing!.items.slice()
+              : [];
+
+            const newIv = pedalIntervalForMeasure(pedalItem);
+            if (newIv) {
+              for (const it of existingItems) {
+                if (it.kind !== "pedal") {
+                  continue;
+                }
+                const oldIv = pedalIntervalForMeasure(it);
+                if (!oldIv) {
+                  continue;
+                }
+                if (intervalsOverlap(newIv, oldIv)) {
+                  // Restore start so user can try again (same pattern you used on end-anchor failure)
+                  setPendingPedalStart(start);
+
+                  window.alert(
+                    `Pedal overlaps an existing pedal span in measure ${m}. Choose a different start/end.`
+                  );
+                  return;
+                }
+              }
+            }
+
+            const nextPayload: MeasureAnnotation = {
+              ...(existing ?? { items: [] as AnnotationItem[] }),
+              items: [...existingItems, pedalItem],
+            };
+
+            updates[m] = nextPayload;
+          }
+
+          await saveAnnotationsForMeasures(updates);
+
+          setSelectedMeasureNumber(null);
+          setSelectedPointRel(null);
+          return;
+        } finally {
+          finalizePedalInFlightRef.current = false;
         }
-
-        await saveAnnotationsForMeasures(updates);
-
-        setPendingPedalStart(null);
-        setSelectedMeasureNumber(null);
-        setSelectedPointRel(null);
-        return;
       }
 
       // ==========================================================
@@ -2966,26 +3038,55 @@ export default function ScoreViewer({
       const isFingering = mode.startsWith("f") || (!isPedal && !isStaffText);
 
       if (isPedal) {
-        const startAnchor = computePedalAnchorRef(measureNumber, point);
-        if (!startAnchor) {
-          window.alert(
-            "No note anchor found for pedal start. Try dropping closer to a notehead/rest."
-          );
+        if (beginPedalInFlightRef.current) {
           return;
         }
+        beginPedalInFlightRef.current = true;
 
-        const order = nextPedalOrderRef.current++;
-        setPendingPedalStart({
-          measureNumber,
-          anchor: startAnchor,
-          order,
-        });
+        try {
+          const startAnchor = computePedalAnchorRef(measureNumber, point);
+          if (!startAnchor) {
+            window.alert(
+              "No note anchor found for pedal start. Try dropping closer to a notehead/rest."
+            );
+            return;
+          }
 
-        setSelectedMeasureNumber(null);
-        setSelectedPointRel(null);
+          const existing = getAnnotationsForMeasure(measureNumber);
+          const existingItems: AnnotationItem[] = Array.isArray(existing?.items)
+            ? existing!.items.slice()
+            : [];
 
-        window.alert("Pedal start set. Now select the pedal end (second drop).");
-        return;
+          const startX = startAnchor.xRel;
+
+          for (const it of existingItems) {
+            if (it.kind !== "pedal") {
+              continue;
+            }
+            const iv = pedalIntervalForMeasure(it);
+            if (!iv) {
+              continue; // can't evaluate without xRel; ignore for now
+            }
+            if (startX > iv.a + PEDAL_X_EPS && startX < iv.b - PEDAL_X_EPS) {
+              window.alert("That pedal start lands inside an existing pedal span. Choose a gap.");
+              return;
+            }
+          }
+
+          setPendingPedalStart({
+            measureNumber,
+            anchor: startAnchor,
+          });
+
+          setSelectedMeasureNumber(null);
+          setSelectedPointRel(null);
+
+          window.alert("Pedal start set. Now select the pedal end (second drop).");
+          return;
+        } finally {
+          // Let subsequent interactions proceed
+          beginPedalInFlightRef.current = false;
+        }
       }
 
       if (isStaffText) {

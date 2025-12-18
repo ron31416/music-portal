@@ -40,6 +40,7 @@ export interface TextAnchorRef {
 export interface PedalAnchorRef {
   noteId: string;     // matches NoteAnchor.id in ScoreViewer
   dxRel: number;      // offset from note center X in units of note height
+  xRel: number;       // Horizontal position within the measure box (0..1)
 }
 
 // One text mark inside a measure, always anchored to a note.
@@ -66,7 +67,6 @@ export interface AnnotationPedalItem {
   left?: PedalAnchorRef;
   right?: PedalAnchorRef;
   active?: boolean;
-  order?: number;
 }
 
 // Union of all annotation items.
