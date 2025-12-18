@@ -9,9 +9,12 @@ import { useAnnotations } from "@/components/AnnotationsProvider";
 import type {
   AnnotationPayload,
   AnnotationItem,
+  AnnotationFingeringItem,
   AnnotationTextItem,
   AnnotationPedalItem,
+  FingeringAnchorRef,
   TextAnchorRef,
+  TextAnchorMode,
   PedalAnchorRef,
   AnnotationMap,
 } from "@/components/AnnotationsProvider";
@@ -1433,7 +1436,8 @@ function drawAnnotationBoxes(
   rects: ReadonlyArray<MeasureBoxRect>,
   getAnnotationsForMeasure: GetAnnotationsForMeasure,
   zoom = 1,
-  noteAnchorsByMeasure?: Record<string, NoteAnchor[]>
+  noteAnchorsByMeasure?: Record<string, NoteAnchor[]>,
+  staffLineGlyphsByMeasure?: Record<string, GlyphRect[]>,
 ): void {
   if (!outer || rects.length === 0) {
     return;
@@ -1480,10 +1484,8 @@ function drawAnnotationBoxes(
       const sameSystem = Math.abs(thisMidY - lastMidY) < b.h * 0.4;
 
       if (sameSystem) {
-        // For this box, "previous right edge" is lastBoxOnSystem's right side.
         prevMeasureRightById[b.id] = lastBoxOnSystem.x + lastBoxOnSystem.w;
       } else {
-        // New system → reset
         lastBoxOnSystem = b;
         continue;
       }
@@ -1492,54 +1494,164 @@ function drawAnnotationBoxes(
     }
   }
 
+  // ==========================================================
+  // Staff metrics helper (uses vf-measure staff-line glyphs)
+  // ==========================================================
+  type StaffMetrics = {
+    trebleMidY: number;
+    bassMidY: number;
+    betweenY: number;
+    staffSpacePx: number; // distance between adjacent staff lines (px)
+  };
+
+  const computeStaffMetricsForMeasure = (boxId: string): StaffMetrics | null => {
+    const glyphs = staffLineGlyphsByMeasure?.[boxId] ?? [];
+    if (!glyphs.length) {
+      return null;
+    }
+
+    // Keep only staff lines (vf-measure). In your logs these are the horizontal staff lines.
+    const staffLines = glyphs.filter((gr) => {
+      const tag = gr.glyphTag?.toLowerCase() ?? "";
+      return tag.includes("vf-measure");
+    });
+
+    if (staffLines.length < 10) {
+      // Expect ~10 staff lines (5 treble + 5 bass) for grand staff
+      return null;
+    }
+
+    // Sort by y (top -> bottom), dedupe near-identical y values.
+    const ysSorted = staffLines
+      .map((gr) => gr.y)
+      .filter((y) => Number.isFinite(y))
+      .sort((a, b) => a - b);
+
+    const ys: number[] = [];
+    const EPS = 0.75; // px tolerance for dedupe
+    for (const y of ysSorted) {
+      const last = ys[ys.length - 1];
+      if (last === undefined || Math.abs(y - last) > EPS) {
+        ys.push(y);
+      }
+    }
+
+    if (ys.length < 10) {
+      return null;
+    }
+
+    // Use first 5 as treble lines, last 5 as bass lines.
+    const treble = ys.slice(0, 5);
+    const bass = ys.slice(ys.length - 5);
+
+    // Staff-space: median adjacent diff within each staff (should be stable)
+    const diffs: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      diffs.push(treble[i + 1]! - treble[i]!);
+      diffs.push(bass[i + 1]! - bass[i]!);
+    }
+    const diffsSorted = diffs
+      .filter((d) => Number.isFinite(d) && d > 0.1)
+      .sort((a, b) => a - b);
+
+    if (!diffsSorted.length) {
+      return null;
+    }
+
+    const staffSpacePx =
+      diffsSorted[Math.floor(diffsSorted.length / 2)] ?? diffsSorted[0]!;
+    if (!(staffSpacePx > 0 && Number.isFinite(staffSpacePx))) {
+      return null;
+    }
+
+    // Midline = 3rd staff line (index 2) in each staff.
+    const trebleMidY = treble[2]!;
+    const bassMidY = bass[2]!;
+
+    // Between default = geometric midpoint between midlines.
+    const betweenY = (trebleMidY + bassMidY) / 2;
+
+    return { trebleMidY, bassMidY, betweenY, staffSpacePx };
+  };
+
   // Resolve a PedalAnchorRef to an X coordinate in px for this measure, or null if it can't be resolved.
   // NAV: __ function resolvePedalAnchorX
   function resolvePedalAnchorX(
     ref: PedalAnchorRef | null | undefined,
     boxId: string,
-    noteAnchorsByMeasure?: Record<string, NoteAnchor[]>
+    noteAnchorsByMeasureIn?: Record<string, NoteAnchor[]>,
   ): number | null {
-    // Strict shape validation
     if (!ref) {
       return null;
     }
 
     if (typeof ref.noteId !== "string" || ref.noteId.length === 0) {
-      console.error("[pedal] Invalid pedal anchor: missing/invalid noteId", { ref, boxId });
-      if (isDiagOn()) { throw new Error("Invalid pedal anchor: noteId"); }
+      console.error("[pedal] Invalid pedal anchor: missing/invalid noteId", {
+        ref,
+        boxId,
+      });
+      if (isDiagOn()) {
+        throw new Error("Invalid pedal anchor: noteId");
+      }
       return null;
     }
 
     if (typeof ref.dxRel !== "number" || !Number.isFinite(ref.dxRel)) {
-      console.error("[pedal] Invalid pedal anchor: missing/invalid dxRel", { ref, boxId });
-      if (isDiagOn()) { throw new Error("Invalid pedal anchor: dxRel"); }
+      console.error("[pedal] Invalid pedal anchor: missing/invalid dxRel", {
+        ref,
+        boxId,
+      });
+      if (isDiagOn()) {
+        throw new Error("Invalid pedal anchor: dxRel");
+      }
       return null;
     }
 
-    if (!noteAnchorsByMeasure) {
-      console.error("[pedal] noteAnchorsByMeasure missing; cannot resolve pedal anchor", { boxId });
-      if (isDiagOn()) { throw new Error("noteAnchorsByMeasure missing"); }
+    if (!noteAnchorsByMeasureIn) {
+      console.error(
+        "[pedal] noteAnchorsByMeasure missing; cannot resolve pedal anchor",
+        { boxId },
+      );
+      if (isDiagOn()) {
+        throw new Error("noteAnchorsByMeasure missing");
+      }
       return null;
     }
 
-    const anchorsForMeasure = noteAnchorsByMeasure[boxId];
+    const anchorsForMeasure = noteAnchorsByMeasureIn[boxId];
     if (!anchorsForMeasure || anchorsForMeasure.length === 0) {
-      console.error("[pedal] No note anchors found for measure; cannot resolve pedal anchor", { boxId });
-      if (isDiagOn()) { throw new Error("No note anchors for measure"); }
+      console.error(
+        "[pedal] No note anchors found for measure; cannot resolve pedal anchor",
+        { boxId },
+      );
+      if (isDiagOn()) {
+        throw new Error("No note anchors for measure");
+      }
       return null;
     }
 
     const anchorNote = anchorsForMeasure.find((a) => a.id === ref.noteId);
     if (!anchorNote) {
-      console.error("[pedal] Anchor noteId not found in this measure", { boxId, noteId: ref.noteId });
-      if (isDiagOn()) { throw new Error("Anchor noteId not found"); }
+      console.error("[pedal] Anchor noteId not found in this measure", {
+        boxId,
+        noteId: ref.noteId,
+      });
+      if (isDiagOn()) {
+        throw new Error("Anchor noteId not found");
+      }
       return null;
     }
 
     const noteH = anchorNote.h;
     if (!(noteH > 0 && Number.isFinite(noteH))) {
-      console.error("[pedal] Bad anchor note geometry (noteH)", { boxId, noteId: ref.noteId, noteH });
-      if (isDiagOn()) { throw new Error("Bad note geometry"); }
+      console.error("[pedal] Bad anchor note geometry (noteH)", {
+        boxId,
+        noteId: ref.noteId,
+        noteH,
+      });
+      if (isDiagOn()) {
+        throw new Error("Bad note geometry");
+      }
       return null;
     }
 
@@ -1547,8 +1659,15 @@ function drawAnnotationBoxes(
     const anchorPxX = anchorNote.x + dxPx;
 
     if (!Number.isFinite(anchorPxX)) {
-      console.error("[pedal] Computed pedal X is not finite", { boxId, ref, noteH, anchorPxX });
-      if (isDiagOn()) { throw new Error("Computed pedal X not finite"); }
+      console.error("[pedal] Computed pedal X is not finite", {
+        boxId,
+        ref,
+        noteH,
+        anchorPxX,
+      });
+      if (isDiagOn()) {
+        throw new Error("Computed pedal X not finite");
+      }
       return null;
     }
 
@@ -1556,29 +1675,24 @@ function drawAnnotationBoxes(
   }
 
   // Compute vertical baselines for pedal runs, but only per *system* (line).
-  // We infer systems purely from geometry: boxes whose top y are "close"
-  // belong to the same system.
   // NAV: __ function computePedalBaselinesForRects
   function computePedalBaselinesForRects(
-    rects: ReadonlyArray<MeasureBoxRect>,
-    getAnnotationsForMeasure: GetAnnotationsForMeasure
+    rectsIn: ReadonlyArray<MeasureBoxRect>,
+    getAnnotationsForMeasureIn: GetAnnotationsForMeasure,
   ): Record<string, number> {
     const byMeasureId: Record<string, number> = {};
 
-    if (!rects.length) {
+    if (!rectsIn.length) {
       return byMeasureId;
     }
 
-    // --- Step 1: estimate a typical measure height to set a vertical tolerance ---
-    const heights = rects.map((r) => r.h);
+    const heights = rectsIn.map((r) => r.h);
     const sortedHeights = [...heights].sort((a, b) => a - b);
     const medianH =
-      sortedHeights[Math.floor(sortedHeights.length / 2)] ?? rects[0]!.h;
-    // Boxes whose top y differ by less than this are considered on the same system.
+      sortedHeights[Math.floor(sortedHeights.length / 2)] ?? rectsIn[0]!.h;
     const SYSTEM_TOL = medianH * 0.6;
 
-    // --- Step 2: sort boxes roughly in reading order (top-to-bottom, left-to-right) ---
-    const sortedBoxes = [...rects].sort((a, b) => {
+    const sortedBoxes = [...rectsIn].sort((a, b) => {
       const dy = a.y - b.y;
       if (Math.abs(dy) > SYSTEM_TOL) {
         return dy;
@@ -1586,17 +1700,11 @@ function drawAnnotationBoxes(
       return a.x - b.x;
     });
 
-    type BoxWithPedal = {
-      box: MeasureBoxRect;
-      hasActivePedal: boolean;
-    };
-
-    // Local structural type so we don't need "any".
+    type BoxWithPedal = { box: MeasureBoxRect; hasActivePedal: boolean };
     type Pedalish = { kind: string; active?: boolean | null };
 
-    // --- Step 3: for each box, detect whether it has an active pedal item ---
     const boxesWithPedal: BoxWithPedal[] = sortedBoxes.map((box) => {
-      const ann = getAnnotationsForMeasure(box.measureNumber);
+      const ann = getAnnotationsForMeasureIn(box.measureNumber);
       let hasActivePedal = false;
 
       if (ann && Array.isArray(ann.items)) {
@@ -1611,9 +1719,7 @@ function drawAnnotationBoxes(
       return { box, hasActivePedal };
     });
 
-    // --- Step 4: group boxes into "systems" based on their y positions ---
     const systems: BoxWithPedal[][] = [];
-
     for (const entry of boxesWithPedal) {
       const { box } = entry;
 
@@ -1632,17 +1738,13 @@ function drawAnnotationBoxes(
       }
     }
 
-    // --- Step 5: for each system, compute a baseline if there is any active pedal ---
     for (const sys of systems) {
       const hasAnyPedal = sys.some((e) => e.hasActivePedal);
       if (!hasAnyPedal) {
         continue;
       }
 
-      // Baseline for this system = lowest bottom among boxes on this system
-      // that participate in a pedal run (hasActivePedal === true).
       let systemBottom = -Infinity;
-
       for (const e of sys) {
         if (e.hasActivePedal) {
           const bottom = e.box.y + e.box.h;
@@ -1657,7 +1759,6 @@ function drawAnnotationBoxes(
       }
 
       const baseline = systemBottom;
-
       for (const e of sys) {
         if (e.hasActivePedal) {
           byMeasureId[e.box.id] = baseline;
@@ -1670,11 +1771,10 @@ function drawAnnotationBoxes(
 
   const pedalBaselineByMeasureId = computePedalBaselinesForRects(
     rects,
-    getAnnotationsForMeasure
+    getAnnotationsForMeasure,
   );
 
   for (const box of rects) {
-    // --- Retrieve DB annotation (if any) ---
     const annotation = getAnnotationsForMeasure(box.measureNumber);
     if (!annotation) {
       continue;
@@ -1687,12 +1787,11 @@ function drawAnnotationBoxes(
 
     for (const item of items) {
       // =======================
-      // TEXT ITEMS
+      // FINGERING ITEMS (note-anchored)
       // =======================
-      if (item.kind === "text") {
+      if (item.kind === "fingering") {
         const anchor = item.anchor;
 
-        // We now require a note anchor; if it's missing or invalid, skip.
         if (!anchor || !noteAnchorsByMeasure || !noteAnchorsByMeasure[box.id]) {
           continue;
         }
@@ -1701,34 +1800,31 @@ function drawAnnotationBoxes(
         const anchorNote = anchorsForMeasure.find((a) => a.id === anchor.noteId);
 
         if (!anchorNote) {
-          // Note no longer exists / couldn't be found → skip this item
           continue;
         }
 
         const noteH = anchorNote.h;
         if (!(noteH > 0 && Number.isFinite(noteH))) {
-          // Bad geometry → skip
           continue;
         }
 
-        // Convert relative offsets back to px in the *current* layout (note-based)
         const dxPx = anchor.dxRel * noteH;
         const dyPx = anchor.dyRel * noteH;
 
-        // Anchor point in page-local px
         const pxX = anchorNote.x + dxPx;
         const pxY = anchorNote.y + dyPx;
 
-        // --- Font sizing: relative to note size *change*, not absolute size ---
-        const BASE_FONT_PX = 16; // tweak to taste
+        const BASE_FONT_PX = 16;
         const MIN_FONT_PX = 8;
         const MAX_FONT_PX = 30;
 
-        let fontPx = BASE_FONT_PX; // default (do NOT multiply by zoom)
+        let fontPx = BASE_FONT_PX;
 
         const currentH = anchorNote.h;
         const baseH =
-          anchor.baseNoteH && Number.isFinite(anchor.baseNoteH) && anchor.baseNoteH > 0
+          anchor.baseNoteH &&
+            Number.isFinite(anchor.baseNoteH) &&
+            anchor.baseNoteH > 0
             ? anchor.baseNoteH
             : currentH;
 
@@ -1741,8 +1837,12 @@ function drawAnnotationBoxes(
           const relScale = currentH / baseH;
           let candidate = BASE_FONT_PX * relScale;
 
-          if (candidate < MIN_FONT_PX) { candidate = MIN_FONT_PX; }
-          if (candidate > MAX_FONT_PX) { candidate = MAX_FONT_PX; }
+          if (candidate < MIN_FONT_PX) {
+            candidate = MIN_FONT_PX;
+          }
+          if (candidate > MAX_FONT_PX) {
+            candidate = MAX_FONT_PX;
+          }
 
           fontPx = candidate;
         }
@@ -1755,9 +1855,88 @@ function drawAnnotationBoxes(
         t.setAttribute("font-size", String(fontPx));
         t.setAttribute("font-family", "sans-serif");
         t.setAttribute("text-anchor", "middle");
+        t.setAttribute("dominant-baseline", "alphabetic");
+        t.setAttribute("dy", "0.35em");
 
-        // Avoid dominant-baseline="middle" (unstable across zoom/font-size).
-        // Use alphabetic baseline + dy in ems for consistent visual centering.
+        g.appendChild(t);
+        continue;
+      }
+
+      // =======================
+      // STAFF TEXT ITEMS (staff-anchored)
+      // =======================
+      if (item.kind === "text") {
+        const anchor = item.anchor;
+        if (!anchor) {
+          continue;
+        }
+
+        const metrics = computeStaffMetricsForMeasure(box.id);
+        if (!metrics) {
+          continue;
+        }
+
+        // Horizontal: relative to measure box
+        const xRel = typeof anchor.xRel === "number" ? anchor.xRel : 0.5;
+        const pxX = box.x + xRel * box.w;
+
+        // Baseline: treble / bass / between
+        const mode = typeof anchor.mode === "string" ? anchor.mode : "between";
+
+        let baseY = metrics.betweenY;
+        if (mode === "treble") {
+          baseY = metrics.trebleMidY;
+        } else if (mode === "bass") {
+          baseY = metrics.bassMidY;
+        } else if (mode === "between") {
+          // Optional blend factor if present
+          const tBlend =
+            typeof anchor.betweenT === "number" && Number.isFinite(anchor.betweenT)
+              ? anchor.betweenT
+              : 0.5;
+          const tClamped = Math.max(0, Math.min(1, tBlend));
+          baseY = metrics.trebleMidY * (1 - tClamped) + metrics.bassMidY * tClamped;
+        }
+
+        // Vertical offset in staff spaces -> px (uses CURRENT staff spacing)
+        const dyRel = typeof anchor.dyRel === "number" ? anchor.dyRel : 0;
+        const pxY = baseY + dyRel * metrics.staffSpacePx;
+
+        // Font sizing: scale based on staff-space change vs creation-time
+        const BASE_FONT_PX = 16;
+        const MIN_FONT_PX = 8;
+        const MAX_FONT_PX = 36;
+
+        let fontPx = BASE_FONT_PX;
+        const baseStaffSpacePx =
+          typeof anchor.baseStaffSpacePx === "number" &&
+            Number.isFinite(anchor.baseStaffSpacePx) &&
+            anchor.baseStaffSpacePx > 0
+            ? anchor.baseStaffSpacePx
+            : metrics.staffSpacePx;
+
+        if (baseStaffSpacePx > 0 && Number.isFinite(baseStaffSpacePx)) {
+          const relScale = metrics.staffSpacePx / baseStaffSpacePx;
+          let candidate = BASE_FONT_PX * relScale;
+
+          if (candidate < MIN_FONT_PX) {
+            candidate = MIN_FONT_PX;
+          }
+          if (candidate > MAX_FONT_PX) {
+            candidate = MAX_FONT_PX;
+          }
+
+          fontPx = candidate;
+        }
+
+        const t = createSvgEl("text");
+        t.textContent = item.text;
+        t.setAttribute("x", String(pxX));
+        t.setAttribute("y", String(pxY));
+        t.setAttribute("fill", "black");
+        t.setAttribute("font-size", String(fontPx));
+        t.setAttribute("font-family", "sans-serif");
+        t.setAttribute("text-anchor", "middle");
         t.setAttribute("dominant-baseline", "alphabetic");
         t.setAttribute("dy", "0.35em");
 
@@ -1772,8 +1951,16 @@ function drawAnnotationBoxes(
         const leftRef = item.left ?? null;
         const rightRef = item.right ?? null;
 
-        const leftXFromAnchor = resolvePedalAnchorX(leftRef, box.id, noteAnchorsByMeasure);
-        const rightXFromAnchor = resolvePedalAnchorX(rightRef, box.id, noteAnchorsByMeasure);
+        const leftXFromAnchor = resolvePedalAnchorX(
+          leftRef,
+          box.id,
+          noteAnchorsByMeasure,
+        );
+        const rightXFromAnchor = resolvePedalAnchorX(
+          rightRef,
+          box.id,
+          noteAnchorsByMeasure,
+        );
 
         const isActive = item.active === true;
 
@@ -1781,12 +1968,6 @@ function drawAnnotationBoxes(
           continue;
         }
 
-        // Horizontal placement:
-        // - If both anchors exist: from left anchor to right anchor.
-        // - If only left anchor exists: from left anchor to right edge of this measure.
-        // - If only right anchor exists: from left edge of this measure to right anchor.
-        //   (Later, when we do cross-measure stitching, these "edge" segments
-        //    will be what we extend to neighbors.)
         let x1: number;
         let x2: number;
 
@@ -1794,64 +1975,49 @@ function drawAnnotationBoxes(
           x1 = leftXFromAnchor;
           x2 = rightXFromAnchor;
         } else if (leftXFromAnchor !== null) {
-          // anchored on the left, open on the right
           x1 = leftXFromAnchor;
-          x2 = box.x + box.w; // to right edge of this measure for now
+          x2 = box.x + box.w;
         } else if (rightXFromAnchor !== null) {
-          // open on the left, anchored on the right
-          x1 = box.x;         // from left edge of this measure
+          x1 = box.x;
           x2 = rightXFromAnchor as number;
         } else if (isActive) {
-          // fully open span in this measure (no anchors, but part of a run)
           x1 = box.x;
           x2 = box.x + box.w;
         } else {
-          // completely inactive and no anchors → nothing to draw
           continue;
         }
 
-        // Ensure x1 <= x2 so the path is consistent
         if (x2 < x1) {
           const tmp = x1;
           x1 = x2;
           x2 = tmp;
         }
 
-        // After initial x1/x2 are chosen and ordered…
-
-        // Extend the *left* side of an open span to meet the previous barline,
-        // if we know where that is.
         if (isActive && leftXFromAnchor === null) {
           const prevRight = prevMeasureRightById[box.id];
           if (prevRight !== undefined) {
-            // Tiny epsilon so the join visually overlaps by a hair.
             x1 = prevRight - 1 * zoom;
           } else {
-            // First measure on the system: just nudge a little left.
             const EDGE_OVERSHOOT = 4 * zoom;
             x1 = box.x - EDGE_OVERSHOOT;
           }
         }
 
-        // Never let the bar extend past this measure’s right barline.
         const rightLimit = box.x + box.w;
         if (x2 > rightLimit) {
           x2 = rightLimit;
         }
 
-        // Safety: keep ordering consistent after clamps/adjustments.
         if (x2 < x1) {
           const tmp = x1;
           x1 = x2;
           x2 = tmp;
         }
 
-        // Vertical placement near the bottom of the measure box
-        const PEDAL_MARGIN_FROM_BOTTOM = 3 * zoom; // px above box bottom (scaled)
-        const PEDAL_TICK_HEIGHT = 6 * zoom;        // leg height (scaled)
+        const PEDAL_MARGIN_FROM_BOTTOM = 3 * zoom;
+        const PEDAL_TICK_HEIGHT = 6 * zoom;
 
-        const runBottomY =
-          pedalBaselineByMeasureId[box.id] ?? (box.y + box.h);
+        const runBottomY = pedalBaselineByMeasureId[box.id] ?? (box.y + box.h);
 
         const pedalY = runBottomY - PEDAL_MARGIN_FROM_BOTTOM;
         const tickTopY = pedalY - PEDAL_TICK_HEIGHT;
@@ -1859,24 +2025,17 @@ function drawAnnotationBoxes(
         const hasLeftTick = leftRef !== null;
         const hasRightTick = rightRef !== null;
 
-        // Build the path:
-        // - If an endpoint is anchored (hasLeftTick/hasRightTick), we draw a little vertical leg.
-        // - If not, that endpoint is just the bare horizontal bar.
         let d = "";
 
         if (hasLeftTick) {
-          // Left uptick: up, then down to baseline
           d += `M ${x1} ${tickTopY} L ${x1} ${pedalY} `;
         } else {
-          // Start directly on the baseline
           d += `M ${x1} ${pedalY} `;
         }
 
-        // Horizontal bar
         d += `L ${x2} ${pedalY} `;
 
         if (hasRightTick) {
-          // Right uptick
           d += `L ${x2} ${tickTopY}`;
         }
 
@@ -2274,6 +2433,102 @@ function findSafePointRelForTap(
   return toRel(startX, startY);
 }
 
+type StaffMetrics = {
+  trebleMidY: number;
+  bassMidY: number;
+  staffSpacePx: number;
+};
+
+// NAV: function computeStaffMetricsForMeasureFromStaffLines
+function computeStaffMetricsForMeasureFromStaffLines(
+  measureId: string,
+  staffLinesByMeasure: Record<string, GlyphRect[]> | undefined
+): StaffMetrics | null {
+  const glyphs = staffLinesByMeasure?.[measureId] ?? [];
+  if (!glyphs.length) {
+    return null;
+  }
+
+  // Keep only staff-line glyphs (your diagnostics show these as 'vf-measure')
+  const ys = glyphs
+    .filter((g) => (g.glyphTag ?? "").toLowerCase().includes("vf-measure"))
+    .map((g) => g.y)
+    .filter((y) => Number.isFinite(y))
+    .sort((a, b) => a - b);
+
+  if (ys.length < 5) {
+    return null;
+  }
+
+  // De-dup close y's (some renderers can repeat)
+  const uniq: number[] = [];
+  const EPS = 0.25;
+  for (const y of ys) {
+    const last = uniq[uniq.length - 1];
+    if (last === undefined || Math.abs(y - last) > EPS) {
+      uniq.push(y);
+    }
+  }
+
+  // Typical piano system: 10 lines (5 treble + 5 bass)
+  if (uniq.length >= 10) {
+    const treble = uniq.slice(0, 5);
+    const bass = uniq.slice(-5);
+
+    const trebleMidY = treble[2]!;
+    const bassMidY = bass[2]!;
+
+    const trebleSpaces = [
+      treble[1]! - treble[0]!,
+      treble[2]! - treble[1]!,
+      treble[3]! - treble[2]!,
+      treble[4]! - treble[3]!,
+    ].filter((d) => d > 0 && Number.isFinite(d));
+
+    const bassSpaces = [
+      bass[1]! - bass[0]!,
+      bass[2]! - bass[1]!,
+      bass[3]! - bass[2]!,
+      bass[4]! - bass[3]!,
+    ].filter((d) => d > 0 && Number.isFinite(d));
+
+    const allSpaces = [...trebleSpaces, ...bassSpaces].sort((a, b) => a - b);
+    const staffSpacePx =
+      allSpaces.length > 0
+        ? allSpaces[Math.floor(allSpaces.length / 2)]!
+        : 0;
+
+    if (!(staffSpacePx > 0) || !Number.isFinite(staffSpacePx)) {
+      return null;
+    }
+
+    return { trebleMidY, bassMidY, staffSpacePx };
+  }
+
+  // Fallback: single staff (use the 3rd line as "mid"; bass == treble)
+  const staff = uniq.slice(0, 5);
+  if (staff.length < 5) {
+    return null;
+  }
+
+  const midY = staff[2]!;
+  const spaces = [
+    staff[1]! - staff[0]!,
+    staff[2]! - staff[1]!,
+    staff[3]! - staff[2]!,
+    staff[4]! - staff[3]!,
+  ].filter((d) => d > 0 && Number.isFinite(d)).sort((a, b) => a - b);
+
+  const staffSpacePx =
+    spaces.length > 0 ? spaces[Math.floor(spaces.length / 2)]! : 0;
+
+  if (!(staffSpacePx > 0) || !Number.isFinite(staffSpacePx)) {
+    return null;
+  }
+
+  return { trebleMidY: midY, bassMidY: midY, staffSpacePx };
+}
+
 
 // NAV: -----------------note anchor helpers
 
@@ -2484,10 +2739,143 @@ export default function ScoreViewer({
         };
       };
 
+      // NAV: ____ const computeFingeringAnchorRef
+      const computeFingeringAnchorRef = (
+        measureNumberIn: number,
+        pointIn: PointRel
+      ): FingeringAnchorRef | null => {
+        const rects = pageMeasureRectsRef.current ?? [];
+        const box =
+          rects.find((r) => r.measureNumber === measureNumberIn) ?? null;
+
+        if (!box) {
+          return null;
+        }
+
+        const tipX = box.x + pointIn.xRel * box.w;
+        const tipY = box.y + pointIn.yRel * box.h;
+
+        const anchorsForMeasure =
+          measureNoteAnchorsRef.current?.[box.id] ?? [];
+
+        if (anchorsForMeasure.length === 0) {
+          return null;
+        }
+
+        // Nearest notehead/rest in this measure
+        let best = anchorsForMeasure[0] as NoteAnchor;
+        let bestDistSq =
+          (tipX - best.x) * (tipX - best.x) +
+          (tipY - best.y) * (tipY - best.y);
+
+        for (let i = 1; i < anchorsForMeasure.length; i++) {
+          const cand = anchorsForMeasure[i]!;
+          const dx = tipX - cand.x;
+          const dy = tipY - cand.y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq < bestDistSq) {
+            best = cand;
+            bestDistSq = distSq;
+          }
+        }
+
+        const dx = tipX - best.x;
+        const dy = tipY - best.y;
+        const h = best.h;
+
+        if (!(h > 0) || !Number.isFinite(h)) {
+          return null;
+        }
+
+        return {
+          noteId: best.id,
+          dxRel: dx / h,
+          dyRel: dy / h,
+          baseNoteH: h,
+        };
+      };
+
+      // NAV: ____ const computeStaffTextAnchorRef
+      const computeStaffTextAnchorRef = (
+        measureNumberIn: number,
+        pointIn: PointRel
+      ): TextAnchorRef | null => {
+        const rects = pageMeasureRectsRef.current ?? [];
+        const box =
+          rects.find((r) => r.measureNumber === measureNumberIn) ?? null;
+
+        if (!box) {
+          return null;
+        }
+
+        const tipX = box.x + pointIn.xRel * box.w;
+        const tipY = box.y + pointIn.yRel * box.h;
+
+        // IMPORTANT: computeStaffMetricsForMeasure must be able to find staff-line glyphs for box.id
+        const metrics = computeStaffMetricsForMeasureFromStaffLines(
+          box.id,
+          staffLineGlyphsByMeasureRef.current
+        );
+        if (!metrics) {
+          return null;
+        }
+
+        const modeRaw = window.prompt(
+          "Staff text anchor: (M)iddle-between, (T)reble, or (B)ass?",
+          "m"
+        );
+        if (modeRaw === null) {
+          return null;
+        }
+
+        const modeKey = modeRaw.trim().toLowerCase();
+        let mode: TextAnchorMode = "between";
+        if (modeKey.startsWith("t")) {
+          mode = "treble";
+        } else if (modeKey.startsWith("b")) {
+          mode = "bass";
+        } else {
+          mode = "between";
+        }
+
+        const staffSpacePx = metrics.staffSpacePx;
+        if (!(staffSpacePx > 0) || !Number.isFinite(staffSpacePx)) {
+          return null;
+        }
+
+        const xRel =
+          box.w > 0 ? clampUnitInterval((tipX - box.x) / box.w) : pointIn.xRel;
+
+        let baseY: number;
+        if (mode === "treble") {
+          baseY = metrics.trebleMidY;
+        } else if (mode === "bass") {
+          baseY = metrics.bassMidY;
+        } else {
+          const t = 0.5;
+          baseY = metrics.trebleMidY * (1 - t) + metrics.bassMidY * t;
+        }
+
+        const dyPx = tipY - baseY;
+        const dyRel = dyPx / staffSpacePx;
+
+        const anchor: TextAnchorRef = {
+          mode,
+          xRel,
+          dyRel,
+          baseStaffSpacePx: staffSpacePx,
+        };
+
+        if (mode === "between") {
+          anchor.betweenT = 0.5;
+        }
+
+        return anchor;
+      };
+
       // ==========================================================
       // If a pedal is pending, this drop selects the RIGHT endpoint
       // ==========================================================
-
       const updates: Record<number, MeasureAnnotation> = {};
       const start = pendingPedalStart;
       if (start !== null) {
@@ -2509,11 +2897,9 @@ export default function ScoreViewer({
           const isStart = m === startMeasure;
           const isEnd = m === endMeasure;
 
-          // Build the per-measure pedal segment item
           let pedalItem: AnnotationPedalItem;
 
           if (startMeasure === endMeasure) {
-            // single-measure pedal mark: both endpoints live in this measure
             pedalItem = {
               kind: "pedal",
               left: start.anchor,
@@ -2552,14 +2938,11 @@ export default function ScoreViewer({
             items: [...existingItems, pedalItem],
           };
 
-          // Collect updates; we'll save them in one batch after the loop.
           updates[m] = nextPayload;
         }
 
-        // Save all affected measures with ONE optimistic merge (prevents applyPage blink-blink-blink).
         await saveAnnotationsForMeasures(updates);
 
-        // Done: clear pending + selection
         setPendingPedalStart(null);
         setSelectedMeasureNumber(null);
         setSelectedPointRel(null);
@@ -2567,19 +2950,20 @@ export default function ScoreViewer({
       }
 
       // ==========================================================
-      // No pending pedal: prompt user for Text vs Pedal (Phase 1)
+      // No pending pedal: choose what to create
       // ==========================================================
       const modeRaw = window.prompt(
-        "Create: (T)ext or (P)edal mark?",
-        "t"
+        "Create: (F)ingering, (T)ext (staff), or (P)edal mark?",
+        "f"
       );
       if (modeRaw === null) {
-        return; // canceled
+        return;
       }
-      const mode = modeRaw.trim().toLowerCase();
 
-      const isPedal =
-        mode === "p" || mode === "pedal" || mode.startsWith("p");
+      const mode = modeRaw.trim().toLowerCase();
+      const isPedal = mode.startsWith("p");
+      const isStaffText = mode === "t" || mode.startsWith("text");
+      const isFingering = mode.startsWith("f") || (!isPedal && !isStaffText);
 
       if (isPedal) {
         const startAnchor = computePedalAnchorRef(measureNumber, point);
@@ -2597,7 +2981,6 @@ export default function ScoreViewer({
           order,
         });
 
-        // Clear selection so we don’t double-fire
         setSelectedMeasureNumber(null);
         setSelectedPointRel(null);
 
@@ -2605,110 +2988,91 @@ export default function ScoreViewer({
         return;
       }
 
-      // Existing text path (unchanged)
-      const label = window.prompt("Annotation text (e.g. mf, p, f)?", "");
-      if (label === null) {
-        // User canceled
-        return;
-      }
-
-      const trimmed = label.trim();
-      if (trimmed.length === 0) {
-        return;
-      }
-
-      // -----------------------------
-      // 1) Compute caret tip in page px
-      // -----------------------------
-      const rects = pageMeasureRectsRef.current ?? [];
-      const box =
-        rects.find((r) => r.measureNumber === measureNumber) ?? null;
-
-      // Start with no anchor; we’ll try to fill this in.
-      let anchorRef: TextAnchorRef | undefined;
-
-      if (box) {
-        const tipX = box.x + point.xRel * box.w;
-        const tipY = box.y + point.yRel * box.h;
-
-        // -----------------------------
-        // 2) Look up note anchors for this measure
-        // -----------------------------
-        const anchorsForMeasure =
-          measureNoteAnchorsRef.current?.[box.id] ?? [];
-
-        if (anchorsForMeasure.length > 0) {
-          // -----------------------------
-          // 3) Always anchor to the nearest notehead/rest
-          // -----------------------------
-          let best = anchorsForMeasure[0] as NoteAnchor;
-          let bestDistSq =
-            (tipX - best.x) * (tipX - best.x) +
-            (tipY - best.y) * (tipY - best.y);
-
-          for (let i = 1; i < anchorsForMeasure.length; i++) {
-            const cand = anchorsForMeasure[i]!;
-            const dx = tipX - cand.x;
-            const dy = tipY - cand.y;
-            const distSq = dx * dx + dy * dy;
-            if (distSq < bestDistSq) {
-              best = cand;
-              bestDistSq = distSq;
-            }
-          }
-
-          // Always use the nearest anchor, as long as its geometry is sane.
-          const dx = tipX - best.x;
-          const dy = tipY - best.y;
-          const h = best.h;
-
-          anchorRef = {
-            noteId: best.id,
-            dxRel: dx / h,
-            dyRel: dy / h,
-            baseNoteH: h, // <-- capture creation-time notehead height (px) to use for scaling font size
-          };
-
-          // If h is bogus, we just skip anchoring and fall back to box-relative.
+      if (isStaffText) {
+        const label = window.prompt("Staff text (e.g. rit., dolce, cresc.)?", "");
+        if (label === null) {
+          return;
         }
-      }
 
-      // -----------------------------
-      // 4) Build new item (require note anchor)
-      // -----------------------------
-      if (!anchorRef) {
-        // Invariant going forward: text annotations are always note-anchored.
-        // If we somehow fail to find a note, just skip creating the item.
-        console.warn(
-          "[promptAndSaveAnnotation] No note anchor found for text annotation; aborting."
-        );
+        const trimmed = label.trim();
+        if (trimmed.length === 0) {
+          return;
+        }
+
+        const anchorRef = computeStaffTextAnchorRef(measureNumber, point);
+        if (!anchorRef) {
+          window.alert(
+            "Could not compute staff-text anchor for this measure (missing staff-line glyphs?)."
+          );
+          return;
+        }
+
+        const newItem: AnnotationTextItem = {
+          kind: "text",
+          text: trimmed,
+          anchor: anchorRef,
+        };
+
+        const existing = getAnnotationsForMeasure(measureNumber);
+        const existingItems: AnnotationItem[] = Array.isArray(existing?.items)
+          ? existing!.items.slice()
+          : [];
+
+        const nextPayload: MeasureAnnotation = {
+          ...(existing ?? { items: [] as AnnotationItem[] }),
+          items: [...existingItems, newItem],
+        };
+
+        void saveAnnotationsForMeasure(measureNumber, nextPayload);
+
+        setSelectedMeasureNumber(null);
+        setSelectedPointRel(null);
         return;
       }
 
-      const newItem: AnnotationTextItem = {
-        kind: "text",
-        text: trimmed,
-        anchor: anchorRef,
-      };
+      if (!isFingering) {
+        // Defensive: unknown input
+        return;
+      }
+      // Fingering path
+      {
+        const label = window.prompt("Fingering (e.g. 1–5)?", "");
+        if (label === null) {
+          return;
+        }
 
-      // Grab existing or empty
-      const existing = getAnnotationsForMeasure(measureNumber);
+        const trimmed = label.trim();
+        if (trimmed.length === 0) {
+          return;
+        }
 
-      const existingItems: AnnotationItem[] = Array.isArray(existing?.items)
-        ? existing!.items.slice()
-        : [];
+        const anchorRef = computeFingeringAnchorRef(measureNumber, point);
+        if (!anchorRef) {
+          window.alert("No note anchor found for fingering. Drop closer to a notehead/rest.");
+          return;
+        }
 
-      const nextPayload: MeasureAnnotation = {
-        ...(existing ?? { items: [] as AnnotationItem[] }),
-        items: [...existingItems, newItem], // newItem is AnnotationTextItem → OK
-      };
+        const newItem: AnnotationFingeringItem = {
+          kind: "fingering",
+          text: trimmed,
+          anchor: anchorRef,
+        };
 
-      // Save (local optimistic update + server)
-      void saveAnnotationsForMeasure(measureNumber, nextPayload);
+        const existing = getAnnotationsForMeasure(measureNumber);
+        const existingItems: AnnotationItem[] = Array.isArray(existing?.items)
+          ? existing!.items.slice()
+          : [];
 
-      // Clear selection so we don’t double-fire
-      setSelectedMeasureNumber(null);
-      setSelectedPointRel(null);
+        const nextPayload: MeasureAnnotation = {
+          ...(existing ?? { items: [] as AnnotationItem[] }),
+          items: [...existingItems, newItem],
+        };
+
+        void saveAnnotationsForMeasure(measureNumber, nextPayload);
+
+        setSelectedMeasureNumber(null);
+        setSelectedPointRel(null);
+      }
     },
     [
       getAnnotationsForMeasure,
@@ -2961,6 +3325,10 @@ export default function ScoreViewer({
   const measureGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({});
   // Per-page cache of note anchors, keyed by measureId (same ids as measureGlyphRectsRef)
   const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({});
+
+  // Staff-line glyphs (vf-measure) per measure, used for staff-anchored text.
+  const staffLineGlyphsByMeasureRef = useRef<Record<string, GlyphRect[]>>({});
+
 
   // Global pedal index derived from annotationsByMeasure.
   // Lives in a ref so we can use it in rendering + edit flows without rerender loops.
@@ -3852,6 +4220,9 @@ export default function ScoreViewer({
             // structural glyphs per measure, to be cached globally.
             const structuralByMeasure: Record<string, GlyphRect[]> = {};
 
+            // staff-line glyphs per measure (vf-measure), cached globally.
+            const staffLinesByMeasure: Record<string, GlyphRect[]> = {};
+
             for (const raw of rawRects) {
               const barLeft = raw.x;
               const barRight = raw.x + raw.w;
@@ -3867,6 +4238,17 @@ export default function ScoreViewer({
               }
 
               const glyphs = glyphsByMeasure?.[raw.id] ?? [];
+
+              // Cache staff lines (vf-measure) BEFORE we filter glyphs down to "structural" only.
+              const staffLines = glyphs.filter((g) => {
+                const tag = g.glyphTag?.toLowerCase() ?? "";
+                return tag === "vf-measure";
+              });
+
+              if (staffLines.length) {
+                staffLinesByMeasure[raw.id] = staffLines;
+              }
+
               if (!glyphs.length) {
                 result.push(raw);
                 continue;
@@ -3955,6 +4337,8 @@ export default function ScoreViewer({
             // (noteheads, stems, beams, modifiers), NOT staff lines, envelopes, etc.
             measureGlyphRectsRef.current = structuralByMeasure;
 
+            staffLineGlyphsByMeasureRef.current = staffLinesByMeasure;
+
             return result;
           };
 
@@ -4029,7 +4413,8 @@ export default function ScoreViewer({
               rects,
               getter,
               viewerZoomRef.current,
-              measureNoteAnchorsRef.current    // per-page note anchors
+              measureNoteAnchorsRef.current,    // per-page note anchors
+              staffLineGlyphsByMeasureRef.current
             );
           }
 

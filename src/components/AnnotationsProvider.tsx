@@ -16,26 +16,46 @@ import {
 
 // Note-relative anchor:
 //   dxRel, dyRel are offsets expressed in units of notehead height.
-export interface TextAnchorRef {
+export interface FingeringAnchorRef {
   noteId: string;     // matches NoteAnchor.id in ScoreViewer
   dxRel: number;      // offset from note center X in units of note height
   dyRel: number;      // offset from note center Y in units of note height
   baseNoteH?: number; // notehead height at creation time, in px
 }
 
-//TEST
+// Staff-anchored text:
+// - xRel: relative to measure box
+// - y is anchored to treble/bass/between using staff-line glyphs (vf-measure)
+// - dyRel is in "staff spaces" (distance between adjacent staff lines)
+export type TextAnchorMode = "treble" | "bass" | "between";
+
+export interface TextAnchorRef {
+  mode: TextAnchorMode;
+  xRel: number;  // Horizontal position within the measure box (0..1)
+  dyRel: number;  // Vertical offset from the reference line(s), in staff-space units.
+  baseStaffSpacePx: number;  // Creation-time staff-space in px for scaling.
+  betweenT?: number;  // Only for mode="between": blend factor between trebleMidY and bassMidY.  0 = treble midline, 1 = bass midline, 0.5 = centered.
+}
+
 export interface PedalAnchorRef {
   noteId: string;     // matches NoteAnchor.id in ScoreViewer
   dxRel: number;      // offset from note center X in units of note height
 }
-//TEST
 
 // One text mark inside a measure, always anchored to a note.
+export interface AnnotationFingeringItem {
+  kind: "fingering";
+  text: string;
+  style?: string;
+  anchor: FingeringAnchorRef;  // required now: always note-anchored
+}
+
+// Staff text: staff-anchored text (e.g., "rit.", "dolce", etc.)
 export interface AnnotationTextItem {
   kind: "text";
   text: string;
   style?: string;
-  anchor: TextAnchorRef;  // required now: always note-anchored
+  anchor: TextAnchorRef;
 }
 
 // One pedal run "segment" for a measure.
@@ -46,11 +66,11 @@ export interface AnnotationPedalItem {
   left?: PedalAnchorRef;
   right?: PedalAnchorRef;
   active?: boolean;
-  order?: number;         //TEST
+  order?: number;
 }
 
 // Union of all annotation items.
-export type AnnotationItem = AnnotationTextItem | AnnotationPedalItem;
+export type AnnotationItem = AnnotationFingeringItem | AnnotationTextItem | AnnotationPedalItem;
 
 // Front-end only shape of the annotation payload.
 // The DB just stores this as `jsonb`.
