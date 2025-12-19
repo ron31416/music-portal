@@ -1929,7 +1929,7 @@ function drawAnnotationBoxes(
         t.setAttribute("fill", "black");
         t.setAttribute("font-size", String(fontPx));
         t.setAttribute("font-family", "sans-serif");
-        t.setAttribute("text-anchor", "middle");
+        t.setAttribute("text-anchor", "left");              // "middle" is confusing
         t.setAttribute("dominant-baseline", "alphabetic");
         t.setAttribute("dy", "0.35em");
 
