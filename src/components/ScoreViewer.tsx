@@ -1817,7 +1817,7 @@ function drawAnnotationBoxes(
           typeof anchor.baseNoteHNorm === "number" &&
             Number.isFinite(anchor.baseNoteHNorm) &&
             anchor.baseNoteHNorm > 0
-            ? anchor.baseNoteHNorm * osmdZoom
+            ? anchor.baseNoteHNorm
             : currentH;
 
         if (
@@ -1855,7 +1855,7 @@ function drawAnnotationBoxes(
       }
 
       // =======================
-      // STAFF TEXT ITEMS (staff-anchored)
+      // TEXT ITEMS (staff-anchored)
       // =======================
       if (item.kind === "text") {
         const anchor = item.anchor;
@@ -1905,7 +1905,7 @@ function drawAnnotationBoxes(
           typeof anchor.baseStaffSpaceNorm === "number" &&
             Number.isFinite(anchor.baseStaffSpaceNorm) &&
             anchor.baseStaffSpaceNorm > 0
-            ? anchor.baseStaffSpaceNorm * osmdZoom
+            ? anchor.baseStaffSpaceNorm
             : metrics.staffSpacePx;
 
         if (baseStaffSpacePx > 0 && Number.isFinite(baseStaffSpacePx)) {
