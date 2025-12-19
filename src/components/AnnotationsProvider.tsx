@@ -20,7 +20,7 @@ export interface FingeringAnchorRef {
   noteId: string;     // matches NoteAnchor.id in ScoreViewer
   dxRel: number;      // offset from note center X in units of note height
   dyRel: number;      // offset from note center Y in units of note height
-  baseNoteH?: number; // notehead height at creation time, in px
+  baseNoteHNorm?: number; // Notehead height normalized to OSMD zoom=1 (multiply by current zoom to get px).
 }
 
 // Staff-anchored text:
@@ -33,7 +33,7 @@ export interface TextAnchorRef {
   mode: TextAnchorMode;
   xRel: number;  // Horizontal position within the measure box (0..1)
   dyRel: number;  // Vertical offset from the reference line(s), in staff-space units.
-  baseStaffSpacePx: number;  // Creation-time staff-space in px for scaling.
+  baseStaffSpaceNorm: number;  // Staff-space height normalized to OSMD zoom = 1
   betweenT?: number;  // Only for mode="between": blend factor between trebleMidY and bassMidY.  0 = treble midline, 1 = bass midline, 0.5 = centered.
 }
 

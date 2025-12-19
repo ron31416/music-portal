@@ -1425,7 +1425,7 @@ function drawAnnotationBoxes(
   outer: HTMLDivElement,
   rects: ReadonlyArray<MeasureBoxRect>,
   getAnnotationsForMeasure: GetAnnotationsForMeasure,
-  zoom = 1,
+  osmdZoom = 1,
   noteAnchorsByMeasure?: Record<string, NoteAnchor[]>,
   staffLineGlyphsByMeasure?: Record<string, GlyphRect[]>,
 ): void {
@@ -1811,11 +1811,13 @@ function drawAnnotationBoxes(
         let fontPx = BASE_FONT_PX;
 
         const currentH = anchorNote.h;
+
+        // baseNoteHNorm is stored at OSMD zoom=1; convert to px for this render pass
         const baseH =
-          anchor.baseNoteH &&
-            Number.isFinite(anchor.baseNoteH) &&
-            anchor.baseNoteH > 0
-            ? anchor.baseNoteH
+          typeof anchor.baseNoteHNorm === "number" &&
+            Number.isFinite(anchor.baseNoteHNorm) &&
+            anchor.baseNoteHNorm > 0
+            ? anchor.baseNoteHNorm * osmdZoom
             : currentH;
 
         if (
@@ -1898,11 +1900,12 @@ function drawAnnotationBoxes(
         const MAX_FONT_PX = 36;
 
         let fontPx = BASE_FONT_PX;
+
         const baseStaffSpacePx =
-          typeof anchor.baseStaffSpacePx === "number" &&
-            Number.isFinite(anchor.baseStaffSpacePx) &&
-            anchor.baseStaffSpacePx > 0
-            ? anchor.baseStaffSpacePx
+          typeof anchor.baseStaffSpaceNorm === "number" &&
+            Number.isFinite(anchor.baseStaffSpaceNorm) &&
+            anchor.baseStaffSpaceNorm > 0
+            ? anchor.baseStaffSpaceNorm * osmdZoom
             : metrics.staffSpacePx;
 
         if (baseStaffSpacePx > 0 && Number.isFinite(baseStaffSpacePx)) {
@@ -1986,9 +1989,9 @@ function drawAnnotationBoxes(
         if (isActive && leftXFromAnchor === null) {
           const prevRight = prevMeasureRightById[box.id];
           if (prevRight !== undefined) {
-            x1 = prevRight - 1 * zoom;
+            x1 = prevRight - 1 * osmdZoom;
           } else {
-            const EDGE_OVERSHOOT = 4 * zoom;
+            const EDGE_OVERSHOOT = 4 * osmdZoom;
             x1 = box.x - EDGE_OVERSHOOT;
           }
         }
@@ -2004,8 +2007,8 @@ function drawAnnotationBoxes(
           x2 = tmp;
         }
 
-        const PEDAL_MARGIN_FROM_BOTTOM = 3 * zoom;
-        const PEDAL_TICK_HEIGHT = 6 * zoom;
+        const PEDAL_MARGIN_FROM_BOTTOM = 3 * osmdZoom;
+        const PEDAL_TICK_HEIGHT = 6 * osmdZoom;
 
         const runBottomY = pedalBaselineByMeasureId[box.id] ?? (box.y + box.h);
 
@@ -2033,7 +2036,7 @@ function drawAnnotationBoxes(
         path.setAttribute("d", d.trim());
         path.setAttribute("fill", "none");
         path.setAttribute("stroke", "black");
-        path.setAttribute("stroke-width", String(1 * zoom));
+        path.setAttribute("stroke-width", String(1 * osmdZoom));
         path.setAttribute("stroke-linecap", "round");
         path.setAttribute("stroke-linejoin", "round");
 
@@ -2781,16 +2784,20 @@ export default function ScoreViewer({
           return null;
         }
 
+        const z = osmdZoomRef.current ?? 1;
+        // Store note height normalized to OSMD zoom=1 so initial font sizing is consistent
+        const baseNoteHNorm = z > 0 ? h / z : h;
+
         return {
           noteId: best.id,
           dxRel: dx / h,
           dyRel: dy / h,
-          baseNoteH: h,
+          baseNoteHNorm,
         };
       };
 
-      // NAV: ____ const computeStaffTextAnchorRef
-      const computeStaffTextAnchorRef = (
+      // NAV: ____ const computeTextAnchorRef
+      const computeTextAnchorRef = (
         measureNumberIn: number,
         pointIn: PointRel
       ): TextAnchorRef | null => {
@@ -2853,11 +2860,16 @@ export default function ScoreViewer({
         const dyPx = tipY - baseY;
         const dyRel = dyPx / staffSpacePx;
 
+        const z = osmdZoomRef.current ?? 1;
+        // Store staff-space normalized to OSMD zoom=1 so initial size is consistent
+        const baseStaffSpaceNorm = z > 0 ? staffSpacePx / z : staffSpacePx;
+
+
         const anchor: TextAnchorRef = {
           mode,
           xRel,
           dyRel,
-          baseStaffSpacePx: staffSpacePx,
+          baseStaffSpaceNorm,
         };
 
         if (mode === "between") {
@@ -3034,8 +3046,8 @@ export default function ScoreViewer({
 
       const mode = modeRaw.trim().toLowerCase();
       const isPedal = mode.startsWith("p");
-      const isStaffText = mode === "t" || mode.startsWith("text");
-      const isFingering = mode.startsWith("f") || (!isPedal && !isStaffText);
+      const isText = mode === "t" || mode.startsWith("text");
+      const isFingering = mode.startsWith("f") || (!isPedal && !isText);
 
       if (isPedal) {
         if (beginPedalInFlightRef.current) {
@@ -3089,8 +3101,8 @@ export default function ScoreViewer({
         }
       }
 
-      if (isStaffText) {
-        const label = window.prompt("Staff text (e.g. rit., dolce, cresc.)?", "");
+      if (isText) {
+        const label = window.prompt("Text (e.g. rit., dolce, cresc.)?", "");
         if (label === null) {
           return;
         }
@@ -3100,10 +3112,10 @@ export default function ScoreViewer({
           return;
         }
 
-        const anchorRef = computeStaffTextAnchorRef(measureNumber, point);
+        const anchorRef = computeTextAnchorRef(measureNumber, point);
         if (!anchorRef) {
           window.alert(
-            "Could not compute staff-text anchor for this measure (missing staff-line glyphs?)."
+            "Could not compute text anchor for this measure (missing staff-line glyphs?)."
           );
           return;
         }
@@ -3616,8 +3628,8 @@ export default function ScoreViewer({
     startZoom: number;
   } | null>(null);
 
-  // 1 = OSMD's default zoom
-  const viewerZoomRef = useRef(1);
+  // OSMD layout zoom factor (1 = OSMD default; affects glyph geometry and annotation scaling)
+  const osmdZoomRef = useRef(1);
 
   // Timestamp of the last touchend, used to suppress synthetic mouse events
   const lastTouchEndRef = useRef<number>(0);
@@ -3651,7 +3663,7 @@ export default function ScoreViewer({
       if (!Number.isFinite(curr) || Math.abs(curr - clamped) > 0.001) {
         try {
           inst.Zoom = clamped;              // changes OSMD zoom
-          viewerZoomRef.current = clamped;  // record annotation zoom
+          osmdZoomRef.current = clamped;  // record annotation zoom
         } catch { }
       }
     }
@@ -4513,7 +4525,7 @@ export default function ScoreViewer({
               outer,
               rects,
               getter,
-              viewerZoomRef.current,
+              osmdZoomRef.current,
               measureNoteAnchorsRef.current,    // per-page note anchors
               staffLineGlyphsByMeasureRef.current
             );
