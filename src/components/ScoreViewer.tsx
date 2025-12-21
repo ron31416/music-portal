@@ -1802,9 +1802,63 @@ function drawAnnotationBoxes(
         const dyPx = anchor.dyRel * noteH;
 
         const pxX = anchorNote.x + dxPx;
-        const pxY = anchorNote.y + dyPx;
+        let pxY = anchorNote.y + dyPx;
 
-        const BASE_FONT_PX = 16;
+        // ------------------------------------------------------------
+        // Fingering readability: if we're too close to a staff line,
+        // nudge into the nearest staff space (render-only adjustment).
+        // ------------------------------------------------------------
+        if (staffLineGlyphsByMeasure) {
+          const metrics = computeStaffMetricsForMeasureFromStaffLines(
+            box.id,
+            staffLineGlyphsByMeasure
+          );
+
+          if (metrics && metrics.staffSpacePx > 0 && Number.isFinite(metrics.staffSpacePx)) {
+            const s = metrics.staffSpacePx;
+
+            // Five-line staff: lines are at midY + k*s for k in [-2,-1,0,1,2]
+            const trebleLines = [
+              metrics.trebleMidY - 2 * s,
+              metrics.trebleMidY - 1 * s,
+              metrics.trebleMidY,
+              metrics.trebleMidY + 1 * s,
+              metrics.trebleMidY + 2 * s,
+            ];
+
+            const bassLines = [
+              metrics.bassMidY - 2 * s,
+              metrics.bassMidY - 1 * s,
+              metrics.bassMidY,
+              metrics.bassMidY + 1 * s,
+              metrics.bassMidY + 2 * s,
+            ];
+
+            const allLines = [...trebleLines, ...bassLines];
+
+            // Find nearest staff line
+            let nearest = allLines[0]!;
+            let bestAbs = Math.abs(pxY - nearest);
+
+            for (let i = 1; i < allLines.length; i++) {
+              const y = allLines[i]!;
+              const d = Math.abs(pxY - y);
+              if (d < bestAbs) {
+                bestAbs = d;
+                nearest = y;
+              }
+            }
+
+            // If too close to a line, push into the space.
+            const snapThresholdPx = 0.20 * s; // tune: 0.15–0.30
+            if (bestAbs < snapThresholdPx) {
+              const dir = pxY < nearest ? -1 : 1;
+              pxY = nearest + dir * 0.50 * s;
+            }
+          }
+        }
+
+        const BASE_FONT_PX = 14;
         const MIN_FONT_PX = 8;
         const MAX_FONT_PX = 30;
 
@@ -1846,9 +1900,10 @@ function drawAnnotationBoxes(
         t.setAttribute("fill", "black");
         t.setAttribute("font-size", String(fontPx));
         t.setAttribute("font-family", "sans-serif");
+        t.setAttribute("font-weight", "700");               // add knob for this
         t.setAttribute("text-anchor", "middle");
-        t.setAttribute("dominant-baseline", "alphabetic");
-        t.setAttribute("dy", "0.35em");
+        t.setAttribute("dominant-baseline", "middle");
+        t.setAttribute("dy", "0");
 
         g.appendChild(t);
         continue;
@@ -1929,9 +1984,10 @@ function drawAnnotationBoxes(
         t.setAttribute("fill", "black");
         t.setAttribute("font-size", String(fontPx));
         t.setAttribute("font-family", "sans-serif");
-        t.setAttribute("text-anchor", "left");              // "middle" is confusing
-        t.setAttribute("dominant-baseline", "alphabetic");
-        t.setAttribute("dy", "0.35em");
+        t.setAttribute("font-weight", "700");
+        t.setAttribute("text-anchor", "left");
+        t.setAttribute("dominant-baseline", "middle");
+        t.setAttribute("dy", "0");
 
         g.appendChild(t);
         continue;
@@ -2008,7 +2064,7 @@ function drawAnnotationBoxes(
         }
 
         const PEDAL_MARGIN_FROM_BOTTOM = 3 * osmdZoom;
-        const PEDAL_TICK_HEIGHT = 6 * osmdZoom;
+        const PEDAL_TICK_HEIGHT = 7 * osmdZoom;
 
         const runBottomY = pedalBaselineByMeasureId[box.id] ?? (box.y + box.h);
 
@@ -2032,11 +2088,13 @@ function drawAnnotationBoxes(
           d += `L ${x2} ${tickTopY}`;
         }
 
+        const PEDAL_STROKE_PX = 1.4;
+
         const path = createSvgEl("path");
         path.setAttribute("d", d.trim());
         path.setAttribute("fill", "none");
         path.setAttribute("stroke", "black");
-        path.setAttribute("stroke-width", String(1 * osmdZoom));
+        path.setAttribute("stroke-width", String(PEDAL_STROKE_PX * osmdZoom));
         path.setAttribute("stroke-linecap", "round");
         path.setAttribute("stroke-linejoin", "round");
 
