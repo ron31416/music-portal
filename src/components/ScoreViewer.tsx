@@ -3340,59 +3340,50 @@ export default function ScoreViewer({
           return;
         }
 
-        // Look up glyph cloud for this measure
-        const glyphsForMeasure = measureGlyphRectsRef.current[box.id] ?? [];
+        // ✅ Phase 0: do NOT avoid glyph bounding boxes on initial placement.
+        // Use the raw tap point (clamped only to unit interval).
+        const xRel0 =
+          box.w > 0 ? clampUnitInterval((xPage - box.x) / box.w) : 0.5;
+        const yRel0 =
+          box.h > 0 ? clampUnitInterval((yPage - box.y) / box.h) : 0.5;
 
-        // Find a nearby non-glyph point inside this measure
-        const safe = findSafePointRelForTap(
-          box,
-          xPage,
-          yPage,
-          glyphsForMeasure,
-        );
+        // Place the handle so the *caret tip* (not stem center) lands at the tap point.
+        // Caret tip is above by HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT/2.
+        const STEM_CENTER_TO_TIP_PX =
+          HANDLE_TIP_HEIGHT + (HANDLE_STEM_HEIGHT / 2);
 
-        if (safe) {
-          // Place the handle so the *stem center* lands at the tap point.
-          const STEM_CENTER_TO_TIP_PX =
-            HANDLE_TIP_HEIGHT + (HANDLE_STEM_HEIGHT / 2);
+        const yRelAdjusted =
+          box.h > 0
+            ? clampUnitInterval(yRel0 - (STEM_CENTER_TO_TIP_PX / box.h))
+            : yRel0;
 
-          const yRelAdjusted =
-            box.h > 0
-              ? clampUnitInterval(safe.yRel - (STEM_CENTER_TO_TIP_PX / box.h))
-              : safe.yRel;
+        setSelectedMeasureNumber(measureNumber);
+        setSelectedPointRel({ xRel: xRel0, yRel: yRelAdjusted });
 
-          setSelectedMeasureNumber(measureNumber);
-          setSelectedPointRel({ xRel: safe.xRel, yRel: yRelAdjusted });
+        // Arm dragging immediately for this gesture (mouse/pen/touch).
+        dragPointerIdRef.current = ev.pointerId;
+        dragMeasureBoxRef.current = box;
+        dragRelRef.current = { xRel: xRel0, yRel: yRelAdjusted };
+        dragStartPageRef.current = { x: xPage, y: yPage };
+        dragHasMovedRef.current = false;
 
-          // Arm dragging immediately for this gesture (mouse/pen/touch).
+        try {
+          (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+        } catch {
+          // ignore
+        }
+
+        // ✅ Touch improvement: arm dragging immediately on touch down
+        if (ev.pointerType === "touch") {
           dragPointerIdRef.current = ev.pointerId;
           dragMeasureBoxRef.current = box;
-          dragRelRef.current = { xRel: safe.xRel, yRel: yRelAdjusted };
-          dragStartPageRef.current = { x: xPage, y: yPage };
-          dragHasMovedRef.current = false;
+          dragRelRef.current = null;
 
           try {
-            (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+            (outer as unknown as HTMLElement).setPointerCapture(ev.pointerId);
           } catch {
             // ignore
           }
-
-          // ✅ Touch improvement: arm dragging immediately on touch down
-          if (ev.pointerType === "touch") {
-            dragPointerIdRef.current = ev.pointerId;
-            dragMeasureBoxRef.current = box;
-            dragRelRef.current = null;
-
-            try {
-              (outer as unknown as HTMLElement).setPointerCapture(ev.pointerId);
-            } catch {
-              // ignore
-            }
-          }
-        } else {
-          // Everything nearby is congested; keep measure selected but no point yet.
-          setSelectedMeasureNumber(measureNumber);
-          setSelectedPointRel(null);
         }
 
         ev.preventDefault();
@@ -3400,7 +3391,9 @@ export default function ScoreViewer({
         return;
       }
 
-      // Click started outside any measure
+      // Click started outside any measure:
+      // - do NOT arm/position the pointer
+      // - allow the click to fall through for page turning
       setSelectedMeasureNumber(null);
       setSelectedPointRel(null);
     },
@@ -3426,8 +3419,9 @@ export default function ScoreViewer({
 
       // If this pointer-up ends an active drag, decide tap vs drag
       if (dragPointerIdRef.current === ev.pointerId) {
-        const measureNumber = selectedMeasureNumber;
-        const rel = dragRelRef.current ?? selectedPointRel;
+        // Capture needed refs *before* we clear drag state
+        const outer = wrapRef.current;
+        const rects = measureRectsRef.current;
 
         // Clear drag state
         dragPointerIdRef.current = null;
@@ -3441,10 +3435,77 @@ export default function ScoreViewer({
         ev.preventDefault();
         ev.stopPropagation();
 
-        // If we have a valid point, commit/prompt on release (this replaces the old handle-up path)
-        if (measureNumber !== null && rel !== null) {
-          void promptAndSaveAnnotation(measureNumber, rel);
+        // If we can't compute a drop location, do nothing (pointer stays where it is).
+        if (!outer || !rects.length) {
+          return;
         }
+
+        const outerBox = outer.getBoundingClientRect();
+
+        // Pointer position in "page" coords (viewer-local)
+        const pointerX = ev.clientX - outerBox.left;
+        const pointerY = ev.clientY - outerBox.top;
+
+        // Must match the move-capture math: caret tip is above by tip + half-stem
+        const DRAG_ANCHOR_OFFSET = HANDLE_TIP_HEIGHT + (HANDLE_STEM_HEIGHT / 2);
+
+        const tipX = pointerX;
+        const tipY = pointerY - DRAG_ANCHOR_OFFSET;
+
+        // Find the measure box under the drop tip
+        // NOTE: We intentionally search ALL measures, not just the one the drag started in.
+        let dropBox: PageMeasureRect | null = null;
+        for (const b of rects) {
+          const withinX = tipX >= b.x && tipX <= b.x + b.w;
+          const withinY = tipY >= b.y && tipY <= b.y + b.h;
+          if (withinX && withinY) {
+            dropBox = b;
+            break;
+          }
+        }
+
+        // Dropped outside any measure → NO-OP (pointer remains visible)
+        if (!dropBox) {
+          return;
+        }
+
+        // Dropped inside a measure: reject if on a glyph bbox (NO-OP)
+        // (We exclude staff lines already inside getAvoidanceGlyphsForMeasure.)
+        type PageMeasureRectWithId = PageMeasureRect & { id: string };
+        const dropBoxWithId = dropBox as PageMeasureRectWithId;
+
+        const glyphRectsForMeasure = getAvoidanceGlyphsForMeasure(dropBoxWithId.id);
+
+        const isBlocked =
+          glyphRectsForMeasure.length > 0 &&
+          pointHitsAnyRectWithMargin(
+            tipX,
+            tipY,
+            glyphRectsForMeasure,
+            AVOID_GLYPH_MARGIN_PX,
+          );
+
+        if (isBlocked) {
+          return;
+        }
+
+        // Compute rel within the DROP measure box (not the start box)
+        if (!(dropBox.w > 0) || !(dropBox.h > 0)) {
+          return;
+        }
+
+        const rel: PointRel = {
+          xRel: clampUnitInterval((tipX - dropBox.x) / dropBox.w),
+          yRel: clampUnitInterval((tipY - dropBox.y) / dropBox.h),
+        };
+
+        const measureNumber = dropBox.measureNumber;
+        if (!(measureNumber > 0) || !Number.isFinite(measureNumber)) {
+          return;
+        }
+
+        // Commit using the actual drop measure + rel
+        void promptAndSaveAnnotation(measureNumber, rel);
 
         // We intentionally do NOT open measure preview here.
         // Drag or tap both act as "drop" for the annotation pointer.
@@ -3461,7 +3522,11 @@ export default function ScoreViewer({
 
       openMeasurePreview(rect);
     },
-    [openMeasurePreview, promptAndSaveAnnotation, selectedMeasureNumber, selectedPointRel]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      openMeasurePreview,
+      promptAndSaveAnnotation,
+    ],
   );
 
   // NAV: __ const handleViewerClickCapture
@@ -7031,75 +7096,38 @@ export default function ScoreViewer({
       }
 
       // We treat the pointer as being at the *bottom* of the stem.
-      // Caret tip is above by HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT.
+      // Caret tip is above by HANDLE_TIP_HEIGHT + HANDLE_STEM_HEIGHT/2.
       const DRAG_ANCHOR_OFFSET = HANDLE_TIP_HEIGHT + (HANDLE_STEM_HEIGHT / 2);
 
-      let tipX = pointerX;
-      let tipY = pointerY - DRAG_ANCHOR_OFFSET;
+      const tipX = pointerX;
+      const tipY = pointerY - DRAG_ANCHOR_OFFSET;
 
-      // Clamp tip inside the measure box
-      if (tipX < box.x) {
-        tipX = box.x;
-      } else if (tipX > box.x + box.w) {
-        tipX = box.x + box.w;
-      }
+      // ✅ Phase 0: free drag anywhere (no clamping, no glyph avoidance).
+      // Move the handle wrapper so that the caret tip is at (tipX, tipY).
+      handleNode.style.left = `${tipX - HANDLE_STEM_WIDTH / 2}px`;
+      handleNode.style.top = `${tipY}px`;
 
-      if (tipY < box.y) {
-        tipY = box.y;
-      } else if (tipY > box.y + box.h) {
-        tipY = box.y + box.h;
-      }
+      // Keep React state in sync ONLY when the tip is inside the original start-measure box.
+      // IMPORTANT: do NOT clear selectedPointRel when outside, or the handle will unrender.
+      const inBox =
+        tipX >= box.x &&
+        tipX <= box.x + box.w &&
+        tipY >= box.y &&
+        tipY <= box.y + box.h;
 
-      // === Glyph avoidance using "all minus staff-lines" ===
-      type PageMeasureRectWithId = PageMeasureRect & { id: string };
-      const boxWithId = box as PageMeasureRectWithId;
-      const measureId = boxWithId.id;
+      if (inBox && box.w > 0 && box.h > 0) {
+        const xRel = clampUnitInterval((tipX - box.x) / box.w);
+        const yRel = clampUnitInterval((tipY - box.y) / box.h);
 
-      // All glyphs except staff lines (vf-measure)
-      const glyphRectsForMeasure = getAvoidanceGlyphsForMeasure(measureId);
-
-      const isBlocked =
-        glyphRectsForMeasure.length > 0 &&
-        pointHitsAnyRectWithMargin(
-          tipX,
-          tipY,
-          glyphRectsForMeasure,
-          AVOID_GLYPH_MARGIN_PX,
-        );
-
-      let finalTipX = tipX;
-      let finalTipY = tipY;
-
-      if (isBlocked) {
-        const lastRel = dragRelRef.current;
-        if (lastRel !== null) {
-          // Revert to last safe position (boundary behavior)
-          finalTipX = box.x + lastRel.xRel * box.w;
-          finalTipY = box.y + lastRel.yRel * box.h;
-        }
-      } else {
-        // This point is safe; update the last safe rel coords.
-        const xRel = (tipX - box.x) / box.w;
-        const yRel = (tipY - box.y) / box.h;
         dragRelRef.current = { xRel, yRel };
+        setSelectedPointRel({ xRel, yRel });
       }
-
-      // Move the handle wrapper so that the caret tip is at (finalTipX, finalTipY)
-      handleNode.style.left = `${finalTipX - HANDLE_STEM_WIDTH / 2}px`;
-      handleNode.style.top = `${finalTipY}px`;
-
-      // Keep React state in sync so subsequent "drop" logic uses the dragged point.
-      if (box.w > 0 && box.h > 0) {
-        setSelectedPointRel({
-          xRel: clampUnitInterval((finalTipX - box.x) / box.w),
-          yRel: clampUnitInterval((finalTipY - box.y) / box.h),
-        });
-      }
+      // else: outside box → leave dragRelRef/selectedPointRel as-is so the handle stays mounted
 
       ev.preventDefault();
       ev.stopPropagation();
     },
-    [getAvoidanceGlyphsForMeasure, setSelectedPointRel],
+    [setSelectedPointRel],
   );
 
 
