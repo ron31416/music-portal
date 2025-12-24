@@ -98,12 +98,22 @@ type GlyphRect = {
   glyphTag?: string;   // renamed from debug
 };
 
+type NoteAnchorKind = "note" | "rest" | "unknown";
+
 type NoteAnchor = {
   id: string;   // stable within a measure, e.g. "n0", "n1"
   x: number;    // notehead center X (page-local px)
   y: number;    // notehead center Y (page-local px)
   w: number;    // notehead width
   h: number;    // notehead height
+  kind: NoteAnchorKind;
+  confidence: number; // 0..1
+
+  // DIAG (optional)
+  glyphTag: string;
+  tallRatio: number;
+  aspect: number;
+  area: number;
 };
 
 // We use the shared payload directly from AnnotationsProvider.
@@ -179,6 +189,9 @@ const URL_DIAG = readDebugFlag("diag", false);
 // Effective switches: pagination diag implies logging
 const isLogOn = () => URL_LOG || URL_DIAG;
 const isDiagOn = () => URL_DIAG;
+
+const SHOW_NOTEHEAD_EXCLUSION_DIAG = false;  //TEST
+const SHOW_ANCHOR_TAGS = false; // flip off when done
 
 
 // NAV: -----------------helper functions
@@ -2595,8 +2608,10 @@ function buildNoteAnchorsForMeasure(
     return [];
   }
 
+  const tagOf = (g: GlyphRect): string => (g.glyphTag ?? "").toLowerCase();
+
   const noteGlyphs = glyphs
-    .filter((g) => (g.glyphTag ?? "").toLowerCase().includes("notehead"))
+    .filter((g) => tagOf(g).includes("notehead"))
     // Sort for stable indexing: left-to-right, then top-to-bottom
     .sort((a, b) => {
       const EPS = 0.0001;
@@ -2619,15 +2634,182 @@ function buildNoteAnchorsForMeasure(
       return cmp(a.h, b.h);
     });
 
+  if (!noteGlyphs.length) {
+    return [];
+  }
+
+  // Use a "notehead-ish" subset for baseline medians to avoid rest + artifact pollution.
+  const nonTall = noteGlyphs.filter((g) => {
+    const w = g.w;
+    const h = g.h;
+    if (!(w > 0) || !(h > 0)) { return false; }
+    return (h / w) <= 1.25;
+  });
+
+  const medianOf = (xs: number[]): number => {
+    const n = xs.length;
+    if (n === 0) { return 0; }
+    const mid = Math.floor(n / 2);
+    return (n % 2 === 1) ? xs[mid]! : (xs[mid - 1]! + xs[mid]!) / 2;
+  };
+
+  // Rough area median from non-tall candidates (may still include tiny artifacts).
+  const nonTallAreas = nonTall.map((g) => g.w * g.h).slice().sort((a, b) => a - b);
+  const roughMedA = Math.max(1, medianOf(nonTallAreas));
+
+  // Drop tiny specks that can distort medians (e.g., invisible/degenerate notehead-tagged glyphs).
+  const baselineGlyphs = nonTall.filter((g) => {
+    const a = g.w * g.h;
+    // Keep conservative: only discard stuff that's *way* smaller than normal.
+    return a >= roughMedA * 0.35;
+  });
+
+  const baseline =
+    baselineGlyphs.length >= 3
+      ? baselineGlyphs
+      : (nonTall.length >= 3 ? nonTall : noteGlyphs);
+
+  const dimsH = baseline.map((g) => g.h).slice().sort((a, b) => a - b);
+  const dimsW = baseline.map((g) => g.w).slice().sort((a, b) => a - b);
+  const areas = baseline.map((g) => g.w * g.h).slice().sort((a, b) => a - b);
+
+  const median = (xs: number[]): number => {
+    const n = xs.length;
+    if (n === 0) { return 0; }
+    const mid = Math.floor(n / 2);
+    return (n % 2 === 1) ? xs[mid]! : (xs[mid - 1]! + xs[mid]!) / 2;
+  };
+
+  const medH = Math.max(1, median(dimsH));
+  const medW = Math.max(1, median(dimsW));
+  const medA = Math.max(1, median(areas));
+
+  const n = noteGlyphs.length;
+
+  // When we only have 1–2 samples, our “typical size” band must be wider,
+  // or we’ll incorrectly reject legitimate noteheads in sparse measures.
+  const sizeLo = n <= 2 ? 0.55 : 0.75;
+  const sizeHi = n <= 2 ? 1.85 : 1.35;
+  const areaLo = n <= 2 ? 0.45 : 0.65;
+  const areaHi = n <= 2 ? 2.60 : 1.55;
+
+  // --- Classification (exclude only high-confidence rests) ---
+  const classifyNotehead = (
+    g: GlyphRect
+  ): { kind: NoteAnchorKind; confidence: number } => {
+    const w = g.w;
+    const h = g.h;
+    if (!(w > 0) || !(h > 0)) {
+      return { kind: "unknown", confidence: 0 };
+    }
+
+    const area = w * h;
+    const aspect = Math.max(w / h, h / w); // 1.0 = square-ish
+
+    // ============================================================
+    // 0) High-confidence REST rule (keep your fix, but make it safe)
+    //
+    // Eighth/quarter rests (in your data) tend to have bboxes that are
+    // clearly taller-than-wide. HOWEVER, if a NOTEHEAD bbox ever
+    // “accidentally” includes a stem/flag/artifact, it becomes tall too.
+    //
+    // So: only call it a rest if it’s tall *and* not “too big” in area
+    // relative to typical noteheads in this measure.
+    // ============================================================
+    const tallRatio = h / w; // > 1 means taller-than-wide
+    const CLEAR_TALL_REST_RATIO = 1.18;
+
+    const tallEnough = tallRatio >= CLEAR_TALL_REST_RATIO;
+
+    // “Not too big” guard: if area is way larger than a typical notehead,
+    // it’s probably a notehead bbox contaminated by a stem/flag/etc.
+    // (This is exactly the failure mode that makes notes disappear in measure 304.)
+    const notHugeForMeasure = area <= medA * (n <= 2 ? 2.40 : 1.55);
+
+    // Also require it to be at least mildly non-square; this avoids weird
+    // square-ish artifacts being dropped into “rest” by the ratio alone.
+    const nonSquareish = aspect >= 1.10;
+
+    if (tallEnough && notHugeForMeasure && nonSquareish) {
+      return { kind: "rest", confidence: 0.90 };
+    }
+
+    // ============================================================
+    // 1) Common filled noteheads (roughly square-ish / oval-ish)
+    // ============================================================
+    const sizeOk =
+      h >= medH * sizeLo && h <= medH * sizeHi &&
+      w >= medW * sizeLo && w <= medW * sizeHi;
+
+    const areaOk =
+      area >= medA * areaLo && area <= medA * areaHi;
+
+    const squareish = aspect <= 1.30;
+    if (squareish && sizeOk && areaOk) {
+      return { kind: "note", confidence: 0.78 };
+    }
+
+    // ============================================================
+    // 2) Whole noteheads: wider ovals
+    // ============================================================
+    const ovalish = aspect > 1.20 && aspect <= 2.20;
+
+    // Whole notes are often wider; allow wider W band, keep H sane.
+    const ovalSizeOk =
+      h >= medH * (n <= 2 ? 0.55 : 0.75) && h <= medH * (n <= 2 ? 2.00 : 1.55) &&
+      w >= medW * (n <= 2 ? 0.70 : 0.90) && w <= medW * (n <= 2 ? 2.60 : 2.05);
+
+    const ovalAreaOk =
+      area >= medA * (n <= 2 ? 0.45 : 0.70) && area <= medA * (n <= 2 ? 3.00 : 2.40);
+
+    if (ovalish && ovalSizeOk && ovalAreaOk) {
+      return { kind: "note", confidence: 0.72 };
+    }
+
+    // ============================================================
+    // 3) Tiny/degenerate glyphs → "unknown" (likely layout artifacts)
+    // ============================================================
+    // Use the measure baseline medians you already compute (now less polluted).
+    // Anything *way* smaller than typical is probably an invisible/garbage glyph.
+    const tinyByArea = area < medA * 0.18;
+    const tinyByDims = (w < medW * 0.35) || (h < medH * 0.35);
+
+    if (tinyByArea && tinyByDims) {
+      return { kind: "unknown", confidence: 0.20 };
+    }
+
+    // ============================================================
+    // 4) Default: if it wasn't a note, treat it as a rest
+    // ============================================================
+    return { kind: "rest", confidence: 0.70 };
+  };
+
   const anchors: NoteAnchor[] = [];
   for (let i = 0; i < noteGlyphs.length; i++) {
     const g = noteGlyphs[i]!;
+    const cls = classifyNotehead(g);
+
+    const w = g.w;
+    const h = g.h;
+
+    const area = (w > 0 && h > 0) ? (w * h) : 0;
+    const aspect = (w > 0 && h > 0) ? Math.max(w / h, h / w) : 0;
+    const tallRatio = (w > 0) ? (h / w) : 0;
+
     anchors.push({
       id: `n${i}`,
-      x: g.x + g.w / 2,
-      y: g.y + g.h / 2,
-      w: g.w,
-      h: g.h,
+      x: g.x + w / 2,
+      y: g.y + h / 2,
+      w,
+      h,
+      kind: cls.kind,
+      confidence: cls.confidence,
+
+      // --- DIAG payload (safe, always defined) ---
+      glyphTag: tagOf(g),
+      tallRatio,
+      aspect,
+      area,
     });
   }
 
@@ -2685,6 +2867,26 @@ export default function ScoreViewer({
   // Currently selected measure + tap position inside it (for upcoming annotation UI)
   const [selectedMeasureNumber, setSelectedMeasureNumber] = useState<number | null>(null);
   const [selectedPointRel, setSelectedPointRel] = useState<PointRel | null>(null);
+
+  // Forces re-render of halo overlay when page geometry changes.
+  // measurePreviewRect is already state and tends to change with page interactions.
+  // pageNumber (or similar) is even better if you have it; see notes below.
+  const [haloEpoch, setHaloEpoch] = React.useState(0);
+
+  React.useEffect(() => {
+    if (!isEditModeRef.current || !isAuthenticated) {
+      return;
+    }
+    // Bump once after React commits the new page layout.
+    setHaloEpoch((x) => x + 1);
+  }, [
+    isAuthenticated,
+    showGlyphDebug,
+    // Pick ONE of these that you know changes on page turns:
+    // - currentPageIndex
+    // - pageStartIdxsRef.current is NOT reactive (won't work)
+    // - any existing state you use to drive paging
+  ]);
 
 
   // NAV: ------------------------- constants
@@ -4685,6 +4887,9 @@ export default function ScoreViewer({
           // ignore
         }
       }
+
+      setHaloEpoch((x) => x + 1);
+
     },
     [
       visiblePageHeight,
@@ -7176,6 +7381,187 @@ export default function ScoreViewer({
               />
             ))
           )}
+        </div>
+      )}
+
+      {/* NOTE HALOS (edit mode) */}
+      {isEditMode && isAuthenticated && (
+        <div
+          key={haloEpoch}
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: "none",
+            zIndex: 210,
+          }}
+        >
+          {(measureRectsRef.current ?? []).flatMap((box) => {
+            const anchors = measureNoteAnchorsRef.current?.[box.id] ?? [];
+
+            // --------------------------------------------
+            // A) Halos (current behavior)
+            // --------------------------------------------
+            const haloEls = anchors.map((a) => {
+              const rInner = Math.max(6, a.h * 0.55);
+              const rOuter = Math.max(12, a.h * 1.10);
+
+              // Color-code by kind (no filter)
+              let border = "rgba(0, 120, 255, 0.55)";      // note = blue
+              let fill = "rgba(0, 120, 255, 0.12)";
+
+              if (a.kind === "unknown") {
+                border = "rgba(120, 120, 120, 0.75)";     // unknown = gray
+                fill = "rgba(120, 120, 120, 0.10)";
+              }
+
+              if (a.kind === "rest") {
+                border = "rgba(255, 80, 0, 0.80)";         // rest = orange/red
+                fill = "rgba(255, 80, 0, 0.10)";
+              }
+
+              return (
+                <div
+                  key={`${box.id}:${a.id}`}
+                  style={{
+                    position: "absolute",
+                    left: a.x - rOuter,
+                    top: a.y - rOuter,
+                    width: rOuter * 2,
+                    height: rOuter * 2,
+                    borderRadius: "50%",
+                    border: `2px solid ${border}`,
+                    background: fill,
+                    boxSizing: "border-box",
+                  }}
+                >
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: rOuter - rInner,
+                      top: rOuter - rInner,
+                      width: rInner * 2,
+                      height: rInner * 2,
+                      borderRadius: "50%",
+                      border: `1px dashed ${border}`,
+                      background: "transparent",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+              );
+            });
+
+            // --------------------------------------------
+            // B) Exclusion DIAG (only the things you filtered out)
+            // --------------------------------------------
+            const diagEls = SHOW_NOTEHEAD_EXCLUSION_DIAG
+              ? anchors
+                .filter((a) => a.kind === "rest")
+                .map((a) => {
+                  const tag = typeof a.glyphTag === "string" ? a.glyphTag : "";
+                  const tall = typeof a.tallRatio === "number" ? a.tallRatio.toFixed(2) : "?";
+                  const asp = typeof a.aspect === "number" ? a.aspect.toFixed(2) : "?";
+                  const area = typeof a.area === "number" ? Math.round(a.area) : "?";
+
+                  const label = `${a.id} rest ${tag} tr=${tall} asp=${asp} A=${area}`;
+
+                  return (
+                    <div
+                      key={`${box.id}:${a.id}:diag`}
+                      style={{
+                        position: "absolute",
+                        left: a.x - a.w / 2,
+                        top: a.y - a.h / 2,
+                        width: a.w,
+                        height: a.h,
+                        boxSizing: "border-box",
+                        border: "2px solid rgba(255, 140, 0, 0.85)",
+                        background: "rgba(255, 140, 0, 0.06)",
+                        pointerEvents: "none",
+                      }}
+                    >
+                      <div
+                        style={{
+                          position: "absolute",
+                          left: 0,
+                          top: -18,
+                          padding: "2px 4px",
+                          borderRadius: 4,
+                          fontSize: 11,
+                          lineHeight: "12px",
+                          fontFamily:
+                            "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                          color: "rgba(20, 20, 20, 0.92)",
+                          background: "rgba(255, 240, 200, 0.92)",
+                          border: "1px solid rgba(120, 90, 30, 0.45)",
+                          boxShadow: "0 1px 2px rgba(0,0,0,0.15)",
+                          whiteSpace: "nowrap",
+                          pointerEvents: "none",
+                        }}
+                      >
+                        {label}
+                      </div>
+                    </div>
+                  );
+                })
+              : [];
+
+            // --------------------------------------------
+            // C) Anchor labels + anchor bboxes (ALL anchors)
+            // --------------------------------------------
+            const anchorDebugEls = SHOW_ANCHOR_TAGS
+              ? anchors.flatMap((a) => {
+                const tag = typeof a.glyphTag === "string" ? a.glyphTag : "";
+                const tr = typeof a.tallRatio === "number" ? a.tallRatio.toFixed(2) : "?";
+                const label = `${a.id} ${a.kind} ${tag} tr=${tr}`;
+
+                const bboxEl = (
+                  <div
+                    key={`${box.id}:${a.id}:abox`}
+                    style={{
+                      position: "absolute",
+                      left: a.x - a.w / 2,
+                      top: a.y - a.h / 2,
+                      width: a.w,
+                      height: a.h,
+                      boxSizing: "border-box",
+                      border: "1px solid rgba(0, 0, 0, 0.35)",
+                      background: "transparent",
+                      pointerEvents: "none",
+                    }}
+                  />
+                );
+
+                const labelEl = (
+                  <div
+                    key={`${box.id}:${a.id}:alabel`}
+                    style={{
+                      position: "absolute",
+                      left: a.x + 6,
+                      top: a.y - 18,
+                      padding: "1px 3px",
+                      borderRadius: 3,
+                      fontSize: 11,
+                      lineHeight: "12px",
+                      fontFamily:
+                        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                      color: "rgba(20, 20, 20, 0.92)",
+                      background: "rgba(255, 255, 255, 0.92)",
+                      border: "1px solid rgba(0, 0, 0, 0.25)",
+                      whiteSpace: "nowrap",
+                      pointerEvents: "none",
+                    }}
+                  >
+                    {label}
+                  </div>
+                );
+
+                return [bboxEl, labelEl];
+              })
+              : [];
+
+            return [...haloEls, ...diagEls, ...anchorDebugEls];
+          })}
         </div>
       )}
 
