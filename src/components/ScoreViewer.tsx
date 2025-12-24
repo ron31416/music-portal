@@ -2610,6 +2610,9 @@ function buildNoteAnchorsForMeasure(
 
   const tagOf = (g: GlyphRect): string => (g.glyphTag ?? "").toLowerCase();
 
+  // ------------------------------------------------------------
+  // 0) Collect notehead-tagged glyph rects (notes + rests + junk)
+  // ------------------------------------------------------------
   const noteGlyphs = glyphs
     .filter((g) => tagOf(g).includes("notehead"))
     // Sort for stable indexing: left-to-right, then top-to-bottom
@@ -2638,14 +2641,6 @@ function buildNoteAnchorsForMeasure(
     return [];
   }
 
-  // Use a "notehead-ish" subset for baseline medians to avoid rest + artifact pollution.
-  const nonTall = noteGlyphs.filter((g) => {
-    const w = g.w;
-    const h = g.h;
-    if (!(w > 0) || !(h > 0)) { return false; }
-    return (h / w) <= 1.25;
-  });
-
   const medianOf = (xs: number[]): number => {
     const n = xs.length;
     if (n === 0) { return 0; }
@@ -2653,47 +2648,71 @@ function buildNoteAnchorsForMeasure(
     return (n % 2 === 1) ? xs[mid]! : (xs[mid - 1]! + xs[mid]!) / 2;
   };
 
-  // Rough area median from non-tall candidates (may still include tiny artifacts).
-  const nonTallAreas = nonTall.map((g) => g.w * g.h).slice().sort((a, b) => a - b);
-  const roughMedA = Math.max(1, medianOf(nonTallAreas));
+  // Candidates for baselines: must look like a notehead (not tall rest, not flat ghost)
+  const baselineCandidates = noteGlyphs.filter((g) => {
+    const w = g.w;
+    const h = g.h;
+    if (!(w > 0) || !(h > 0)) { return false; }
 
-  // Drop tiny specks that can distort medians (e.g., invisible/degenerate notehead-tagged glyphs).
-  const baselineGlyphs = nonTall.filter((g) => {
-    const a = g.w * g.h;
-    // Keep conservative: only discard stuff that's *way* smaller than normal.
-    return a >= roughMedA * 0.35;
+    const tallRatio = h / w;
+    const wideRatio = w / h;
+    const aspect = Math.max(tallRatio, wideRatio);
+
+    // exclude tall rests
+    if (tallRatio > 1.25) { return false; }
+    // exclude flat rectangles / ghosts
+    if (wideRatio > 1.35) { return false; }
+
+    // keep only plausible notehead-ish aspect
+    return aspect <= 1.35;
   });
 
-  const baseline =
-    baselineGlyphs.length >= 3
-      ? baselineGlyphs
-      : (nonTall.length >= 3 ? nonTall : noteGlyphs);
+  // If we have no candidates, fall back to noteGlyphs (rare)
+  const shapeSet = baselineCandidates.length > 0 ? baselineCandidates : noteGlyphs;
+
+  // --- Drop tiny/degenerate specks by absolute pixels (safe) ---
+  const ABS_TINY_A = 12;
+  const ABS_TINY_W = 3;
+  const ABS_TINY_H = 3;
+
+  const nonTinyShapeSet = shapeSet.filter((g) => {
+    const w = g.w;
+    const h = g.h;
+    const a = w * h;
+    if (a <= ABS_TINY_A) { return false; }
+    if (w <= ABS_TINY_W && h <= ABS_TINY_H) { return false; }
+    return true;
+  });
+
+  const candidateSet = nonTinyShapeSet.length > 0 ? nonTinyShapeSet : shapeSet;
+
+  // --- Cue/grace suppression: compute baselines from the LARGER noteheads ---
+  // Sort candidate areas, drop the bottom 40% (small cluster), keep the rest.
+  const candAreasSorted = candidateSet.map((g) => g.w * g.h).slice().sort((a, b) => a - b);
+  const cutIdx = Math.floor(candAreasSorted.length * 0.40);
+  const areaCut = candAreasSorted[Math.min(cutIdx, Math.max(0, candAreasSorted.length - 1))] ?? 0;
+
+  const baseline = candidateSet.filter((g) => (g.w * g.h) >= areaCut);
 
   const dimsH = baseline.map((g) => g.h).slice().sort((a, b) => a - b);
   const dimsW = baseline.map((g) => g.w).slice().sort((a, b) => a - b);
   const areas = baseline.map((g) => g.w * g.h).slice().sort((a, b) => a - b);
 
-  const median = (xs: number[]): number => {
-    const n = xs.length;
-    if (n === 0) { return 0; }
-    const mid = Math.floor(n / 2);
-    return (n % 2 === 1) ? xs[mid]! : (xs[mid - 1]! + xs[mid]!) / 2;
-  };
+  const medH = Math.max(1, medianOf(dimsH));
+  const medW = Math.max(1, medianOf(dimsW));
+  const medA = Math.max(1, medianOf(areas));
 
-  const medH = Math.max(1, median(dimsH));
-  const medW = Math.max(1, median(dimsW));
-  const medA = Math.max(1, median(areas));
+  const n = baseline.length;
 
-  const n = noteGlyphs.length;
-
-  // When we only have 1–2 samples, our “typical size” band must be wider,
-  // or we’ll incorrectly reject legitimate noteheads in sparse measures.
+  // When we only have 1–2 samples, our “typical size” band must be wider.
   const sizeLo = n <= 2 ? 0.55 : 0.75;
   const sizeHi = n <= 2 ? 1.85 : 1.35;
   const areaLo = n <= 2 ? 0.45 : 0.65;
   const areaHi = n <= 2 ? 2.60 : 1.55;
 
-  // --- Classification (exclude only high-confidence rests) ---
+  // ------------------------------------------------------------
+  // 2) Classify each notehead-tagged glyph
+  // ------------------------------------------------------------
   const classifyNotehead = (
     g: GlyphRect
   ): { kind: NoteAnchorKind; confidence: number } => {
@@ -2707,27 +2726,14 @@ function buildNoteAnchorsForMeasure(
     const aspect = Math.max(w / h, h / w); // 1.0 = square-ish
 
     // ============================================================
-    // 0) High-confidence REST rule (keep your fix, but make it safe)
-    //
-    // Eighth/quarter rests (in your data) tend to have bboxes that are
-    // clearly taller-than-wide. HOWEVER, if a NOTEHEAD bbox ever
-    // “accidentally” includes a stem/flag/artifact, it becomes tall too.
-    //
-    // So: only call it a rest if it’s tall *and* not “too big” in area
-    // relative to typical noteheads in this measure.
+    // 0) High-confidence REST rule (tall + not huge + non-squareish)
     // ============================================================
-    const tallRatio = h / w; // > 1 means taller-than-wide
+    const tallRatio = h / w;
     const CLEAR_TALL_REST_RATIO = 1.18;
 
     const tallEnough = tallRatio >= CLEAR_TALL_REST_RATIO;
 
-    // “Not too big” guard: if area is way larger than a typical notehead,
-    // it’s probably a notehead bbox contaminated by a stem/flag/etc.
-    // (This is exactly the failure mode that makes notes disappear in measure 304.)
     const notHugeForMeasure = area <= medA * (n <= 2 ? 2.40 : 1.55);
-
-    // Also require it to be at least mildly non-square; this avoids weird
-    // square-ish artifacts being dropped into “rest” by the ratio alone.
     const nonSquareish = aspect >= 1.10;
 
     if (tallEnough && notHugeForMeasure && nonSquareish) {
@@ -2735,7 +2741,7 @@ function buildNoteAnchorsForMeasure(
     }
 
     // ============================================================
-    // 1) Common filled noteheads (roughly square-ish / oval-ish)
+    // 1) Common filled noteheads (square-ish / slightly oval-ish)
     // ============================================================
     const sizeOk =
       h >= medH * sizeLo && h <= medH * sizeHi &&
@@ -2754,7 +2760,6 @@ function buildNoteAnchorsForMeasure(
     // ============================================================
     const ovalish = aspect > 1.20 && aspect <= 2.20;
 
-    // Whole notes are often wider; allow wider W band, keep H sane.
     const ovalSizeOk =
       h >= medH * (n <= 2 ? 0.55 : 0.75) && h <= medH * (n <= 2 ? 2.00 : 1.55) &&
       w >= medW * (n <= 2 ? 0.70 : 0.90) && w <= medW * (n <= 2 ? 2.60 : 2.05);
@@ -2767,10 +2772,8 @@ function buildNoteAnchorsForMeasure(
     }
 
     // ============================================================
-    // 3) Tiny/degenerate glyphs → "unknown" (likely layout artifacts)
+    // 3) Tiny/degenerate glyphs → "unknown" (layout artifacts)
     // ============================================================
-    // Use the measure baseline medians you already compute (now less polluted).
-    // Anything *way* smaller than typical is probably an invisible/garbage glyph.
     const tinyByArea = area < medA * 0.18;
     const tinyByDims = (w < medW * 0.35) || (h < medH * 0.35);
 
@@ -2784,6 +2787,9 @@ function buildNoteAnchorsForMeasure(
     return { kind: "rest", confidence: 0.70 };
   };
 
+  // ------------------------------------------------------------
+  // 3) Emit anchors (+ safe DIAG payload)
+  // ------------------------------------------------------------
   const anchors: NoteAnchor[] = [];
   for (let i = 0; i < noteGlyphs.length; i++) {
     const g = noteGlyphs[i]!;
