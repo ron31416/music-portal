@@ -7416,57 +7416,48 @@ export default function ScoreViewer({
             const anchors = measureNoteAnchorsRef.current?.[box.id] ?? [];
 
             // --------------------------------------------
-            // A) Halos (current behavior)
+            // A) Halos (notes only; keep blue)
             // --------------------------------------------
-            const haloEls = anchors.map((a) => {
-              const rInner = Math.max(6, a.h * 0.55);
-              const rOuter = Math.max(12, a.h * 1.10);
+            const haloEls = anchors
+              .filter((a) => a.kind === "note")
+              .map((a) => {
+                const rInner = Math.max(6, a.h * 0.55);
+                const rOuter = Math.max(12, a.h * 1.10);
 
-              // Color-code by kind (no filter)
-              let border = "rgba(0, 120, 255, 0.55)";      // note = blue
-              let fill = "rgba(0, 120, 255, 0.12)";
+                const border = "rgba(0, 120, 255, 0.55)";
+                const fill = "rgba(0, 120, 255, 0.12)";
 
-              if (a.kind === "unknown") {
-                border = "rgba(120, 120, 120, 0.75)";     // unknown = gray
-                fill = "rgba(120, 120, 120, 0.10)";
-              }
-
-              if (a.kind === "rest") {
-                border = "rgba(255, 80, 0, 0.80)";         // rest = orange/red
-                fill = "rgba(255, 80, 0, 0.10)";
-              }
-
-              return (
-                <div
-                  key={`${box.id}:${a.id}`}
-                  style={{
-                    position: "absolute",
-                    left: a.x - rOuter,
-                    top: a.y - rOuter,
-                    width: rOuter * 2,
-                    height: rOuter * 2,
-                    borderRadius: "50%",
-                    border: `2px solid ${border}`,
-                    background: fill,
-                    boxSizing: "border-box",
-                  }}
-                >
+                return (
                   <div
+                    key={`${box.id}:${a.id}`}
                     style={{
                       position: "absolute",
-                      left: rOuter - rInner,
-                      top: rOuter - rInner,
-                      width: rInner * 2,
-                      height: rInner * 2,
+                      left: a.x - rOuter,
+                      top: a.y - rOuter,
+                      width: rOuter * 2,
+                      height: rOuter * 2,
                       borderRadius: "50%",
-                      border: `1px dashed ${border}`,
-                      background: "transparent",
+                      border: `2px solid ${border}`,
+                      background: fill,
                       boxSizing: "border-box",
                     }}
-                  />
-                </div>
-              );
-            });
+                  >
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: rOuter - rInner,
+                        top: rOuter - rInner,
+                        width: rInner * 2,
+                        height: rInner * 2,
+                        borderRadius: "50%",
+                        border: `1px dashed ${border}`,
+                        background: "transparent",
+                        boxSizing: "border-box",
+                      }}
+                    />
+                  </div>
+                );
+              });
 
             // --------------------------------------------
             // B) Exclusion DIAG (only the things you filtered out)
