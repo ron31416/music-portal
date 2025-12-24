@@ -2600,8 +2600,8 @@ function computeStaffMetricsForMeasureFromStaffLines(
 // We treat any glyph whose tag contains "notehead" as a candidate.
 // Note: this operates in the same page-local coordinate system as GlyphRect
 // and MeasureBoxRect.
-// NAV: function buildNoteAnchorsForMeasure
-function buildNoteAnchorsForMeasure(
+// NAV: function calculateNoteheadPlacementForMeasure
+function calculateNoteheadPlacementForMeasure(
   glyphs: readonly GlyphRect[]
 ): NoteAnchor[] {
   if (!glyphs.length) {
@@ -2611,7 +2611,7 @@ function buildNoteAnchorsForMeasure(
   const tagOf = (g: GlyphRect): string => (g.glyphTag ?? "").toLowerCase();
 
   // ------------------------------------------------------------
-  // 0) Collect notehead-tagged glyph rects (notes + rests + junk)
+  // 0) Collect notehead-tagged glyph rects (notes + rests)
   // ------------------------------------------------------------
   const noteGlyphs = glyphs
     .filter((g) => tagOf(g).includes("notehead"))
@@ -2641,87 +2641,6 @@ function buildNoteAnchorsForMeasure(
     return [];
   }
 
-  const medianOf = (xs: number[]): number => {
-    const n = xs.length;
-    if (n === 0) { return 0; }
-    const mid = Math.floor(n / 2);
-    return (n % 2 === 1) ? xs[mid]! : (xs[mid - 1]! + xs[mid]!) / 2;
-  };
-
-  // Candidates for baselines: must look like a notehead (not tall rest, not flat ghost)
-  const baselineCandidates = noteGlyphs.filter((g) => {
-    const w = g.w;
-    const h = g.h;
-    if (!(w > 0) || !(h > 0)) { return false; }
-
-    const tallRatio = h / w;
-    const wideRatio = w / h;
-    const aspect = Math.max(tallRatio, wideRatio);
-
-    // exclude tall rests
-    if (tallRatio > 1.25) { return false; }
-    // exclude flat rectangles / ghosts
-    if (wideRatio > 1.35) { return false; }
-
-    // keep only plausible notehead-ish aspect
-    return aspect <= 1.35;
-  });
-
-  // If we have no candidates, fall back to noteGlyphs (rare)
-  const shapeSet = baselineCandidates.length > 0 ? baselineCandidates : noteGlyphs;
-
-  // --- Drop tiny/degenerate specks by absolute pixels (safe) ---
-  const ABS_TINY_A = 12;
-  const ABS_TINY_W = 3;
-  const ABS_TINY_H = 3;
-
-  const nonTinyShapeSet = shapeSet.filter((g) => {
-    const w = g.w;
-    const h = g.h;
-    const a = w * h;
-    if (a <= ABS_TINY_A) { return false; }
-    if (w <= ABS_TINY_W && h <= ABS_TINY_H) { return false; }
-    return true;
-  });
-
-  const candidateSet = nonTinyShapeSet.length > 0 ? nonTinyShapeSet : shapeSet;
-
-  // --- Cue/grace suppression: compute baselines from the LARGER noteheads ---
-  // Sort candidate areas, drop the bottom 40% (small cluster), keep the rest.
-  const candAreasSorted = candidateSet.map((g) => g.w * g.h).slice().sort((a, b) => a - b);
-  const cutIdx = Math.floor(candAreasSorted.length * 0.40);
-  const areaCut = candAreasSorted[Math.min(cutIdx, Math.max(0, candAreasSorted.length - 1))] ?? 0;
-
-  const baseline = candidateSet.filter((g) => (g.w * g.h) >= areaCut);
-
-  const dimsH = baseline.map((g) => g.h).slice().sort((a, b) => a - b);
-  const dimsW = baseline.map((g) => g.w).slice().sort((a, b) => a - b);
-  const areas = baseline.map((g) => g.w * g.h).slice().sort((a, b) => a - b);
-
-  // --- Two-cluster support (grace/cue + normal noteheads) ---
-  // Split baseline areas into lower/upper halves and compute medians for each.
-  const areasSorted = areas; // already sorted
-  const midIdx = Math.floor(areasSorted.length / 2);
-
-  const lowHalf = areasSorted.slice(0, Math.max(1, midIdx));
-  const highHalf = areasSorted.slice(midIdx);
-
-  const medA_small = Math.max(1, medianOf(lowHalf));
-  const medA_big = Math.max(1, medianOf(highHalf));
-
-  const medH = Math.max(1, medianOf(dimsH));
-  const medW = Math.max(1, medianOf(dimsW));
-  const medA = Math.max(1, medianOf(areas));
-
-  const n = baseline.length;
-
-  // When we only have 1–2 samples, our “typical size” band must be wider.
-  const areaLo = n <= 2 ? 0.45 : 0.65;
-  const areaHi = n <= 2 ? 2.60 : 1.55;
-
-  // ------------------------------------------------------------
-  // 2) Classify each notehead-tagged glyph
-  // ------------------------------------------------------------
   const classifyNotehead = (
     g: GlyphRect
   ): { kind: NoteAnchorKind; confidence: number } => {
@@ -2731,72 +2650,50 @@ function buildNoteAnchorsForMeasure(
       return { kind: "unknown", confidence: 0 };
     }
 
-    const area = w * h;
-    const aspect = Math.max(w / h, h / w); // 1.0 = square-ish
+    // aspect: elongation magnitude (1.0 = square)
+    const aspect = Math.max(w / h, h / w);
 
-    // ============================================================
-    // 0) High-confidence REST rule (tall + not huge + non-squareish)
-    // ============================================================
+    // tallRatio: orientation ( >1 means taller-than-wide )
     const tallRatio = h / w;
-    const CLEAR_TALL_REST_RATIO = 1.18;
-
-    const tallEnough = tallRatio >= CLEAR_TALL_REST_RATIO;
-
-    const notHugeForMeasure = area <= medA * (n <= 2 ? 2.40 : 1.55);
-    const nonSquareish = aspect >= 1.10;
-
-    if (tallEnough && notHugeForMeasure && nonSquareish) {
-      return { kind: "rest", confidence: 0.90 };
-    }
 
     // ============================================================
-    // 1) Common filled noteheads (square-ish / slightly oval-ish)
+    // 1) Notes: square-ish AND not vertically-oriented
+    //
+    // Eighth rests sometimes fall into "square-ish" by aspect alone,
+    // but they remain vertically oriented (taller-than-wide).
+    // This gate keeps them out without "rest detection" framing.
     // ============================================================
-
-    const areaOkSmall =
-      area >= medA_small * areaLo && area <= medA_small * areaHi;
-
-    const areaOkBig =
-      area >= medA_big * areaLo && area <= medA_big * areaHi;
-
-    const areaOk = areaOkSmall || areaOkBig;
-
     const squareish = aspect <= 1.30;
-    if (squareish && areaOk) {
-      return { kind: "note", confidence: 0.78 };
+
+    // Allow slightly tall due to jitter, but reject clearly tall.
+    // Tune: 1.08–1.12 is the usual sweet spot.
+    const notClearlyTall = tallRatio <= 1.10;
+
+    if (squareish && notClearlyTall) {
+      return { kind: "note", confidence: 0.80 };
     }
 
     // ============================================================
-    // 2) Whole noteheads: wider ovals
+    // 2) Notes: wide ovals (whole notes)
+    //
+    // Whole notes are typically wider-than-tall (NOT tall).
     // ============================================================
-    const ovalish = aspect > 1.20 && aspect <= 2.20;
+    const ovalish = aspect > 1.30 && aspect <= 2.20;
 
-    const ovalSizeOk =
-      h >= medH * (n <= 2 ? 0.55 : 0.75) && h <= medH * (n <= 2 ? 2.00 : 1.55) &&
-      w >= medW * (n <= 2 ? 0.70 : 0.90) && w <= medW * (n <= 2 ? 2.60 : 2.05);
+    // For whole notes, require "wide-ish" orientation (or at least not tall).
+    const wideEnough = (w / h) >= 1.05; // conservative; tune 1.02–1.10 as needed
+    const notTallForOval = tallRatio <= 1.05;
 
-    const ovalAreaOk =
-      area >= medA * (n <= 2 ? 0.45 : 0.70) && area <= medA * (n <= 2 ? 3.00 : 2.40);
-
-    if (ovalish && ovalSizeOk && ovalAreaOk) {
-      return { kind: "note", confidence: 0.72 };
+    if (ovalish && (wideEnough || notTallForOval)) {
+      return { kind: "note", confidence: 0.75 };
     }
 
     // ============================================================
-    // 3) Tiny/degenerate glyphs → "unknown" (layout artifacts)
-    // ============================================================
-    const tinyByArea = area < medA * 0.18;
-    const tinyByDims = (w < medW * 0.35) || (h < medH * 0.35);
-
-    if (tinyByArea && tinyByDims) {
-      return { kind: "unknown", confidence: 0.20 };
-    }
-
-    // ============================================================
-    // 4) Default: if it wasn't a note, treat it as a rest
+    // 3) Everything else → not a note (rests/artifacts/etc.)
     // ============================================================
     return { kind: "rest", confidence: 0.70 };
   };
+
 
   // ------------------------------------------------------------
   // 3) Emit anchors (+ safe DIAG payload)
@@ -2832,6 +2729,7 @@ function buildNoteAnchorsForMeasure(
 
   return anchors;
 }
+
 
 
 // NAV: -----------------component
@@ -4392,7 +4290,7 @@ export default function ScoreViewer({
           next[measureId] = glyphs;
 
           // build note anchors for this measure from its glyphs
-          const anchors = buildNoteAnchorsForMeasure(glyphs);
+          const anchors = calculateNoteheadPlacementForMeasure(glyphs);
           if (anchors.length) {
             nextAnchors[measureId] = anchors;
           }
