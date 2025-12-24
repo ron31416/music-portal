@@ -190,8 +190,8 @@ const URL_DIAG = readDebugFlag("diag", false);
 const isLogOn = () => URL_LOG || URL_DIAG;
 const isDiagOn = () => URL_DIAG;
 
-const SHOW_NOTEHEAD_EXCLUSION_DIAG = false;  //TEST
-const SHOW_ANCHOR_TAGS = false; // flip off when done
+const SHOW_NOTEHEAD_EXCLUSION_DIAG = false;
+const SHOW_ANCHOR_TAGS = false;
 
 
 // NAV: -----------------helper functions
@@ -2698,6 +2698,17 @@ function buildNoteAnchorsForMeasure(
   const dimsW = baseline.map((g) => g.w).slice().sort((a, b) => a - b);
   const areas = baseline.map((g) => g.w * g.h).slice().sort((a, b) => a - b);
 
+  // --- Two-cluster support (grace/cue + normal noteheads) ---
+  // Split baseline areas into lower/upper halves and compute medians for each.
+  const areasSorted = areas; // already sorted
+  const midIdx = Math.floor(areasSorted.length / 2);
+
+  const lowHalf = areasSorted.slice(0, Math.max(1, midIdx));
+  const highHalf = areasSorted.slice(midIdx);
+
+  const medA_small = Math.max(1, medianOf(lowHalf));
+  const medA_big = Math.max(1, medianOf(highHalf));
+
   const medH = Math.max(1, medianOf(dimsH));
   const medW = Math.max(1, medianOf(dimsW));
   const medA = Math.max(1, medianOf(areas));
@@ -2705,8 +2716,6 @@ function buildNoteAnchorsForMeasure(
   const n = baseline.length;
 
   // When we only have 1–2 samples, our “typical size” band must be wider.
-  const sizeLo = n <= 2 ? 0.55 : 0.75;
-  const sizeHi = n <= 2 ? 1.85 : 1.35;
   const areaLo = n <= 2 ? 0.45 : 0.65;
   const areaHi = n <= 2 ? 2.60 : 1.55;
 
@@ -2743,15 +2752,17 @@ function buildNoteAnchorsForMeasure(
     // ============================================================
     // 1) Common filled noteheads (square-ish / slightly oval-ish)
     // ============================================================
-    const sizeOk =
-      h >= medH * sizeLo && h <= medH * sizeHi &&
-      w >= medW * sizeLo && w <= medW * sizeHi;
 
-    const areaOk =
-      area >= medA * areaLo && area <= medA * areaHi;
+    const areaOkSmall =
+      area >= medA_small * areaLo && area <= medA_small * areaHi;
+
+    const areaOkBig =
+      area >= medA_big * areaLo && area <= medA_big * areaHi;
+
+    const areaOk = areaOkSmall || areaOkBig;
 
     const squareish = aspect <= 1.30;
-    if (squareish && sizeOk && areaOk) {
+    if (squareish && areaOk) {
       return { kind: "note", confidence: 0.78 };
     }
 
