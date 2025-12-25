@@ -12,15 +12,14 @@ import {
   ReactElement,
 } from "react";
 
-// ---- Shared annotation types (note-anchored) -----------------------------
+// ---- Shared annotation types (base glyph-anchored) -----------------------------
 
-// Note-relative anchor:
-//   dxRel, dyRel are offsets expressed in units of notehead height.
+// base glyph-relative anchor: dxRel, dyRel are offsets expressed in units of base glyph height.
 export interface FingeringAnchorRef {
-  noteId: string;     // matches NoteAnchor.id in ScoreViewer
-  dxRel: number;      // offset from note center X in units of note height
-  dyRel: number;      // offset from note center Y in units of note height
-  baseNoteHNorm?: number; // Notehead height normalized to OSMD zoom=1 (multiply by current zoom to get px).
+  baseGlyphId: string;     // matches BaseGlyphAnchor.id in ScoreViewer
+  dxRel: number;      // offset from base glyph center X in units of base glyph height
+  dyRel: number;      // offset from base glyph center Y in units of base glyph height
+  baseGlyphHNorm?: number; // base glyph height normalized to OSMD zoom=1 (multiply by current zoom to get px).
 }
 
 // Staff-anchored text:
@@ -33,22 +32,22 @@ export interface TextAnchorRef {
   mode: TextAnchorMode;
   xRel: number;  // Horizontal position within the measure box (0..1)
   dyRel: number;  // Vertical offset from the reference line(s), in staff-space units.
-  baseStaffSpaceNorm: number;  // Staff-space height normalized to OSMD zoom = 1
+  staffSpaceNorm: number;  // Staff-space height normalized to OSMD zoom = 1
   betweenT?: number;  // Only for mode="between": blend factor between trebleMidY and bassMidY.  0 = treble midline, 1 = bass midline, 0.5 = centered.
 }
 
 export interface PedalAnchorRef {
-  noteId: string;     // matches NoteAnchor.id in ScoreViewer
-  dxRel: number;      // offset from note center X in units of note height
+  baseGlyphId: string;     // matches BaseGlyphAnchor.id in ScoreViewer
+  dxRel: number;      // offset from base glyph center X in units of base glyph height
   xRel: number;       // Horizontal position within the measure box (0..1)
 }
 
-// One text mark inside a measure, always anchored to a note.
+// One text mark inside a measure, always anchored to a base glyph.
 export interface AnnotationFingeringItem {
   kind: "fingering";
   text: string;
   style?: string;
-  anchor: FingeringAnchorRef;  // required now: always note-anchored
+  anchor: FingeringAnchorRef;  // required now: always base glyph-anchored
 }
 
 // Staff text: staff-anchored text (e.g., "rit.", "dolce", etc.)
@@ -59,7 +58,7 @@ export interface AnnotationTextItem {
   anchor: TextAnchorRef;
 }
 
-// One pedal run "segment" for a measure.
+// One pedal run segment for a measure.
 // - left/right: uptick anchors in this measure (if present)
 // - active: this measure is part of the continuous pedal run
 export interface AnnotationPedalItem {
@@ -95,7 +94,7 @@ export type AnnotationMap = Record<MeasureNumber, AnnotationPayload>;
 // =========================
 
 interface SaveAnnotationsRequestBody {
-  // NOTE: userId removed. Server infers user from auth cookies.
+  // userId removed. Server infers user from auth cookies.
   songId: number;
   measureNumber: MeasureNumber;
   annotations: AnnotationPayload;
@@ -263,7 +262,7 @@ export function AnnotationsProvider({
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            // NOTE: userId omitted; server derives from cookies.
+            // userId omitted; server derives from cookies.
             songId,
           }),
         });

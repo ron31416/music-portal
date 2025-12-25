@@ -89,7 +89,7 @@ type PointRel = {
   yRel: number;
 };
 
-// One rendered glyph (notehead, rest, etc.) in page-local coordinates
+// One rendered glyph (base glyph, rest, etc.) in page-local coordinates
 type GlyphRect = {
   x: number;
   y: number;
@@ -98,17 +98,16 @@ type GlyphRect = {
   glyphTag?: string;   // renamed from debug
 };
 
-type NoteAnchorKind = "note" | "rest" | "unknown";
+type BaseGlyphAnchorKind = "note" | "rest" | "unknown";
 
-type NoteAnchor = {
+type BaseGlyphAnchor = {
   id: string;   // stable within a measure, e.g. "n0", "n1"
-  x: number;    // notehead center X (page-local px)
-  y: number;    // notehead center Y (page-local px)
-  w: number;    // notehead width
-  h: number;    // notehead height
-  kind: NoteAnchorKind;
+  x: number;    // base glyph center X (page-local px)
+  y: number;    // base glyph center Y (page-local px)
+  w: number;    // base glyph width
+  h: number;    // base glyph height
+  kind: BaseGlyphAnchorKind;
   confidence: number; // 0..1
-
   // DIAG (optional)
   glyphTag: string;
   tallRatio: number;
@@ -126,8 +125,8 @@ type GetAnnotationsForMeasure = (
 
 type PedalEndpointKey = {
   measureNumber: number; // 1-based
-  noteId: string;        // "n0", "n1", ...
-  dxRel: number;         // units of noteH
+  baseGlyphId: string;   // "n0", "n1", ...
+  dxRel: number;         //  offset from base glyph center X in units of base glyph height
 };
 
 type PedalMark = {
@@ -190,7 +189,7 @@ const URL_DIAG = readDebugFlag("diag", false);
 const isLogOn = () => URL_LOG || URL_DIAG;
 const isDiagOn = () => URL_DIAG;
 
-const SHOW_NOTEHEAD_EXCLUSION_DIAG = false;
+const SHOW_BASE_GLYPH_EXCLUSION_DIAG = false;
 const SHOW_ANCHOR_TAGS = false;
 
 
@@ -684,7 +683,7 @@ function drawBandGuides(
     label.setAttribute("font-family", "monospace");
     label.setAttribute("pointer-events", "none");
 
-    // Outline so it stays readable over notes
+    // Outline so it stays readable
     label.setAttribute("paint-order", "stroke");
     label.setAttribute("stroke", "white");
     label.setAttribute("stroke-width", "2");
@@ -770,7 +769,7 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
     const SELECTORS = "g,path,rect,line,polyline,polygon,text,use,circle,ellipse";
     const graphics = Array.from(svgRoot.querySelectorAll<SVGGraphicsElement>(SELECTORS));
 
-    // Collect candidate boxes (no MIN_W / MIN_H gating — those skipped note stems).
+    // Collect candidate boxes (no MIN_W / MIN_H gating — those skipped stems).
     for (const el of graphics) {
       try {
         const r = el.getBoundingClientRect();
@@ -997,7 +996,7 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
 function pedalEndpointKeyToString(k: PedalEndpointKey): string {
   // dxRel stringified to reduce float noise in map keys.
   // Keep enough precision to distinguish user intent.
-  return `${k.measureNumber}|${k.noteId}|${k.dxRel.toFixed(6)}`;
+  return `${k.measureNumber}|${k.baseGlyphId}|${k.dxRel.toFixed(6)}`;
 }
 
 // NAV: function endpointFromPedalAnchor
@@ -1007,7 +1006,7 @@ function endpointFromPedalAnchor(
 ): PedalEndpointKey {
   return {
     measureNumber,
-    noteId: ref.noteId,
+    baseGlyphId: ref.baseGlyphId,
     dxRel: ref.dxRel,
   };
 }
@@ -1439,7 +1438,7 @@ function drawAnnotationBoxes(
   rects: ReadonlyArray<MeasureBoxRect>,
   getAnnotationsForMeasure: GetAnnotationsForMeasure,
   osmdZoom = 1,
-  noteAnchorsByMeasure?: Record<string, NoteAnchor[]>,
+  baseGlyphAnchorsByMeasure?: Record<string, BaseGlyphAnchor[]>,
   staffLineGlyphsByMeasure?: Record<string, GlyphRect[]>,
 ): void {
   if (!outer || rects.length === 0) {
@@ -1582,19 +1581,19 @@ function drawAnnotationBoxes(
   function resolvePedalAnchorX(
     ref: PedalAnchorRef | null | undefined,
     boxId: string,
-    noteAnchorsByMeasureIn?: Record<string, NoteAnchor[]>,
+    baseGlyphAnchorsByMeasureIn?: Record<string, BaseGlyphAnchor[]>,
   ): number | null {
     if (!ref) {
       return null;
     }
 
-    if (typeof ref.noteId !== "string" || ref.noteId.length === 0) {
-      console.error("[pedal] Invalid pedal anchor: missing/invalid noteId", {
+    if (typeof ref.baseGlyphId !== "string" || ref.baseGlyphId.length === 0) {
+      console.error("[pedal] Invalid pedal anchor: missing/invalid baseGlyphId", {
         ref,
         boxId,
       });
       if (isDiagOn()) {
-        throw new Error("Invalid pedal anchor: noteId");
+        throw new Error("Invalid pedal anchor: baseGlyphId");
       }
       return null;
     }
@@ -1610,62 +1609,62 @@ function drawAnnotationBoxes(
       return null;
     }
 
-    if (!noteAnchorsByMeasureIn) {
+    if (!baseGlyphAnchorsByMeasureIn) {
       console.error(
-        "[pedal] noteAnchorsByMeasure missing; cannot resolve pedal anchor",
+        "[pedal] baseGlyphAnchorsByMeasure missing; cannot resolve pedal anchor",
         { boxId },
       );
       if (isDiagOn()) {
-        throw new Error("noteAnchorsByMeasure missing");
+        throw new Error("baseGlyphAnchorsByMeasure missing");
       }
       return null;
     }
 
-    const anchorsForMeasure = noteAnchorsByMeasureIn[boxId];
+    const anchorsForMeasure = baseGlyphAnchorsByMeasureIn[boxId];
     if (!anchorsForMeasure || anchorsForMeasure.length === 0) {
       console.error(
-        "[pedal] No note anchors found for measure; cannot resolve pedal anchor",
+        "[pedal] No base glyph anchors found for measure; cannot resolve pedal anchor",
         { boxId },
       );
       if (isDiagOn()) {
-        throw new Error("No note anchors for measure");
+        throw new Error("No base glyph anchors for measure");
       }
       return null;
     }
 
-    const anchorNote = anchorsForMeasure.find((a) => a.id === ref.noteId);
-    if (!anchorNote) {
-      console.error("[pedal] Anchor noteId not found in this measure", {
+    const anchorBaseGlyph = anchorsForMeasure.find((a) => a.id === ref.baseGlyphId);
+    if (!anchorBaseGlyph) {
+      console.error("[pedal] Anchor baseGlyphId not found in this measure", {
         boxId,
-        noteId: ref.noteId,
+        baseGlyphId: ref.baseGlyphId,
       });
       if (isDiagOn()) {
-        throw new Error("Anchor noteId not found");
+        throw new Error("Anchor baseGlyphId not found");
       }
       return null;
     }
 
-    const noteH = anchorNote.h;
-    if (!(noteH > 0 && Number.isFinite(noteH))) {
-      console.error("[pedal] Bad anchor note geometry (noteH)", {
+    const baseGlyphH = anchorBaseGlyph.h;
+    if (!(baseGlyphH > 0 && Number.isFinite(baseGlyphH))) {
+      console.error("[pedal] Bad anchor base glyph geometry (baseGlyphH)", {
         boxId,
-        noteId: ref.noteId,
-        noteH,
+        baseGlyphId: ref.baseGlyphId,
+        baseGlyphH,
       });
       if (isDiagOn()) {
-        throw new Error("Bad note geometry");
+        throw new Error("Bad base glyph geometry");
       }
       return null;
     }
 
-    const dxPx = ref.dxRel * noteH;
-    const anchorPxX = anchorNote.x + dxPx;
+    const dxPx = ref.dxRel * baseGlyphH;
+    const anchorPxX = anchorBaseGlyph.x + dxPx;
 
     if (!Number.isFinite(anchorPxX)) {
       console.error("[pedal] Computed pedal X is not finite", {
         boxId,
         ref,
-        noteH,
+        baseGlyphH,
         anchorPxX,
       });
       if (isDiagOn()) {
@@ -1790,32 +1789,32 @@ function drawAnnotationBoxes(
 
     for (const item of items) {
       // =======================
-      // FINGERING ITEMS (note-anchored)
+      // FINGERING ITEMS (base glyph-anchored)
       // =======================
       if (item.kind === "fingering") {
         const anchor = item.anchor;
 
-        if (!anchor || !noteAnchorsByMeasure || !noteAnchorsByMeasure[box.id]) {
+        if (!anchor || !baseGlyphAnchorsByMeasure || !baseGlyphAnchorsByMeasure[box.id]) {
           continue;
         }
 
-        const anchorsForMeasure = noteAnchorsByMeasure[box.id]!;
-        const anchorNote = anchorsForMeasure.find((a) => a.id === anchor.noteId);
+        const anchorsForMeasure = baseGlyphAnchorsByMeasure[box.id]!;
+        const anchorBaseGlyph = anchorsForMeasure.find((a) => a.id === anchor.baseGlyphId);
 
-        if (!anchorNote) {
+        if (!anchorBaseGlyph) {
           continue;
         }
 
-        const noteH = anchorNote.h;
-        if (!(noteH > 0 && Number.isFinite(noteH))) {
+        const baseGlyphH = anchorBaseGlyph.h;
+        if (!(baseGlyphH > 0 && Number.isFinite(baseGlyphH))) {
           continue;
         }
 
-        const dxPx = anchor.dxRel * noteH;
-        const dyPx = anchor.dyRel * noteH;
+        const dxPx = anchor.dxRel * baseGlyphH;
+        const dyPx = anchor.dyRel * baseGlyphH;
 
-        const pxX = anchorNote.x + dxPx;
-        let pxY = anchorNote.y + dyPx;
+        const pxX = anchorBaseGlyph.x + dxPx;
+        let pxY = anchorBaseGlyph.y + dyPx;
 
         // ------------------------------------------------------------
         // Fingering readability: if we're too close to a staff line,
@@ -1877,14 +1876,14 @@ function drawAnnotationBoxes(
 
         let fontPx = BASE_FONT_PX;
 
-        const currentH = anchorNote.h;
+        const currentH = anchorBaseGlyph.h;
 
-        // baseNoteHNorm is stored at OSMD zoom=1; convert to px for this render pass
+        // baseGlyphHNorm is stored at OSMD zoom=1; convert to px for this render pass
         const baseH =
-          typeof anchor.baseNoteHNorm === "number" &&
-            Number.isFinite(anchor.baseNoteHNorm) &&
-            anchor.baseNoteHNorm > 0
-            ? anchor.baseNoteHNorm
+          typeof anchor.baseGlyphHNorm === "number" &&
+            Number.isFinite(anchor.baseGlyphHNorm) &&
+            anchor.baseGlyphHNorm > 0
+            ? anchor.baseGlyphHNorm
             : currentH;
 
         if (
@@ -1970,10 +1969,10 @@ function drawAnnotationBoxes(
         let fontPx = BASE_FONT_PX;
 
         const baseStaffSpacePx =
-          typeof anchor.baseStaffSpaceNorm === "number" &&
-            Number.isFinite(anchor.baseStaffSpaceNorm) &&
-            anchor.baseStaffSpaceNorm > 0
-            ? anchor.baseStaffSpaceNorm
+          typeof anchor.staffSpaceNorm === "number" &&
+            Number.isFinite(anchor.staffSpaceNorm) &&
+            anchor.staffSpaceNorm > 0
+            ? anchor.staffSpaceNorm
             : metrics.staffSpacePx;
 
         if (baseStaffSpacePx > 0 && Number.isFinite(baseStaffSpacePx)) {
@@ -2016,12 +2015,12 @@ function drawAnnotationBoxes(
         const leftXFromAnchor = resolvePedalAnchorX(
           leftRef,
           box.id,
-          noteAnchorsByMeasure,
+          baseGlyphAnchorsByMeasure,
         );
         const rightXFromAnchor = resolvePedalAnchorX(
           rightRef,
           box.id,
-          noteAnchorsByMeasure,
+          baseGlyphAnchorsByMeasure,
         );
 
         const isActive = item.active === true;
@@ -2350,7 +2349,7 @@ function clampUnitInterval(v: number): number {
 }
 
 // Given a tap inside a measure box, find a nearby point that does NOT land on
-// top of a "hard" glyph (noteheads, rests, stems, etc.). Thin horizontal staff
+// top of a "hard" glyph (base glyphs, rests, stems, etc.). Thin horizontal staff
 // lines are treated as *soft* constraints: we prefer points that land between
 // them, but don't block them outright. Returns normalized coords, or falls
 // back to the original point if nothing better is found.
@@ -2385,8 +2384,8 @@ function findSafePointRelForTap(
   const pointInRect = (x: number, y: number, r: GlyphRect): boolean =>
     x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 
-  // Slightly padded rect hit-test for "hard" glyphs (noteheads, stems, rests).
-  // This makes taps *near* a note count as "on" the note so we nudge away.
+  // Slightly padded rect hit-test for glyphs (noteheads, stems, rests).
+  // This makes taps *near* a glyph count as "on" the glyph so we nudge away.
   const pointInPaddedRect = (x: number, y: number, r: GlyphRect, pad: number): boolean =>
     x >= r.x - pad &&
     x <= r.x + r.w + pad &&
@@ -2594,16 +2593,16 @@ function computeStaffMetricsForMeasureFromStaffLines(
 }
 
 
-// NAV: -----------------note anchor helpers
+// NAV: -----------------base glyph anchor helpers
 
-// Build a stable list of note anchors for a given measure from its glyph cloud.
+// Build a stable list of base glyph anchors for a given measure from its glyph cloud.
 // We treat any glyph whose tag contains "notehead" as a candidate.
-// Note: this operates in the same page-local coordinate system as GlyphRect
+// This operates in the same page-local coordinate system as GlyphRect
 // and MeasureBoxRect.
-// NAV: function calculateNoteheadPlacementForMeasure
-function calculateNoteheadPlacementForMeasure(
+// NAV: function calculateBaseGlyphPlacementForMeasure
+function calculateBaseGlyphPlacementForMeasure(
   glyphs: readonly GlyphRect[]
-): NoteAnchor[] {
+): BaseGlyphAnchor[] {
   if (!glyphs.length) {
     return [];
   }
@@ -2611,9 +2610,9 @@ function calculateNoteheadPlacementForMeasure(
   const tagOf = (g: GlyphRect): string => (g.glyphTag ?? "").toLowerCase();
 
   // ------------------------------------------------------------
-  // 0) Collect notehead-tagged glyph rects (notes + rests)
+  // 0) Collect notehead-tagged glyph rects (base glyphs: noteheadss + rests)
   // ------------------------------------------------------------
-  const noteGlyphs = glyphs
+  const baseGlyphs = glyphs
     .filter((g) => tagOf(g).includes("notehead"))
     // Sort for stable indexing: left-to-right, then top-to-bottom
     .sort((a, b) => {
@@ -2637,13 +2636,13 @@ function calculateNoteheadPlacementForMeasure(
       return cmp(a.h, b.h);
     });
 
-  if (!noteGlyphs.length) {
+  if (!baseGlyphs.length) {
     return [];
   }
 
-  const classifyNotehead = (
+  const classifyBaseGlyph = (
     g: GlyphRect
-  ): { kind: NoteAnchorKind; confidence: number } => {
+  ): { kind: BaseGlyphAnchorKind; confidence: number } => {
     const w = g.w;
     const h = g.h;
     if (!(w > 0) || !(h > 0)) {
@@ -2689,7 +2688,7 @@ function calculateNoteheadPlacementForMeasure(
     }
 
     // ============================================================
-    // 3) Everything else → not a note (rests/artifacts/etc.)
+    // 3) Everything else → not a note (rests)
     // ============================================================
     return { kind: "rest", confidence: 0.70 };
   };
@@ -2698,10 +2697,10 @@ function calculateNoteheadPlacementForMeasure(
   // ------------------------------------------------------------
   // 3) Emit anchors (+ safe DIAG payload)
   // ------------------------------------------------------------
-  const anchors: NoteAnchor[] = [];
-  for (let i = 0; i < noteGlyphs.length; i++) {
-    const g = noteGlyphs[i]!;
-    const cls = classifyNotehead(g);
+  const anchors: BaseGlyphAnchor[] = [];
+  for (let i = 0; i < baseGlyphs.length; i++) {
+    const g = baseGlyphs[i]!;
+    const cls = classifyBaseGlyph(g);
 
     const w = g.w;
     const h = g.h;
@@ -2718,7 +2717,6 @@ function calculateNoteheadPlacementForMeasure(
       h,
       kind: cls.kind,
       confidence: cls.confidence,
-
       // --- DIAG payload (safe, always defined) ---
       glyphTag: tagOf(g),
       tallRatio,
@@ -2785,7 +2783,7 @@ export default function ScoreViewer({
 
   // Forces re-render of halo overlay when page geometry changes.
   // measurePreviewRect is already state and tends to change with page interactions.
-  // pageNumber (or similar) is even better if you have it; see notes below.
+  // pageNumber (or similar) is even better if you have it; see below.
   const [haloEpoch, setHaloEpoch] = React.useState(0);
 
   React.useEffect(() => {
@@ -2871,14 +2869,14 @@ export default function ScoreViewer({
         const tipY = box.y + pointIn.yRel * box.h;
 
         const anchorsForMeasure =
-          measureNoteAnchorsRef.current?.[box.id] ?? [];
+          measureBaseGlyphAnchorsRef.current?.[box.id] ?? [];
 
         if (anchorsForMeasure.length === 0) {
           return null;
         }
 
-        // Nearest notehead/rest in this measure
-        let best = anchorsForMeasure[0] as NoteAnchor;
+        // Nearest base glyph in this measure
+        let best = anchorsForMeasure[0] as BaseGlyphAnchor;
         let bestDistSq =
           (tipX - best.x) * (tipX - best.x) +
           (tipY - best.y) * (tipY - best.y);
@@ -2905,7 +2903,7 @@ export default function ScoreViewer({
           box.w > 0 ? clampUnitInterval((tipX - box.x) / box.w) : pointIn.xRel;
 
         return {
-          noteId: best.id,
+          baseGlyphId: best.id,
           dxRel: dx / h,
           xRel,
         };
@@ -2928,14 +2926,14 @@ export default function ScoreViewer({
         const tipY = box.y + pointIn.yRel * box.h;
 
         const anchorsForMeasure =
-          measureNoteAnchorsRef.current?.[box.id] ?? [];
+          measureBaseGlyphAnchorsRef.current?.[box.id] ?? [];
 
         if (anchorsForMeasure.length === 0) {
           return null;
         }
 
-        // Nearest notehead/rest in this measure
-        let best = anchorsForMeasure[0] as NoteAnchor;
+        // Nearest base glyph in this measure
+        let best = anchorsForMeasure[0] as BaseGlyphAnchor;
         let bestDistSq =
           (tipX - best.x) * (tipX - best.x) +
           (tipY - best.y) * (tipY - best.y);
@@ -2960,14 +2958,14 @@ export default function ScoreViewer({
         }
 
         const z = osmdZoomRef.current ?? 1;
-        // Store note height normalized to OSMD zoom=1 so initial font sizing is consistent
-        const baseNoteHNorm = z > 0 ? h / z : h;
+        // Store base glyph height normalized to OSMD zoom=1 so initial font sizing is consistent
+        const baseGlyphHNorm = z > 0 ? h / z : h;
 
         return {
-          noteId: best.id,
+          baseGlyphId: best.id,
           dxRel: dx / h,
           dyRel: dy / h,
-          baseNoteHNorm,
+          baseGlyphHNorm,
         };
       };
 
@@ -3037,14 +3035,14 @@ export default function ScoreViewer({
 
         const z = osmdZoomRef.current ?? 1;
         // Store staff-space normalized to OSMD zoom=1 so initial size is consistent
-        const baseStaffSpaceNorm = z > 0 ? staffSpacePx / z : staffSpacePx;
+        const staffSpaceNorm = z > 0 ? staffSpacePx / z : staffSpacePx;
 
 
         const anchor: TextAnchorRef = {
           mode,
           xRel,
           dyRel,
-          baseStaffSpaceNorm,
+          staffSpaceNorm,
         };
 
         if (mode === "between") {
@@ -3120,7 +3118,7 @@ export default function ScoreViewer({
             setPendingPedalStart(start);
 
             window.alert(
-              "No note anchor found for pedal end. Try dropping closer to a notehead/rest."
+              "No base glyph anchor found for pedal end. Try dropping closer to a base glyph."
             );
             return;
           }
@@ -3234,7 +3232,7 @@ export default function ScoreViewer({
           const startAnchor = computePedalAnchorRef(measureNumber, point);
           if (!startAnchor) {
             window.alert(
-              "No note anchor found for pedal start. Try dropping closer to a notehead/rest."
+              "No base glyph anchor found for pedal start. Try dropping closer to a base glyph."
             );
             return;
           }
@@ -3336,7 +3334,7 @@ export default function ScoreViewer({
 
         const anchorRef = computeFingeringAnchorRef(measureNumber, point);
         if (!anchorRef) {
-          window.alert("No note anchor found for fingering. Drop closer to a notehead/rest.");
+          window.alert("No base glyph anchor found for fingering. Drop closer to a base glyph.");
           return;
         }
 
@@ -3570,7 +3568,7 @@ export default function ScoreViewer({
         const tipY = pointerY - DRAG_ANCHOR_OFFSET;
 
         // Find the measure box under the drop tip
-        // NOTE: We intentionally search ALL measures, not just the one the drag started in.
+        // We intentionally search ALL measures, not just the one the drag started in.
         let dropBox: PageMeasureRect | null = null;
         for (const b of rects) {
           const withinX = tipX >= b.x && tipX <= b.x + b.w;
@@ -3676,8 +3674,8 @@ export default function ScoreViewer({
 
   // Per-measure glyph “cloud” in page-local coordinates
   const measureGlyphRectsRef = useRef<Record<string, GlyphRect[]>>({});
-  // Per-page cache of note anchors, keyed by measureId (same ids as measureGlyphRectsRef)
-  const measureNoteAnchorsRef = useRef<Record<string, NoteAnchor[]>>({});
+  // Per-page cache of base glyph anchors, keyed by measureId (same ids as measureGlyphRectsRef)
+  const measureBaseGlyphAnchorsRef = useRef<Record<string, BaseGlyphAnchor[]>>({});
 
   // Staff-line glyphs (vf-measure) per measure, used for staff-anchored text.
   const staffLineGlyphsByMeasureRef = useRef<Record<string, GlyphRect[]>>({});
@@ -4165,7 +4163,7 @@ export default function ScoreViewer({
       if (!rects.length) {
         // Clear when there are no measures on this page
         measureGlyphRectsRef.current = {};
-        measureNoteAnchorsRef.current = {};
+        measureBaseGlyphAnchorsRef.current = {};
         measureAllGlyphRectsRef.current = {};
         if (showGlyphDebug) {
           setGlyphDebugRects({});
@@ -4176,7 +4174,7 @@ export default function ScoreViewer({
       const svg = getSvg(outer);
       if (!svg) {
         measureGlyphRectsRef.current = {};
-        measureNoteAnchorsRef.current = {};
+        measureBaseGlyphAnchorsRef.current = {};
         measureAllGlyphRectsRef.current = {};
         if (showGlyphDebug) {
           setGlyphDebugRects({});
@@ -4273,7 +4271,7 @@ export default function ScoreViewer({
       }
 
       const next: Record<string, GlyphRect[]> = {};
-      const nextAnchors: Record<string, NoteAnchor[]> = {};
+      const nextAnchors: Record<string, BaseGlyphAnchor[]> = {};
       const nextAllGlyphs: Record<string, GlyphRect[]> = {};
 
       const boxById = new Map<string, MeasureBoxRect>();
@@ -4289,17 +4287,17 @@ export default function ScoreViewer({
           // Existing behavior
           next[measureId] = glyphs;
 
-          // build note anchors for this measure from its glyphs
-          const anchors = calculateNoteheadPlacementForMeasure(glyphs);
+          // build base glyph anchors for this measure from its glyphs
+          const anchors = calculateBaseGlyphPlacementForMeasure(glyphs);
           if (anchors.length) {
             nextAnchors[measureId] = anchors;
           }
         }
       }
 
-      // Cache glyphs + note anchors for this page
+      // Cache glyphs + base glyph anchors for this page
       measureGlyphRectsRef.current = next;
-      measureNoteAnchorsRef.current = nextAnchors;
+      measureBaseGlyphAnchorsRef.current = nextAnchors;
       measureAllGlyphRectsRef.current = nextAllGlyphs;
 
       if (showGlyphDebug) {
@@ -4529,7 +4527,7 @@ export default function ScoreViewer({
           //   - Look at all glyphs we associated with this measure.
           //   - Drop obvious staff lines and measure-wide “envelope” paths.
           //   - Drop obvious preamble (clef, key sig, time sig, barlines, braces, etc.).
-          //   - Prefer noteheads + rests as “structural” anchors.
+          //   - Prefer base glyphs (noteheads + rests) as “structural” anchors.
           //   - Position the box LEFT_PADDING_PX to the left of that glyph,
           //     clamped to the original barline envelope.
           // NAV: ____ refineMeasureBoxRectsWithGlyphs
@@ -4553,7 +4551,7 @@ export default function ScoreViewer({
               const tag = glyphTag?.toLowerCase() ?? "";
 
               // ---- Whitelist: genuine per-measure musical content -------------------
-              // Notes + rests
+              // Base glyphs (noteheads + rests}
               if (tag.includes("notehead")) { return true; }
 
               // Note structure
@@ -4766,7 +4764,7 @@ export default function ScoreViewer({
               rects,
               getter,
               osmdZoomRef.current,
-              measureNoteAnchorsRef.current,    // per-page note anchors
+              measureBaseGlyphAnchorsRef.current,    // per-page base glyph anchors
               staffLineGlyphsByMeasureRef.current
             );
           }
@@ -5960,7 +5958,6 @@ export default function ScoreViewer({
 
         void logStep(`debounced zf=${zoomFactorRef.current.toFixed(3)} reason=${why}`);
 
-        // NOTE:
         // We no longer trigger a reflow directly from zoom changes here.
         // Browser zoom also fires visualViewport resize events, and the
         // handleVVChange() effect already performs the width reflow based
@@ -6758,8 +6755,8 @@ export default function ScoreViewer({
 
 
   // Mouse single-click paging (disabled while busy)
-  // NOTE: ignores double-click so we can reserve it for future edit mode
-  // NOTE: In edit mode, pointerdown inside a measure calls preventDefault,
+  // Ignores double-click so we can reserve it for future edit mode
+  // In edit mode, pointerdown inside a measure calls preventDefault,
   // which suppresses these mouse events so we can show the measure overlay instead.
   // NAV: __ useEffect single-click
   useEffect(() => {
@@ -7311,7 +7308,7 @@ export default function ScoreViewer({
           }}
         >
           {(measureRectsRef.current ?? []).flatMap((box) => {
-            const anchors = measureNoteAnchorsRef.current?.[box.id] ?? [];
+            const anchors = measureBaseGlyphAnchorsRef.current?.[box.id] ?? [];
 
             // --------------------------------------------
             // A) Halos (notes only; keep blue)
@@ -7360,7 +7357,7 @@ export default function ScoreViewer({
             // --------------------------------------------
             // B) Exclusion DIAG (only the things you filtered out)
             // --------------------------------------------
-            const diagEls = SHOW_NOTEHEAD_EXCLUSION_DIAG
+            const diagEls = SHOW_BASE_GLYPH_EXCLUSION_DIAG
               ? anchors
                 .filter((a) => a.kind === "rest")
                 .map((a) => {
