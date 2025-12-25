@@ -1878,12 +1878,12 @@ function drawAnnotationBoxes(
 
         const currentH = anchorBaseGlyph.h;
 
-        // baseGlyphHNorm is stored at OSMD zoom=1; convert to px for this render pass
+        // baseBaseGlyphHNorm is stored at OSMD zoom=1; convert to px for this render pass
         const baseH =
-          typeof anchor.baseGlyphHNorm === "number" &&
-            Number.isFinite(anchor.baseGlyphHNorm) &&
-            anchor.baseGlyphHNorm > 0
-            ? anchor.baseGlyphHNorm
+          typeof anchor.baseBaseGlyphHNorm === "number" &&
+            Number.isFinite(anchor.baseBaseGlyphHNorm) &&
+            anchor.baseBaseGlyphHNorm > 0
+            ? anchor.baseBaseGlyphHNorm
             : currentH;
 
         if (
@@ -1969,10 +1969,10 @@ function drawAnnotationBoxes(
         let fontPx = BASE_FONT_PX;
 
         const baseStaffSpacePx =
-          typeof anchor.staffSpaceNorm === "number" &&
-            Number.isFinite(anchor.staffSpaceNorm) &&
-            anchor.staffSpaceNorm > 0
-            ? anchor.staffSpaceNorm
+          typeof anchor.baseStaffSpaceNorm === "number" &&
+            Number.isFinite(anchor.baseStaffSpaceNorm) &&
+            anchor.baseStaffSpaceNorm > 0
+            ? anchor.baseStaffSpaceNorm
             : metrics.staffSpacePx;
 
         if (baseStaffSpacePx > 0 && Number.isFinite(baseStaffSpacePx)) {
@@ -2959,13 +2959,13 @@ export default function ScoreViewer({
 
         const z = osmdZoomRef.current ?? 1;
         // Store base glyph height normalized to OSMD zoom=1 so initial font sizing is consistent
-        const baseGlyphHNorm = z > 0 ? h / z : h;
+        const baseBaseGlyphHNorm = z > 0 ? h / z : h;
 
         return {
           baseGlyphId: best.id,
           dxRel: dx / h,
           dyRel: dy / h,
-          baseGlyphHNorm,
+          baseBaseGlyphHNorm,
         };
       };
 
@@ -3035,14 +3035,14 @@ export default function ScoreViewer({
 
         const z = osmdZoomRef.current ?? 1;
         // Store staff-space normalized to OSMD zoom=1 so initial size is consistent
-        const staffSpaceNorm = z > 0 ? staffSpacePx / z : staffSpacePx;
+        const baseStaffSpaceNorm = z > 0 ? staffSpacePx / z : staffSpacePx;
 
 
         const anchor: TextAnchorRef = {
           mode,
           xRel,
           dyRel,
-          staffSpaceNorm,
+          baseStaffSpaceNorm,
         };
 
         if (mode === "between") {
