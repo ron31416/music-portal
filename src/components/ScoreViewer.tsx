@@ -233,7 +233,7 @@ function pointHitsAnyRectWithMargin(
   return false;
 }
 
-// NAV: function buildPedalMarkIndex
+// NAV: function buildPedalMarkIndex [WIP]
 function buildPedalMarkIndex(map: AnnotationMap): PedalMarkIndex {
   const marks: PedalMark[] = [];
   const byStartKey = new Map<string, PedalMark>();
@@ -825,7 +825,6 @@ function scanSystemsPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Band[] {
   }
 }
 
-// Typed SVG factory (TS strict-friendly)
 // NAV: function createSvgEl
 function createSvgEl<K extends keyof SVGElementTagNameMap>(
   tag: K,
@@ -992,14 +991,14 @@ function scanMeasuresPx(outer: HTMLDivElement, svgRoot: SVGSVGElement): Array<{ 
   }
 }
 
-// NAV: function pedalEndpointKeyToString
+// NAV: function pedalEndpointKeyToString [WIP]
 function pedalEndpointKeyToString(k: PedalEndpointKey): string {
   // dxRel stringified to reduce float noise in map keys.
   // Keep enough precision to distinguish user intent.
   return `${k.measureNumber}|${k.baseGlyphId}|${k.dxRel.toFixed(6)}`;
 }
 
-// NAV: function endpointFromPedalAnchor
+// NAV: function endpointFromPedalAnchor [WIP]
 function endpointFromPedalAnchor(
   measureNumber: number,
   ref: PedalAnchorRef
@@ -1432,7 +1431,7 @@ function clearMeasureBoxes(outer: HTMLDivElement): void {
 
 // Filled annotation overlay (per-measure), using the exact same geometry
 // as measure boxes. Separate layer so we can style/clear independently.
-// NAV: function drawAnnotationBoxes
+// NAV: function drawAnnotationBoxes [WIP]
 function drawAnnotationBoxes(
   outer: HTMLDivElement,
   rects: ReadonlyArray<MeasureBoxRect>,
@@ -1870,7 +1869,7 @@ function drawAnnotationBoxes(
           }
         }
 
-        const BASE_FONT_PX = 14;
+        const BASE_FONT_PX = 10;
         const MIN_FONT_PX = 8;
         const MAX_FONT_PX = 30;
 
@@ -2320,7 +2319,7 @@ function rebuildMeasureToPageMapping(
 // 
 // The name is intentionally generic so we can later change the strategy
 // (e.g., choose the middle measure on that page).
-// NAV: function findAnchorMeasure
+// NAV: function findAnchorMeasure [WIP]
 function findAnchorMeasure(
   measureToPage: ReadonlyArray<number>,
   pageIndex: number
@@ -2353,7 +2352,7 @@ function clampUnitInterval(v: number): number {
 // lines are treated as *soft* constraints: we prefer points that land between
 // them, but don't block them outright. Returns normalized coords, or falls
 // back to the original point if nothing better is found.
-// NAV: function findSafePointRelForTap
+// NAV: function findSafePointRelForTap [WIP]
 function findSafePointRelForTap(
   box: MeasureBoxRect,
   xPage: number,
@@ -2502,7 +2501,7 @@ type StaffMetrics = {
   staffSpacePx: number;
 };
 
-// NAV: function computeStaffMetricsForMeasureFromStaffLines
+// NAV: function computeStaffMetricsForMeasureFromStaffLines [WIP]
 function computeStaffMetricsForMeasureFromStaffLines(
   measureId: string,
   staffLinesByMeasure: Record<string, GlyphRect[]> | undefined
@@ -2599,7 +2598,7 @@ function computeStaffMetricsForMeasureFromStaffLines(
 // We treat any glyph whose tag contains "notehead" as a candidate.
 // This operates in the same page-local coordinate system as GlyphRect
 // and MeasureBoxRect.
-// NAV: function calculateBaseGlyphPlacementForMeasure
+// NAV: function calculateBaseGlyphPlacementForMeasure [WIP]
 function calculateBaseGlyphPlacementForMeasure(
   glyphs: readonly GlyphRect[]
 ): BaseGlyphAnchor[] {
@@ -2729,10 +2728,253 @@ function calculateBaseGlyphPlacementForMeasure(
 }
 
 
+// NAV: ------------------------- fingering annotations pockets [WIP]
+
+type Pt = { x: number; y: number };
+
+function inflateRect(r: Rect, padX: number, padY: number): Rect {
+  return {
+    x: r.x - padX,
+    y: r.y - padY,
+    w: r.w + padX * 2,
+    h: r.h + padY * 2,
+  };
+}
+
+function pointInRect(p: Pt, r: Rect): boolean {
+  return (
+    p.x >= r.x &&
+    p.x <= r.x + r.w &&
+    p.y >= r.y &&
+    p.y <= r.y + r.h
+  );
+}
+
+function pointHitsAnyRect(p: Pt, rects: readonly Rect[]): boolean {
+  for (const r of rects) {
+    if (pointInRect(p, r)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+type FingeringPocketSample = {
+  noteId: string;
+  noteX: number;
+  noteY: number;
+  angleRad: number;
+  // The snapped "center of pocket" point for this angle, if any.
+  snapX: number;
+  snapY: number;
+};
+
+type FingeringPocketDebug = {
+  noteId: string;
+  noteX: number;
+  noteY: number;
+  samples: FingeringPocketSample[];
+};
+
+// NAV: function computeFingeringPocketDebugForMeasure [WIP]
+function computeFingeringPocketDebugForMeasure(args: {
+  anchors: readonly BaseGlyphAnchor[];
+  avoidanceGlyphs: readonly GlyphRect[];
+  staffSpacePx: number;
+  measureBox: Rect; // <-- NEW: clamp pockets to this box
+}): FingeringPocketDebug[] {
+  const { anchors, avoidanceGlyphs, staffSpacePx, measureBox } = args;
+
+  if (!(staffSpacePx > 0) || !Number.isFinite(staffSpacePx)) {
+    return [];
+  }
+
+  // Avoid pockets touching the measure border.
+  const BOX_INSET_PX = 2;
+
+  const box: Rect = {
+    x: measureBox.x + BOX_INSET_PX,
+    y: measureBox.y + BOX_INSET_PX,
+    w: Math.max(0, measureBox.w - BOX_INSET_PX * 2),
+    h: Math.max(0, measureBox.h - BOX_INSET_PX * 2),
+  };
+
+  if (!(box.w > 0) || !(box.h > 0)) {
+    return [];
+  }
+
+  // Inflate avoidance rects by an approximation of the finger-number footprint.
+  const padX = 0.80 * staffSpacePx;
+  const padY = 0.60 * staffSpacePx;
+
+  const inflatedAvoid: Rect[] = avoidanceGlyphs.map((g) =>
+    inflateRect({ x: g.x, y: g.y, w: g.w, h: g.h }, padX, padY)
+  );
+
+  const ANGLE_BINS = 64;
+  const TWO_PI = Math.PI * 2;
+
+  // Step along rays in small increments.
+  const STEP = Math.max(1, 0.15 * staffSpacePx);
+
+  // Require a minimum “pocket thickness” along a ray.
+  const MIN_SEG_LEN = 0.60 * staffSpacePx;
+
+  // Compute maximum radius we can travel along ray (ux,uy) while staying inside box.
+  const maxRadiusWithinBox = (cx: number, cy: number, ux: number, uy: number): number => {
+    const EPS = 1e-6;
+
+    const xMin = box.x;
+    const xMax = box.x + box.w;
+    const yMin = box.y;
+    const yMax = box.y + box.h;
+
+    let tMax = Number.POSITIVE_INFINITY;
+
+    if (Math.abs(ux) > EPS) {
+      const tx1 = (xMin - cx) / ux;
+      const tx2 = (xMax - cx) / ux;
+      const txMax = Math.max(tx1, tx2);
+      tMax = Math.min(tMax, txMax);
+    }
+
+    if (Math.abs(uy) > EPS) {
+      const ty1 = (yMin - cy) / uy;
+      const ty2 = (yMax - cy) / uy;
+      const tyMax = Math.max(ty1, ty2);
+      tMax = Math.min(tMax, tyMax);
+    }
+
+    if (!Number.isFinite(tMax) || tMax <= 0) {
+      return 0;
+    }
+
+    return tMax;
+  };
+
+  const out: FingeringPocketDebug[] = [];
+
+  for (const a of anchors) {
+    if (a.kind !== "note") {
+      continue;
+    }
+
+    const noteR = 0.5 * Math.max(a.w, a.h);
+
+    // Bring the allowed region closer (and tighter) than the first-pass.
+    const rIn = noteR + 0.70 * staffSpacePx;
+    const rOutBase = noteR + 1.90 * staffSpacePx; // <-- tighter than 3.0*S
+
+    if (!(rOutBase > rIn)) {
+      continue;
+    }
+
+    const samples: FingeringPocketSample[] = [];
+
+    for (let i = 0; i < ANGLE_BINS; i++) {
+      const angleRad = (i / ANGLE_BINS) * TWO_PI;
+      const ux = Math.cos(angleRad);
+      const uy = Math.sin(angleRad);
+
+      // Clamp ray to the box.
+      const rBoxMax = maxRadiusWithinBox(a.x, a.y, ux, uy);
+
+      // Final per-ray outer bound.
+      const rOut = Math.min(rOutBase, rBoxMax);
+
+      if (!(rOut > rIn)) {
+        continue;
+      }
+
+      // We want the *closest* pocket, not the longest.
+      // So: scan outward and take the first safe segment whose length >= MIN_SEG_LEN.
+      let segStart: number | null = null;
+      let segEnd: number | null = null;
+      let chosenStart: number | null = null;
+      let chosenEnd: number | null = null;
+
+      for (let r = rIn; r <= rOut; r += STEP) {
+        const p: Pt = { x: a.x + ux * r, y: a.y + uy * r };
+
+        // Must stay inside box (belt-and-suspenders).
+        const outsideBox =
+          p.x < box.x ||
+          p.x > box.x + box.w ||
+          p.y < box.y ||
+          p.y > box.y + box.h;
+
+        if (outsideBox) {
+          break;
+        }
+
+        const blocked = pointHitsAnyRect(p, inflatedAvoid);
+
+        if (!blocked) {
+          if (segStart === null) {
+            segStart = r;
+            segEnd = r;
+          } else {
+            segEnd = r;
+          }
+
+          if (segStart !== null && segEnd !== null && (segEnd - segStart) >= MIN_SEG_LEN) {
+            chosenStart = segStart;
+            chosenEnd = segEnd;
+            break; // FIRST sufficiently-large pocket wins (closest to note)
+          }
+        } else {
+          segStart = null;
+          segEnd = null;
+        }
+      }
+
+      if (chosenStart !== null && chosenEnd !== null && chosenEnd > chosenStart) {
+        // Snap toward the “center” but slightly biased inward (feels more “attached”).
+        const alpha = 0.40; // 0.5 midpoint; <0.5 biases toward note
+        const rSnap = chosenStart + alpha * (chosenEnd - chosenStart);
+
+        const snapX = a.x + ux * rSnap;
+        const snapY = a.y + uy * rSnap;
+
+        const pSnap: Pt = { x: snapX, y: snapY };
+
+        // Ensure snap itself is valid.
+        const snapOutside =
+          pSnap.x < box.x ||
+          pSnap.x > box.x + box.w ||
+          pSnap.y < box.y ||
+          pSnap.y > box.y + box.h;
+
+        if (!snapOutside && !pointHitsAnyRect(pSnap, inflatedAvoid)) {
+          samples.push({
+            noteId: a.id,
+            noteX: a.x,
+            noteY: a.y,
+            angleRad,
+            snapX,
+            snapY,
+          });
+        }
+      }
+    }
+
+    out.push({
+      noteId: a.id,
+      noteX: a.x,
+      noteY: a.y,
+      samples,
+    });
+  }
+
+  return out;
+}
+
+
+
 
 // NAV: -----------------component
 
-// NAV: function ScoreViewer
+// NAV: function ScoreViewer [WIP]
 export default function ScoreViewer({
   src,
 }: Props) {
@@ -2808,7 +3050,7 @@ export default function ScoreViewer({
   const MIN_BOX_WIDTH_PX = 4;     // safety net to avoid degenerate boxes
 
 
-  // NAV: ------------------------- annotation creation
+  // NAV: ------------------------- annotation creation [WIP]
 
   type PendingPedalStart = {
     measureNumber: number;
@@ -2845,7 +3087,7 @@ export default function ScoreViewer({
     setSelectedPointRel,
   ]);
 
-  // NAV: __ function promptAndSaveAnnotation
+  // NAV: __ function promptAndSaveAnnotation [WIP]
   const promptAndSaveAnnotation = React.useCallback(
     async (measureNumber: number, point: PointRel): Promise<void> => {
       if (!isEditModeRef.current) {
@@ -3054,7 +3296,7 @@ export default function ScoreViewer({
 
       const PEDAL_X_EPS = 0.002; // allow "touching" without counting as overlap
 
-      // NAV: ____ const pedalIntervalForMeasure
+      // NAV: ____ const pedalIntervalForMeasure [WIP]
       const pedalIntervalForMeasure = (
         it: AnnotationPedalItem
       ): { a: number; b: number } | null => {
@@ -3390,7 +3632,7 @@ export default function ScoreViewer({
     setMeasurePreviewRect(null);
   }, []);
 
-  // NAV: __ const handleViewerPointerDownCapture
+  // NAV: __ const handleViewerPointerDownCapture [WIP]
   const handleViewerPointerDownCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       const target = ev.target as HTMLElement | null;
@@ -3515,7 +3757,7 @@ export default function ScoreViewer({
     [setSelectedMeasureNumber, setSelectedPointRel],
   );
 
-  // NAV: __ const handleViewerPointerUpCapture
+  // NAV: __ const handleViewerPointerUpCapture [WIP]
   const handleViewerPointerUpCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       if (!isEditModeRef.current) {
@@ -3644,7 +3886,7 @@ export default function ScoreViewer({
     ],
   );
 
-  // NAV: __ const handleViewerClickCapture
+  // NAV: __ const handleViewerClickCapture [WIP]
   const handleViewerClickCapture = useCallback(
     (ev: React.MouseEvent<HTMLDivElement>): void => {
       if (!isEditModeRef.current) {
@@ -3700,7 +3942,7 @@ export default function ScoreViewer({
   // For placement/avoidance, we want:
   //   all glyphs that intersect the measure
   //   EXCEPT staff lines (vf-measure).
-  // NAV: __ const getAvoidanceGlyphsForMeasure
+  // NAV: __ const getAvoidanceGlyphsForMeasure [WIP]
   const getAvoidanceGlyphsForMeasure = useCallback(
     (measureId: string): GlyphRect[] => {
       const all: GlyphRect[] = measureAllGlyphRectsRef.current[measureId] ?? [];
@@ -3751,6 +3993,7 @@ export default function ScoreViewer({
 
   const [isEditMode, setIsEditMode] = useState<boolean>(false);
 
+  // NAV: __ const toggleEditMode [WIP]
   const toggleEditMode = useCallback((): void => {
     setIsEditMode((prev) => {
       const next = !prev;
@@ -3777,7 +4020,7 @@ export default function ScoreViewer({
 
   // Cache the last page's box-draw inputs so we can redraw boxes
   // without repagination when edit mode toggles.
-  // NAV: __ const lastBoxDrawArgsRef
+  // NAV: __ const lastBoxDrawArgsRef [WIP]
   const lastBoxDrawArgsRef = useRef<{
     outer: HTMLDivElement;
     svgNN: SVGSVGElement;
@@ -4156,7 +4399,7 @@ export default function ScoreViewer({
   // For each visible SVG graphics element, we compute its page-local bounding box
   // and associate it with every measure box it intersects. Results are cached in
   // measureGlyphRectsRef by measureId.
-  // NAV: __ const populateGlyphRectsForPage
+  // NAV: __ const populateGlyphRectsForPage [WIP]
   const populateGlyphRectsForPage = useCallback(
     (outer: HTMLDivElement, rects: ReadonlyArray<MeasureBoxRect>): void => {
 
@@ -4325,7 +4568,7 @@ export default function ScoreViewer({
 
   // Apply the chosen page to the viewport: translate the SVG to its start and mask/cut to hide any next-page peek.
   // May recompute page starts and re-apply to preserve whole systems; bounded recursion prevents oscillation.
-  // NAV: __ const applyPage
+  // NAV: __ const applyPage [WIP]
   const applyPage = useCallback(
     (pageIdx: number): void => {
       const outer = wrapRef.current;
@@ -4515,8 +4758,8 @@ export default function ScoreViewer({
         }
         topCutter.style.height = `${Math.max(0, topGutterPx)}px`;
 
-        // --- Measure rectangles + annotation overlay ---
-        // Always redraw after pagination transform so overlays match what you see.
+        // NAV: ------------------------- annotation overlay [WIP]
+
         try {
           const measuresForPage = measuresRef.current ?? [];
           const geomForPage =
@@ -4550,7 +4793,6 @@ export default function ScoreViewer({
 
               const tag = glyphTag?.toLowerCase() ?? "";
 
-              // ---- Whitelist: genuine per-measure musical content -------------------
               // Base glyphs (noteheads + rests}
               if (tag.includes("notehead")) { return true; }
 
@@ -4814,7 +5056,7 @@ export default function ScoreViewer({
   );
 
 
-  // NAV: ------------------------- annotation redraw effect
+  // NAV: ------------------------- annotation redraw effect [WIP]
 
   // When annotations finish loading or change, re-render the current page
   // so that drawAnnotationBoxes runs again with fresh annotation data.
@@ -7044,7 +7286,7 @@ export default function ScoreViewer({
   };
 
 
-  // NAV: ------------------------- annotation interactions
+  // NAV: ------------------------- annotation interactions [WIP]
 
   // Small "halo" so a tap right on the edge still counts
   const MEASURE_HIT_TOLERANCE = 8; // tweak if you like
@@ -7077,7 +7319,7 @@ export default function ScoreViewer({
     }
   }
 
-  // NAV: __ const handleAnnotationHandlePointerDown
+  // NAV: __ const handleAnnotationHandlePointerDown [WIP]
   const handleAnnotationHandlePointerDown = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       if (!isEditModeRef.current) {
@@ -7121,7 +7363,7 @@ export default function ScoreViewer({
     [selectedMeasureNumber]
   );
 
-  // NAV: __ const handleAnnotationHandlePointerUp
+  // NAV: __ const handleAnnotationHandlePointerUp [WIP]
   const handleAnnotationHandlePointerUp = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       const dragId = dragPointerIdRef.current;
@@ -7177,7 +7419,7 @@ export default function ScoreViewer({
     [promptAndSaveAnnotation, selectedMeasureNumber, setSelectedPointRel]
   );
 
-  // NAV: __ const handleViewerPointerMoveCapture
+  // NAV: __ const handleViewerPointerMoveCapture [WIP]
   const handleViewerPointerMoveCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
       const dragId = dragPointerIdRef.current;
@@ -7248,7 +7490,70 @@ export default function ScoreViewer({
   );
 
 
-  // NAV: ------------------------- render output (JSX)
+  // ------------------------------
+  // Fingering pocket debug geometry
+  // ------------------------------
+  const SHOW_FINGERING_POCKET_DIAG = true; // set false to hide
+
+  // NOTE: Replace `staffLinesByMeasureRef.current` with your actual staff-lines map/ref
+  // if it has a different name in your file.
+  const staffLinesByMeasureForDiag = (staffLineGlyphsByMeasureRef.current ?? undefined) as
+    | Record<string, GlyphRect[]>
+    | undefined;
+
+  const fingeringPocketDiagEls =
+    (isEditMode && isAuthenticated && SHOW_FINGERING_POCKET_DIAG)
+      ? (measureRectsRef.current ?? []).flatMap((box) => {
+        const measureId = box.id;
+
+        // Use the SAME glyph coordinate system as the halos and glyph debug rects.
+        const avoidance = getAvoidanceGlyphsForMeasure(measureId);
+
+        const metrics = computeStaffMetricsForMeasureFromStaffLines(
+          measureId,
+          staffLinesByMeasureForDiag,
+        );
+
+        if (!metrics) {
+          return [];
+        }
+
+        const anchors = measureBaseGlyphAnchorsRef.current?.[measureId] ?? [];
+
+        // Pure helper (defined above component)
+        const pocketDbg = computeFingeringPocketDebugForMeasure({
+          anchors,
+          avoidanceGlyphs: avoidance,
+          staffSpacePx: metrics.staffSpacePx,
+          measureBox: { x: box.x, y: box.y, w: box.w, h: box.h },
+        });
+
+        // Render as tiny dots at each "snap point" sample
+        const DOT = 3; // px radius-ish (diameter below)
+
+        return pocketDbg.flatMap((note) =>
+          note.samples.map((s, i) => (
+            <div
+              key={`fp:${measureId}:${note.noteId}:${i}`}
+              style={{
+                position: "absolute",
+                left: s.snapX - DOT / 2,
+                top: s.snapY - DOT / 2,
+                width: DOT,
+                height: DOT,
+                borderRadius: 9999,
+                background: "rgba(0, 120, 255, 0.85)",
+                boxShadow: "0 0 2px rgba(0,0,0,0.25)",
+                pointerEvents: "none",
+              }}
+            />
+          ))
+        );
+      })
+      : [];
+
+
+  // NAV: ------------------------- render output (JSX) [WIP]
 
   return (
     <div
@@ -7297,7 +7602,7 @@ export default function ScoreViewer({
       )}
 
       {/* NOTE HALOS (edit mode) */}
-      {isEditMode && isAuthenticated && (
+      {!isEditMode && isAuthenticated && (
         <div
           key={haloEpoch}
           style={{
@@ -7465,6 +7770,20 @@ export default function ScoreViewer({
 
             return [...haloEls, ...diagEls, ...anchorDebugEls];
           })}
+        </div>
+      )}
+
+      {/* FINGERING POCKET DIAG (edit mode) */}
+      {isEditMode && isAuthenticated && fingeringPocketDiagEls.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            pointerEvents: "none",
+            zIndex: 215, // just above halos (210), below glyph debug (200?) adjust if you want
+          }}
+        >
+          {fingeringPocketDiagEls}
         </div>
       )}
 
