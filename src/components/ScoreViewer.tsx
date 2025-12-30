@@ -1813,61 +1813,7 @@ function drawAnnotationBoxes(
         const dyPx = anchor.dyRel * baseGlyphH;
 
         const pxX = anchorBaseGlyph.x + dxPx;
-        let pxY = anchorBaseGlyph.y + dyPx;
-
-        // ------------------------------------------------------------
-        // Fingering readability: if we're too close to a staff line,
-        // nudge into the nearest staff space (render-only adjustment).
-        // ------------------------------------------------------------
-        if (staffLineGlyphsByMeasure) {
-          const metrics = computeStaffMetricsForMeasureFromStaffLines(
-            box.id,
-            staffLineGlyphsByMeasure
-          );
-
-          if (metrics && metrics.staffSpacePx > 0 && Number.isFinite(metrics.staffSpacePx)) {
-            const s = metrics.staffSpacePx;
-
-            // Five-line staff: lines are at midY + k*s for k in [-2,-1,0,1,2]
-            const trebleLines = [
-              metrics.trebleMidY - 2 * s,
-              metrics.trebleMidY - 1 * s,
-              metrics.trebleMidY,
-              metrics.trebleMidY + 1 * s,
-              metrics.trebleMidY + 2 * s,
-            ];
-
-            const bassLines = [
-              metrics.bassMidY - 2 * s,
-              metrics.bassMidY - 1 * s,
-              metrics.bassMidY,
-              metrics.bassMidY + 1 * s,
-              metrics.bassMidY + 2 * s,
-            ];
-
-            const allLines = [...trebleLines, ...bassLines];
-
-            // Find nearest staff line
-            let nearest = allLines[0]!;
-            let bestAbs = Math.abs(pxY - nearest);
-
-            for (let i = 1; i < allLines.length; i++) {
-              const y = allLines[i]!;
-              const d = Math.abs(pxY - y);
-              if (d < bestAbs) {
-                bestAbs = d;
-                nearest = y;
-              }
-            }
-
-            // If too close to a line, push into the space.
-            const snapThresholdPx = 0.20 * s; // tune: 0.15–0.30
-            if (bestAbs < snapThresholdPx) {
-              const dir = pxY < nearest ? -1 : 1;
-              pxY = nearest + dir * 0.50 * s;
-            }
-          }
-        }
+        const pxY = anchorBaseGlyph.y + dyPx;
 
         const BASE_FONT_PX = 10;
         const MIN_FONT_PX = 8;
@@ -2759,69 +2705,163 @@ function pointHitsAnyRect(p: Pt, rects: readonly Rect[]): boolean {
   return false;
 }
 
-type FingeringPocketSample = {
+/* ------------------------------------------------------------------
+ * Unified fingering pocket geometry (single source of truth)
+ * ------------------------------------------------------------------ */
+
+type FingeringPocket = {
   noteId: string;
   noteX: number;
   noteY: number;
   angleRad: number;
-  // The snapped "center of pocket" point for this angle, if any.
+  rStart: number;
+  rEnd: number;
+  snapR: number;
   snapX: number;
   snapY: number;
+  rSnap: number; // smaller = closer to note along the ray
 };
 
-type FingeringPocketDebug = {
-  noteId: string;
-  noteX: number;
-  noteY: number;
-  samples: FingeringPocketSample[];
+type FingeringPocketParams = {
+  // How far from the note center pockets can start/end (in staff spaces).
+  rInStaff: number;
+  rOutStaff: number;
+  // Inflate avoidance rects by this footprint approximation (in staff spaces).
+  padXStaff: number;
+  padYStaff: number;
+  // Ray scan controls
+  angleBins: number;
+  stepStaff: number;
+  // Minimum contiguous safe segment length along a ray (in staff spaces).
+  minSegLenStaff: number;
+  // Bias snap toward note: 0.5 = midpoint, <0.5 biases inward.
+  snapAlpha: number;
+  // Clamp pockets inside measure box with this inset (px).
+  boxInsetPx: number;
 };
 
-// NAV: function computeFingeringPocketDebugForMeasure [WIP]
-function computeFingeringPocketDebugForMeasure(args: {
+// Single source of truth for fingering pocket geometry.
+// Editing these values affects BOTH drawing and snapping.
+const FINGERING_POCKET_PARAMS: FingeringPocketParams = {
+  rInStaff: 0.70,
+  rOutStaff: 1.90,
+
+  padXStaff: 0.60,
+  padYStaff: 0.40,
+
+  angleBins: 60,     // ← when you decide to smooth
+  stepStaff: 0.15,
+
+  minSegLenStaff: 0.60,
+
+  snapAlpha: 0.00,   // you already confirmed this feels right
+
+  boxInsetPx: 2,
+};
+
+function limitPocketsPerNote(
+  pockets: readonly FingeringPocket[],
+  maxPerNote: number
+): FingeringPocket[] {
+  if (maxPerNote <= 0) {
+    return [];
+  }
+
+  const byNote = new Map<string, FingeringPocket[]>();
+
+  for (const p of pockets) {
+    const arr = byNote.get(p.noteId);
+    if (arr) {
+      arr.push(p);
+    } else {
+      byNote.set(p.noteId, [p]);
+    }
+  }
+
+  const out: FingeringPocket[] = [];
+
+  for (const arr of byNote.values()) {
+    arr.sort((a, b) => a.rSnap - b.rSnap);
+    out.push(...arr.slice(0, maxPerNote));
+  }
+
+  return out;
+}
+
+function dedupePocketsSpatially(
+  pockets: readonly FingeringPocket[],
+  staffSpacePx: number
+): FingeringPocket[] {
+
+  const cell = Math.max(1, 0.25 * staffSpacePx); // tweak: bigger => fewer blobs
+  const bestByCell = new Map<string, FingeringPocket>();
+
+  for (const p of pockets) {
+    const gx = Math.round(p.snapX / cell);
+    const gy = Math.round(p.snapY / cell);
+    const key = `${gx}:${gy}`;
+
+    const cur = bestByCell.get(key);
+    if (!cur || p.rSnap < cur.rSnap) {
+      bestByCell.set(key, p);
+    }
+  }
+
+  return Array.from(bestByCell.values());
+}
+
+// NAV: function computeFingeringPocketsForMeasure [WIP]
+function computeFingeringPocketsForMeasure(args: {
   anchors: readonly BaseGlyphAnchor[];
   avoidanceGlyphs: readonly GlyphRect[];
   staffSpacePx: number;
-  measureBox: Rect; // <-- NEW: clamp pockets to this box
-}): FingeringPocketDebug[] {
+  measureBox: Rect;
+}): FingeringPocket[] {
   const { anchors, avoidanceGlyphs, staffSpacePx, measureBox } = args;
 
   if (!(staffSpacePx > 0) || !Number.isFinite(staffSpacePx)) {
     return [];
   }
 
-  // Avoid pockets touching the measure border.
-  const BOX_INSET_PX = 2;
+  const p = FINGERING_POCKET_PARAMS;
 
   const box: Rect = {
-    x: measureBox.x + BOX_INSET_PX,
-    y: measureBox.y + BOX_INSET_PX,
-    w: Math.max(0, measureBox.w - BOX_INSET_PX * 2),
-    h: Math.max(0, measureBox.h - BOX_INSET_PX * 2),
+    x: measureBox.x + p.boxInsetPx,
+    y: measureBox.y + p.boxInsetPx,
+    w: Math.max(0, measureBox.w - p.boxInsetPx * 2),
+    h: Math.max(0, measureBox.h - p.boxInsetPx * 2),
   };
 
   if (!(box.w > 0) || !(box.h > 0)) {
     return [];
   }
 
-  // Inflate avoidance rects by an approximation of the finger-number footprint.
-  const padX = 0.80 * staffSpacePx;
-  const padY = 0.60 * staffSpacePx;
+  const padX = p.padXStaff * staffSpacePx;
+  const padY = p.padYStaff * staffSpacePx;
 
   const inflatedAvoid: Rect[] = avoidanceGlyphs.map((g) =>
-    inflateRect({ x: g.x, y: g.y, w: g.w, h: g.h }, padX, padY)
+    inflateRect({ x: g.x, y: g.y, w: g.w, h: g.h }, padX, padY),
   );
 
-  const ANGLE_BINS = 64;
   const TWO_PI = Math.PI * 2;
+  const STEP = Math.max(1, p.stepStaff * staffSpacePx);
+  const MIN_SEG_LEN = p.minSegLenStaff * staffSpacePx;
 
-  // Step along rays in small increments.
-  const STEP = Math.max(1, 0.15 * staffSpacePx);
+  const pointInBox = (x: number, y: number): boolean => {
+    return (
+      x >= box.x &&
+      x <= box.x + box.w &&
+      y >= box.y &&
+      y <= box.y + box.h
+    );
+  };
 
-  // Require a minimum “pocket thickness” along a ray.
-  const MIN_SEG_LEN = 0.60 * staffSpacePx;
-
-  // Compute maximum radius we can travel along ray (ux,uy) while staying inside box.
-  const maxRadiusWithinBox = (cx: number, cy: number, ux: number, uy: number): number => {
+  const maxRadiusWithinBox = (
+    cx: number,
+    cy: number,
+    ux: number,
+    uy: number,
+  ): number => {
     const EPS = 1e-6;
 
     const xMin = box.x;
@@ -2852,7 +2892,7 @@ function computeFingeringPocketDebugForMeasure(args: {
     return tMax;
   };
 
-  const out: FingeringPocketDebug[] = [];
+  const pockets: FingeringPocket[] = [];
 
   for (const a of anchors) {
     if (a.kind !== "note") {
@@ -2861,53 +2901,40 @@ function computeFingeringPocketDebugForMeasure(args: {
 
     const noteR = 0.5 * Math.max(a.w, a.h);
 
-    // Bring the allowed region closer (and tighter) than the first-pass.
-    const rIn = noteR + 0.70 * staffSpacePx;
-    const rOutBase = noteR + 1.90 * staffSpacePx; // <-- tighter than 3.0*S
+    const rIn = noteR + p.rInStaff * staffSpacePx;
+    const rOutBase = noteR + p.rOutStaff * staffSpacePx;
 
     if (!(rOutBase > rIn)) {
       continue;
     }
 
-    const samples: FingeringPocketSample[] = [];
-
-    for (let i = 0; i < ANGLE_BINS; i++) {
-      const angleRad = (i / ANGLE_BINS) * TWO_PI;
+    for (let i = 0; i < p.angleBins; i++) {
+      const angleRad = (i / p.angleBins) * TWO_PI;
       const ux = Math.cos(angleRad);
       const uy = Math.sin(angleRad);
 
-      // Clamp ray to the box.
       const rBoxMax = maxRadiusWithinBox(a.x, a.y, ux, uy);
-
-      // Final per-ray outer bound.
       const rOut = Math.min(rOutBase, rBoxMax);
 
       if (!(rOut > rIn)) {
         continue;
       }
 
-      // We want the *closest* pocket, not the longest.
-      // So: scan outward and take the first safe segment whose length >= MIN_SEG_LEN.
       let segStart: number | null = null;
       let segEnd: number | null = null;
+
       let chosenStart: number | null = null;
       let chosenEnd: number | null = null;
 
       for (let r = rIn; r <= rOut; r += STEP) {
-        const p: Pt = { x: a.x + ux * r, y: a.y + uy * r };
+        const x = a.x + ux * r;
+        const y = a.y + uy * r;
 
-        // Must stay inside box (belt-and-suspenders).
-        const outsideBox =
-          p.x < box.x ||
-          p.x > box.x + box.w ||
-          p.y < box.y ||
-          p.y > box.y + box.h;
-
-        if (outsideBox) {
+        if (!pointInBox(x, y)) {
           break;
         }
 
-        const blocked = pointHitsAnyRect(p, inflatedAvoid);
+        const blocked = pointHitsAnyRect({ x, y }, inflatedAvoid);
 
         if (!blocked) {
           if (segStart === null) {
@@ -2917,10 +2944,14 @@ function computeFingeringPocketDebugForMeasure(args: {
             segEnd = r;
           }
 
-          if (segStart !== null && segEnd !== null && (segEnd - segStart) >= MIN_SEG_LEN) {
+          if (
+            segStart !== null &&
+            segEnd !== null &&
+            (segEnd - segStart) >= MIN_SEG_LEN
+          ) {
             chosenStart = segStart;
             chosenEnd = segEnd;
-            break; // FIRST sufficiently-large pocket wins (closest to note)
+            break;
           }
         } else {
           segStart = null;
@@ -2928,45 +2959,47 @@ function computeFingeringPocketDebugForMeasure(args: {
         }
       }
 
-      if (chosenStart !== null && chosenEnd !== null && chosenEnd > chosenStart) {
-        // Snap toward the “center” but slightly biased inward (feels more “attached”).
-        const alpha = 0.40; // 0.5 midpoint; <0.5 biases toward note
-        const rSnap = chosenStart + alpha * (chosenEnd - chosenStart);
-
-        const snapX = a.x + ux * rSnap;
-        const snapY = a.y + uy * rSnap;
-
-        const pSnap: Pt = { x: snapX, y: snapY };
-
-        // Ensure snap itself is valid.
-        const snapOutside =
-          pSnap.x < box.x ||
-          pSnap.x > box.x + box.w ||
-          pSnap.y < box.y ||
-          pSnap.y > box.y + box.h;
-
-        if (!snapOutside && !pointHitsAnyRect(pSnap, inflatedAvoid)) {
-          samples.push({
-            noteId: a.id,
-            noteX: a.x,
-            noteY: a.y,
-            angleRad,
-            snapX,
-            snapY,
-          });
-        }
+      if (chosenStart === null || chosenEnd === null || !(chosenEnd > chosenStart)) {
+        continue;
       }
+
+      const rSnap = chosenStart + p.snapAlpha * (chosenEnd - chosenStart);
+
+      const snapX = a.x + ux * rSnap;
+      const snapY = a.y + uy * rSnap;
+
+      if (!pointInBox(snapX, snapY)) {
+        continue;
+      }
+
+      if (pointHitsAnyRect({ x: snapX, y: snapY }, inflatedAvoid)) {
+        continue;
+      }
+
+      pockets.push({
+        noteId: a.id,
+        noteX: a.x,
+        noteY: a.y,
+
+        angleRad,
+
+        rStart: chosenStart,
+        rEnd: chosenEnd,
+
+        snapR: rSnap,
+        snapX,
+        snapY,
+        rSnap,
+      });
     }
-
-    out.push({
-      noteId: a.id,
-      noteX: a.x,
-      noteY: a.y,
-      samples,
-    });
   }
+  // 1) Limit how many pockets each note contributes (prevents halo speckle)
+  const limited = limitPocketsPerNote(pockets, 8);
 
-  return out;
+  // 2) Merge pockets that land almost on top of each other (visual cleanup)
+  const deduped = dedupePocketsSpatially(limited, staffSpacePx);
+
+  return deduped;
 }
 
 // NAV: function computeFingeringSnapForDrop [WIP]
@@ -2977,23 +3010,31 @@ function computeFingeringSnapForDrop(args: {
   measureBox: Rect;
   dropX: number;
   dropY: number;
+
+  // NEW (optional): if provided, we can snap away from staff lines here,
+  // so rendering never needs to "fix" fingering Y.
+  staffMetrics?: {
+    trebleMidY: number;
+    bassMidY: number;
+    staffSpacePx: number;
+  } | null;
 }): { snapX: number; snapY: number; noteId: string } | null {
-  const { anchors, avoidanceGlyphs, staffSpacePx, measureBox, dropX, dropY } = args;
+  const {
+    anchors,
+    avoidanceGlyphs,
+    staffSpacePx,
+    measureBox,
+    dropX,
+    dropY,
+    staffMetrics,
+  } = args;
 
   if (!(staffSpacePx > 0) || !Number.isFinite(staffSpacePx)) {
     return null;
   }
 
-  // Use the same inflate values as your pocket debug (keep these identical).
-  const padX = 0.65 * staffSpacePx;
-  const padY = 0.50 * staffSpacePx;
-
-  const inflatedAvoid: Rect[] = avoidanceGlyphs.map((g) =>
-    inflateRect({ x: g.x, y: g.y, w: g.w, h: g.h }, padX, padY)
-  );
-
-  // Clamp search to box inset
-  const BOX_INSET_PX = 2;
+  // Keep the "must be inside measure" gate, matching the pocket box inset.
+  const BOX_INSET_PX = FINGERING_POCKET_PARAMS.boxInsetPx;
   const box: Rect = {
     x: measureBox.x + BOX_INSET_PX,
     y: measureBox.y + BOX_INSET_PX,
@@ -3001,112 +3042,131 @@ function computeFingeringSnapForDrop(args: {
     h: Math.max(0, measureBox.h - BOX_INSET_PX * 2),
   };
 
-  const pointInBox = (x: number, y: number): boolean =>
-    x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h;
+  const pointInBox = (x: number, y: number): boolean => {
+    return (
+      x >= box.x &&
+      x <= box.x + box.w &&
+      y >= box.y &&
+      y <= box.y + box.h
+    );
+  };
 
   if (!pointInBox(dropX, dropY)) {
     return null;
   }
 
-  // Find nearest NOTE anchor to the drop point (first-pass; chord disambiguation later).
-  let bestNote: BaseGlyphAnchor | null = null;
+  // Inflate avoidance rects by the same approximate finger-number footprint.
+  // (Same params as pocket finding; keeps snap validation consistent.)
+  const padX = FINGERING_POCKET_PARAMS.padXStaff * staffSpacePx;
+  const padY = FINGERING_POCKET_PARAMS.padYStaff * staffSpacePx;
+
+  const inflatedAvoid: Rect[] = avoidanceGlyphs.map((g) =>
+    inflateRect({ x: g.x, y: g.y, w: g.w, h: g.h }, padX, padY),
+  );
+
+  const isSnapValid = (x: number, y: number): boolean => {
+    if (!pointInBox(x, y)) {
+      return false;
+    }
+    return !pointHitsAnyRect({ x, y }, inflatedAvoid);
+  };
+
+  // Single source of truth: use the exact same pocket generator as the green blobs.
+  const pockets = computeFingeringPocketsForMeasure({
+    anchors,
+    avoidanceGlyphs,
+    staffSpacePx,
+    measureBox,
+  });
+
+  if (pockets.length === 0) {
+    return null;
+  }
+
+  // Choose the closest pocket snap point to the drop location.
+  let best: FingeringPocket | null = null;
   let bestD2 = Number.POSITIVE_INFINITY;
 
-  for (const a of anchors) {
-    if (a.kind !== "note") { continue; }
-    const dx = dropX - a.x;
-    const dy = dropY - a.y;
+  for (const p of pockets) {
+    const dx = p.snapX - dropX;
+    const dy = p.snapY - dropY;
     const d2 = dx * dx + dy * dy;
+
     if (d2 < bestD2) {
       bestD2 = d2;
-      bestNote = a;
+      best = p;
     }
   }
 
-  if (!bestNote) {
+  if (!best) {
     return null;
   }
 
-  // Angle from note center to drop point
-  const ux0 = dropX - bestNote.x;
-  const uy0 = dropY - bestNote.y;
-  const len = Math.hypot(ux0, uy0);
+  const snapX = best.snapX;
+  let snapY = best.snapY;
 
-  if (!(len > 0)) {
-    return null;
-  }
+  // ------------------------------------------------------------
+  // Optional: nudge off staff lines into staff spaces.
+  // We ONLY accept this adjustment if the adjusted point remains valid
+  // (still inside box + not in inflated avoidance).
+  // ------------------------------------------------------------
+  if (staffMetrics) {
+    const s = staffMetrics.staffSpacePx;
 
-  const ux = ux0 / len;
-  const uy = uy0 / len;
+    if (s > 0 && Number.isFinite(s)) {
+      // Five-line staff: lines are at midY + k*s for k in [-2,-1,0,1,2]
+      const trebleLines = [
+        staffMetrics.trebleMidY - 2 * s,
+        staffMetrics.trebleMidY - 1 * s,
+        staffMetrics.trebleMidY,
+        staffMetrics.trebleMidY + 1 * s,
+        staffMetrics.trebleMidY + 2 * s,
+      ];
 
-  const noteR = 0.5 * Math.max(bestNote.w, bestNote.h);
+      const bassLines = [
+        staffMetrics.bassMidY - 2 * s,
+        staffMetrics.bassMidY - 1 * s,
+        staffMetrics.bassMidY,
+        staffMetrics.bassMidY + 1 * s,
+        staffMetrics.bassMidY + 2 * s,
+      ];
 
-  // Use the tuned radii (keep aligned with debug helper)
-  const rIn = noteR + 0.45 * staffSpacePx;
-  const rOutBase = noteR + 2.00 * staffSpacePx;
+      const allLines = [...trebleLines, ...bassLines];
 
-  // Step along ray
-  const STEP = Math.max(1, 0.15 * staffSpacePx);
-  const MIN_SEG_LEN = 0.40 * staffSpacePx;
+      // Find nearest staff line.
+      let nearest = allLines[0]!;
+      let bestAbs = Math.abs(snapY - nearest);
 
-  // Find first safe segment (closest to note) and snap inside it
-  let segStart: number | null = null;
-  let segEnd: number | null = null;
-
-  let chosenStart: number | null = null;
-  let chosenEnd: number | null = null;
-
-  for (let r = rIn; r <= rOutBase; r += STEP) {
-    const x = bestNote.x + ux * r;
-    const y = bestNote.y + uy * r;
-
-    if (!pointInBox(x, y)) {
-      break;
-    }
-
-    const blocked = pointHitsAnyRect({ x, y }, inflatedAvoid);
-
-    if (!blocked) {
-      if (segStart === null) {
-        segStart = r;
-        segEnd = r;
-      } else {
-        segEnd = r;
+      for (let i = 1; i < allLines.length; i++) {
+        const y = allLines[i]!;
+        const d = Math.abs(snapY - y);
+        if (d < bestAbs) {
+          bestAbs = d;
+          nearest = y;
+        }
       }
 
-      if (segStart !== null && segEnd !== null && (segEnd - segStart) >= MIN_SEG_LEN) {
-        chosenStart = segStart;
-        chosenEnd = segEnd;
-        break;
+      // If too close to a line, push into the nearest space.
+      const snapThresholdPx = 0.20 * s; // tune: 0.15–0.30
+      if (bestAbs < snapThresholdPx) {
+        const dir = snapY < nearest ? -1 : 1;
+        const candidateY = nearest + dir * 0.50 * s;
+
+        if (isSnapValid(snapX, candidateY)) {
+          snapY = candidateY;
+        }
       }
-    } else {
-      segStart = null;
-      segEnd = null;
     }
   }
 
-  if (chosenStart === null || chosenEnd === null || !(chosenEnd > chosenStart)) {
+  // Final sanity: the pocket snap itself should already be valid,
+  // but keep the guard so we never store an illegal snap.
+  if (!isSnapValid(snapX, snapY)) {
     return null;
   }
 
-  // Snap point biased inward
-  const alpha = 0.25;
-  const rSnap = chosenStart + alpha * (chosenEnd - chosenStart);
-
-  const snapX = bestNote.x + ux * rSnap;
-  const snapY = bestNote.y + uy * rSnap;
-
-  if (!pointInBox(snapX, snapY)) {
-    return null;
-  }
-
-  if (pointHitsAnyRect({ x: snapX, y: snapY }, inflatedAvoid)) {
-    return null;
-  }
-
-  return { snapX, snapY, noteId: bestNote.id };
+  return { snapX, snapY, noteId: best.noteId };
 }
-
 
 
 
@@ -3712,6 +3772,87 @@ export default function ScoreViewer({
       }
       // Fingering path
       {
+        // ------------------------------------------------------------
+        // 1) Pre-snap the DROP POINT to the nearest staff SPACE
+        //    (only if it is too close to a staff line).
+        //    This happens BEFORE pocket computation so feasibility + snap
+        //    are evaluated on the SAME point.
+        // ------------------------------------------------------------
+        const snapPointRelToStaffSpace = (
+          measureNumberIn: number,
+          pointIn: PointRel,
+        ): PointRel => {
+          const rects = pageMeasureRectsRef.current ?? [];
+          const box =
+            rects.find((r) => r.measureNumber === measureNumberIn) ?? null;
+
+          if (!box || !(box.w > 0) || !(box.h > 0)) {
+            return pointIn;
+          }
+
+          const metrics = computeStaffMetricsForMeasureFromStaffLines(
+            box.id,
+            staffLineGlyphsByMeasureRef.current,
+          );
+          if (!metrics || !(metrics.staffSpacePx > 0) || !Number.isFinite(metrics.staffSpacePx)) {
+            return pointIn;
+          }
+
+          const s = metrics.staffSpacePx;
+
+          const tipY = box.y + pointIn.yRel * box.h;
+
+          // Five-line staffs: lines are at midY + k*s for k in [-2,-1,0,1,2]
+          const trebleLines = [
+            metrics.trebleMidY - 2 * s,
+            metrics.trebleMidY - 1 * s,
+            metrics.trebleMidY,
+            metrics.trebleMidY + 1 * s,
+            metrics.trebleMidY + 2 * s,
+          ];
+
+          const bassLines = [
+            metrics.bassMidY - 2 * s,
+            metrics.bassMidY - 1 * s,
+            metrics.bassMidY,
+            metrics.bassMidY + 1 * s,
+            metrics.bassMidY + 2 * s,
+          ];
+
+          const allLines = [...trebleLines, ...bassLines];
+
+          // Find nearest staff line
+          let nearest = allLines[0]!;
+          let bestAbs = Math.abs(tipY - nearest);
+
+          for (let i = 1; i < allLines.length; i++) {
+            const y = allLines[i]!;
+            const d = Math.abs(tipY - y);
+            if (d < bestAbs) {
+              bestAbs = d;
+              nearest = y;
+            }
+          }
+
+          // If too close to a line, push into a staff SPACE (half a staff-space away).
+          // This is the same idea you had in drawAnnotationBoxes, but applied BEFORE saving.
+          const snapThresholdPx = 0.20 * s; // tune 0.15–0.30
+          if (bestAbs >= snapThresholdPx) {
+            return pointIn;
+          }
+
+          // Move into nearest space: pick side based on where the tap was.
+          const dir = tipY < nearest ? -1 : 1;
+          const snappedTipY = nearest + dir * 0.50 * s;
+
+          // Convert back to rel coords (and clamp).
+          const yRel =
+            box.h > 0 ? clampUnitInterval((snappedTipY - box.y) / box.h) : pointIn.yRel;
+
+          // Keep xRel unchanged (we are only doing staff-line readability here).
+          return { xRel: pointIn.xRel, yRel };
+        };
+
         const label = window.prompt("Fingering (e.g. 1–5)?", "");
         if (label === null) {
           return;
@@ -3722,7 +3863,9 @@ export default function ScoreViewer({
           return;
         }
 
-        const anchorRef = computeFingeringAnchorRefForPoint(measureNumber, point);
+        const pointSnapped = snapPointRelToStaffSpace(measureNumber, point);
+
+        const anchorRef = computeFingeringAnchorRefForPoint(measureNumber, pointSnapped);
         if (!anchorRef) {
           window.alert("No base glyph anchor found for fingering. Drop closer to a base glyph.");
           return;
@@ -3762,18 +3905,48 @@ export default function ScoreViewer({
     ],
   );
 
-  // NAV: __ const saveFingeringAt [WIP]
-  const saveFingeringAt = React.useCallback(
-    async (
-      measureNumber: number,
-      rel: PointRel,
-      finger: number
-    ): Promise<void> => {
-      const anchorRef = computeFingeringAnchorRefForPoint(measureNumber, rel);
-      if (!anchorRef) {
-        window.alert("No base glyph anchor found for fingering. Drop closer to a base glyph.");
+  // NAV: __ const saveFingeringAtSnap [WIP]
+  const saveFingeringAtSnap = React.useCallback(
+    async (args: {
+      measureId: string;     // box.id
+      measureNumber: number;
+      noteId: string;        // from pocket snap
+      snapX: number;
+      snapY: number;
+      finger: number;
+    }): Promise<void> => {
+      const { measureId, measureNumber, noteId, snapX, snapY, finger } = args;
+
+      const anchorsForMeasure = measureBaseGlyphAnchorsRef.current?.[measureId] ?? [];
+      if (anchorsForMeasure.length === 0) {
+        window.alert("No base glyph anchors found for this measure.");
         return;
       }
+
+      const note = anchorsForMeasure.find((a) => a.id === noteId) ?? null;
+      if (!note) {
+        window.alert("Could not resolve noteId for fingering anchor.");
+        return;
+      }
+
+      const h = note.h;
+      if (!(h > 0) || !Number.isFinite(h)) {
+        window.alert("Bad base glyph geometry for fingering anchor.");
+        return;
+      }
+
+      const dx = snapX - note.x;
+      const dy = snapY - note.y;
+
+      const z = osmdZoomRef.current ?? 1;
+      const baseBaseGlyphHNorm = z > 0 ? h / z : h;
+
+      const anchorRef: FingeringAnchorRef = {
+        baseGlyphId: note.id,
+        dxRel: dx / h,
+        dyRel: dy / h,
+        baseBaseGlyphHNorm,
+      };
 
       const newItem: AnnotationFingeringItem = {
         kind: "fingering",
@@ -3797,7 +3970,6 @@ export default function ScoreViewer({
       setSelectedPointRel(null);
     },
     [
-      computeFingeringAnchorRefForPoint,
       getAnnotationsForMeasure,
       saveAnnotationsForMeasure,
       setSelectedMeasureNumber,
@@ -3809,9 +3981,11 @@ export default function ScoreViewer({
   // Inline fingering picker (1–5)
   // ------------------------------------------------------------
   type FingerPickerState = {
+    measureId: string;          // box.id
     measureNumber: number;
+    noteId: string;             // from pocket snap
     rel: PointRel;
-    xPx: number; // page/viewer-local px (same coordinate space as measure boxes)
+    xPx: number;
     yPx: number;
   };
 
@@ -3832,13 +4006,22 @@ export default function ScoreViewer({
         return;
       }
 
-      // Fire-and-forget persistence; then dismiss
       void (async () => {
-        await saveFingeringAt(fp.measureNumber, fp.rel, n);
-        setFingerPicker(null);
+        try {
+          await saveFingeringAtSnap({
+            measureId: fp.measureId,
+            measureNumber: fp.measureNumber,
+            noteId: fp.noteId,
+            snapX: fp.xPx,
+            snapY: fp.yPx,
+            finger: n,
+          });
+        } finally {
+          setFingerPicker(null);
+        }
       })();
     },
-    [fingerPicker, saveFingeringAt],
+    [fingerPicker, saveFingeringAtSnap],
   );
 
   // Keyboard support while picker is open: 1–5 selects, Esc cancels
@@ -4148,6 +4331,7 @@ export default function ScoreViewer({
               measureBox: { x: dropBox.x, y: dropBox.y, w: dropBox.w, h: dropBox.h },
               dropX: tipX,
               dropY: tipY,
+              staffMetrics: metrics, // <-- ADD THIS LINE
             });
 
             if (snap) {
@@ -4171,7 +4355,9 @@ export default function ScoreViewer({
                 const measureNumber = dropBox.measureNumber;
                 if (measureNumber > 0 && Number.isFinite(measureNumber)) {
                   setFingerPicker({
+                    measureId,
                     measureNumber,
+                    noteId: snap.noteId,
                     rel,
                     xPx: snap.snapX,
                     yPx: snap.snapY,
@@ -7860,8 +8046,8 @@ export default function ScoreViewer({
 
         const anchors = measureBaseGlyphAnchorsRef.current?.[measureId] ?? [];
 
-        // Pure helper (defined above component)
-        const pocketDbg = computeFingeringPocketDebugForMeasure({
+        // Compute deduped pockets (single source of truth)
+        const pockets = computeFingeringPocketsForMeasure({
           anchors,
           avoidanceGlyphs: avoidance,
           staffSpacePx: metrics.staffSpacePx,
@@ -7873,25 +8059,23 @@ export default function ScoreViewer({
         const blobD = Math.max(6, Math.round(metrics.staffSpacePx * 0.55)); // diameter px
         const blobR = blobD / 2;
 
-        return pocketDbg.flatMap((note) =>
-          note.samples.map((s, i) => (
-            <div
-              key={`fp:${measureId}:${note.noteId}:${i}`}
-              style={{
-                position: "absolute",
-                left: s.snapX - blobR,
-                top: s.snapY - blobR,
-                width: blobD,
-                height: blobD,
-                borderRadius: 9999,
-                background: "rgba(0, 180, 0, 0.12)",   // translucent green
-                border: "1px solid rgba(0, 140, 0, 0.35)",
-                boxShadow: "inset 0 0 4px rgba(0,0,0,0.10)",
-                pointerEvents: "none",
-              }}
-            />
-          ))
-        );
+        return pockets.map((p, i) => (
+          <div
+            key={`fp:${measureId}:${p.noteId}:${i}`}
+            style={{
+              position: "absolute",
+              left: p.snapX - blobR,
+              top: p.snapY - blobR,
+              width: blobD,
+              height: blobD,
+              borderRadius: 9999,
+              background: "rgba(0, 180, 0, 0.07)",
+              border: "1px solid rgba(0, 140, 0, 0.22)",
+              boxShadow: "inset 0 0 3px rgba(0,0,0,0.08)",
+              pointerEvents: "none",
+            }}
+          />
+        ));
       })
       : [];
 
