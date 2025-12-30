@@ -2969,6 +2969,144 @@ function computeFingeringPocketDebugForMeasure(args: {
   return out;
 }
 
+// NAV: function computeFingeringSnapForDrop [WIP]
+function computeFingeringSnapForDrop(args: {
+  anchors: readonly BaseGlyphAnchor[];
+  avoidanceGlyphs: readonly GlyphRect[];
+  staffSpacePx: number;
+  measureBox: Rect;
+  dropX: number;
+  dropY: number;
+}): { snapX: number; snapY: number; noteId: string } | null {
+  const { anchors, avoidanceGlyphs, staffSpacePx, measureBox, dropX, dropY } = args;
+
+  if (!(staffSpacePx > 0) || !Number.isFinite(staffSpacePx)) {
+    return null;
+  }
+
+  // Use the same inflate values as your pocket debug (keep these identical).
+  const padX = 0.65 * staffSpacePx;
+  const padY = 0.50 * staffSpacePx;
+
+  const inflatedAvoid: Rect[] = avoidanceGlyphs.map((g) =>
+    inflateRect({ x: g.x, y: g.y, w: g.w, h: g.h }, padX, padY)
+  );
+
+  // Clamp search to box inset
+  const BOX_INSET_PX = 2;
+  const box: Rect = {
+    x: measureBox.x + BOX_INSET_PX,
+    y: measureBox.y + BOX_INSET_PX,
+    w: Math.max(0, measureBox.w - BOX_INSET_PX * 2),
+    h: Math.max(0, measureBox.h - BOX_INSET_PX * 2),
+  };
+
+  const pointInBox = (x: number, y: number): boolean =>
+    x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h;
+
+  if (!pointInBox(dropX, dropY)) {
+    return null;
+  }
+
+  // Find nearest NOTE anchor to the drop point (first-pass; chord disambiguation later).
+  let bestNote: BaseGlyphAnchor | null = null;
+  let bestD2 = Number.POSITIVE_INFINITY;
+
+  for (const a of anchors) {
+    if (a.kind !== "note") { continue; }
+    const dx = dropX - a.x;
+    const dy = dropY - a.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      bestNote = a;
+    }
+  }
+
+  if (!bestNote) {
+    return null;
+  }
+
+  // Angle from note center to drop point
+  const ux0 = dropX - bestNote.x;
+  const uy0 = dropY - bestNote.y;
+  const len = Math.hypot(ux0, uy0);
+
+  if (!(len > 0)) {
+    return null;
+  }
+
+  const ux = ux0 / len;
+  const uy = uy0 / len;
+
+  const noteR = 0.5 * Math.max(bestNote.w, bestNote.h);
+
+  // Use the tuned radii (keep aligned with debug helper)
+  const rIn = noteR + 0.45 * staffSpacePx;
+  const rOutBase = noteR + 2.00 * staffSpacePx;
+
+  // Step along ray
+  const STEP = Math.max(1, 0.15 * staffSpacePx);
+  const MIN_SEG_LEN = 0.40 * staffSpacePx;
+
+  // Find first safe segment (closest to note) and snap inside it
+  let segStart: number | null = null;
+  let segEnd: number | null = null;
+
+  let chosenStart: number | null = null;
+  let chosenEnd: number | null = null;
+
+  for (let r = rIn; r <= rOutBase; r += STEP) {
+    const x = bestNote.x + ux * r;
+    const y = bestNote.y + uy * r;
+
+    if (!pointInBox(x, y)) {
+      break;
+    }
+
+    const blocked = pointHitsAnyRect({ x, y }, inflatedAvoid);
+
+    if (!blocked) {
+      if (segStart === null) {
+        segStart = r;
+        segEnd = r;
+      } else {
+        segEnd = r;
+      }
+
+      if (segStart !== null && segEnd !== null && (segEnd - segStart) >= MIN_SEG_LEN) {
+        chosenStart = segStart;
+        chosenEnd = segEnd;
+        break;
+      }
+    } else {
+      segStart = null;
+      segEnd = null;
+    }
+  }
+
+  if (chosenStart === null || chosenEnd === null || !(chosenEnd > chosenStart)) {
+    return null;
+  }
+
+  // Snap point biased inward
+  const alpha = 0.25;
+  const rSnap = chosenStart + alpha * (chosenEnd - chosenStart);
+
+  const snapX = bestNote.x + ux * rSnap;
+  const snapY = bestNote.y + uy * rSnap;
+
+  if (!pointInBox(snapX, snapY)) {
+    return null;
+  }
+
+  if (pointHitsAnyRect({ x: snapX, y: snapY }, inflatedAvoid)) {
+    return null;
+  }
+
+  return { snapX, snapY, noteId: bestNote.id };
+}
+
 
 
 
@@ -3087,6 +3225,76 @@ export default function ScoreViewer({
     setSelectedPointRel,
   ]);
 
+  // NAV: __ function eventCameFromFingerPicker [WIP]
+  const eventCameFromFingerPicker = (ev: React.SyntheticEvent): boolean => {
+    const t = ev.target as HTMLElement | null;
+    if (!t) {
+      return false;
+    }
+    return Boolean(t.closest?.('[data-finger-picker-root="1"]'));
+  };
+
+  // ------------------------------------------------------------
+  // Fingering anchor helper (component-scope, reusable)
+  // ------------------------------------------------------------
+  // NAV: __ function computeFingeringAnchorRefForPoint [WIP]
+  const computeFingeringAnchorRefForPoint = React.useCallback(
+    (measureNumberIn: number, pointIn: PointRel): FingeringAnchorRef | null => {
+      const rects = pageMeasureRectsRef.current ?? [];
+      const box = rects.find((r) => r.measureNumber === measureNumberIn) ?? null;
+
+      if (!box) {
+        return null;
+      }
+
+      const tipX = box.x + pointIn.xRel * box.w;
+      const tipY = box.y + pointIn.yRel * box.h;
+
+      const anchorsForMeasure = measureBaseGlyphAnchorsRef.current?.[box.id] ?? [];
+      if (anchorsForMeasure.length === 0) {
+        return null;
+      }
+
+      // Nearest base glyph in this measure
+      let best = anchorsForMeasure[0] as BaseGlyphAnchor;
+      let bestDistSq =
+        (tipX - best.x) * (tipX - best.x) +
+        (tipY - best.y) * (tipY - best.y);
+
+      for (let i = 1; i < anchorsForMeasure.length; i++) {
+        const cand = anchorsForMeasure[i]!;
+        const dx = tipX - cand.x;
+        const dy = tipY - cand.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < bestDistSq) {
+          best = cand;
+          bestDistSq = distSq;
+        }
+      }
+
+      const dx = tipX - best.x;
+      const dy = tipY - best.y;
+      const h = best.h;
+
+      if (!(h > 0) || !Number.isFinite(h)) {
+        return null;
+      }
+
+      const z = osmdZoomRef.current ?? 1;
+      // Store base glyph height normalized to OSMD zoom=1 so initial font sizing is consistent
+      const baseBaseGlyphHNorm = z > 0 ? h / z : h;
+
+      return {
+        baseGlyphId: best.id,
+        dxRel: dx / h,
+        dyRel: dy / h,
+        baseBaseGlyphHNorm,
+      };
+    },
+    [],
+  );
+
+
   // NAV: __ function promptAndSaveAnnotation [WIP]
   const promptAndSaveAnnotation = React.useCallback(
     async (measureNumber: number, point: PointRel): Promise<void> => {
@@ -3094,7 +3302,7 @@ export default function ScoreViewer({
         return;
       }
 
-      // NAV: ____ const computePedalAnchorRef
+      // NAV: ____ const computePedalAnchorRef [WIP]
       const computePedalAnchorRef = (
         measureNumberIn: number,
         pointIn: PointRel
@@ -3148,66 +3356,6 @@ export default function ScoreViewer({
           baseGlyphId: best.id,
           dxRel: dx / h,
           xRel,
-        };
-      };
-
-      // NAV: ____ const computeFingeringAnchorRef
-      const computeFingeringAnchorRef = (
-        measureNumberIn: number,
-        pointIn: PointRel
-      ): FingeringAnchorRef | null => {
-        const rects = pageMeasureRectsRef.current ?? [];
-        const box =
-          rects.find((r) => r.measureNumber === measureNumberIn) ?? null;
-
-        if (!box) {
-          return null;
-        }
-
-        const tipX = box.x + pointIn.xRel * box.w;
-        const tipY = box.y + pointIn.yRel * box.h;
-
-        const anchorsForMeasure =
-          measureBaseGlyphAnchorsRef.current?.[box.id] ?? [];
-
-        if (anchorsForMeasure.length === 0) {
-          return null;
-        }
-
-        // Nearest base glyph in this measure
-        let best = anchorsForMeasure[0] as BaseGlyphAnchor;
-        let bestDistSq =
-          (tipX - best.x) * (tipX - best.x) +
-          (tipY - best.y) * (tipY - best.y);
-
-        for (let i = 1; i < anchorsForMeasure.length; i++) {
-          const cand = anchorsForMeasure[i]!;
-          const dx = tipX - cand.x;
-          const dy = tipY - cand.y;
-          const distSq = dx * dx + dy * dy;
-          if (distSq < bestDistSq) {
-            best = cand;
-            bestDistSq = distSq;
-          }
-        }
-
-        const dx = tipX - best.x;
-        const dy = tipY - best.y;
-        const h = best.h;
-
-        if (!(h > 0) || !Number.isFinite(h)) {
-          return null;
-        }
-
-        const z = osmdZoomRef.current ?? 1;
-        // Store base glyph height normalized to OSMD zoom=1 so initial font sizing is consistent
-        const baseBaseGlyphHNorm = z > 0 ? h / z : h;
-
-        return {
-          baseGlyphId: best.id,
-          dxRel: dx / h,
-          dyRel: dy / h,
-          baseBaseGlyphHNorm,
         };
       };
 
@@ -3574,7 +3722,7 @@ export default function ScoreViewer({
           return;
         }
 
-        const anchorRef = computeFingeringAnchorRef(measureNumber, point);
+        const anchorRef = computeFingeringAnchorRefForPoint(measureNumber, point);
         if (!anchorRef) {
           window.alert("No base glyph anchor found for fingering. Drop closer to a base glyph.");
           return;
@@ -3610,8 +3758,117 @@ export default function ScoreViewer({
       setPendingPedalStart,
       setSelectedMeasureNumber,
       setSelectedPointRel,
+      computeFingeringAnchorRefForPoint,
     ],
   );
+
+  // NAV: __ const saveFingeringAt [WIP]
+  const saveFingeringAt = React.useCallback(
+    async (
+      measureNumber: number,
+      rel: PointRel,
+      finger: number
+    ): Promise<void> => {
+      const anchorRef = computeFingeringAnchorRefForPoint(measureNumber, rel);
+      if (!anchorRef) {
+        window.alert("No base glyph anchor found for fingering. Drop closer to a base glyph.");
+        return;
+      }
+
+      const newItem: AnnotationFingeringItem = {
+        kind: "fingering",
+        text: String(finger),
+        anchor: anchorRef,
+      };
+
+      const existing = getAnnotationsForMeasure(measureNumber);
+      const existingItems: AnnotationItem[] = Array.isArray(existing?.items)
+        ? existing!.items.slice()
+        : [];
+
+      const nextPayload: MeasureAnnotation = {
+        ...(existing ?? { items: [] as AnnotationItem[] }),
+        items: [...existingItems, newItem],
+      };
+
+      await saveAnnotationsForMeasure(measureNumber, nextPayload);
+
+      setSelectedMeasureNumber(null);
+      setSelectedPointRel(null);
+    },
+    [
+      computeFingeringAnchorRefForPoint,
+      getAnnotationsForMeasure,
+      saveAnnotationsForMeasure,
+      setSelectedMeasureNumber,
+      setSelectedPointRel,
+    ],
+  );
+
+  // ------------------------------------------------------------
+  // Inline fingering picker (1–5)
+  // ------------------------------------------------------------
+  type FingerPickerState = {
+    measureNumber: number;
+    rel: PointRel;
+    xPx: number; // page/viewer-local px (same coordinate space as measure boxes)
+    yPx: number;
+  };
+
+  const [fingerPicker, setFingerPicker] = React.useState<FingerPickerState | null>(
+    null
+  );
+
+  const fingerPickerRef = React.useRef<FingerPickerState | null>(null);
+
+  React.useEffect(() => {
+    fingerPickerRef.current = fingerPicker;
+  }, [fingerPicker]);
+
+  const commitFingerPick = React.useCallback(
+    (n: number): void => {
+      const fp = fingerPicker;
+      if (!fp) {
+        return;
+      }
+
+      // Fire-and-forget persistence; then dismiss
+      void (async () => {
+        await saveFingeringAt(fp.measureNumber, fp.rel, n);
+        setFingerPicker(null);
+      })();
+    },
+    [fingerPicker, saveFingeringAt],
+  );
+
+  // Keyboard support while picker is open: 1–5 selects, Esc cancels
+  React.useEffect(() => {
+    if (!fingerPicker) {
+      return;
+    }
+
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setFingerPicker(null);
+        return;
+      }
+
+      // Do NOT allow keyboard selection of finger numbers (mouse/touch only).
+      // Swallow digits so nothing else reacts while the picker is up.
+      if (e.key >= "0" && e.key <= "9") {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [fingerPicker, commitFingerPick]);
 
 
   // NAV: ------------------------- event handlers
@@ -3632,9 +3889,30 @@ export default function ScoreViewer({
     setMeasurePreviewRect(null);
   }, []);
 
+
+  // For placement/avoidance, we want:
+  //   all glyphs that intersect the measure
+  //   EXCEPT staff lines (vf-measure).
+  // NAV: __ const getAvoidanceGlyphsForMeasure [WIP]
+  const getAvoidanceGlyphsForMeasure = useCallback(
+    (measureId: string): GlyphRect[] => {
+      const all: GlyphRect[] = measureAllGlyphRectsRef.current[measureId] ?? [];
+      if (!all.length) {
+        return [];
+      }
+      return all.filter((g: GlyphRect) => !isStaffLineGlyph(g));
+    },
+    [] // no dependencies; refs never change identity
+  );
+
   // NAV: __ const handleViewerPointerDownCapture [WIP]
   const handleViewerPointerDownCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
+
+      if (fingerPickerRef.current !== null && eventCameFromFingerPicker(ev)) {
+        return;
+      }
+
       const target = ev.target as HTMLElement | null;
       const isHandle =
         !!target && !!target.closest("[data-annotation-handle='1']");
@@ -3760,6 +4038,11 @@ export default function ScoreViewer({
   // NAV: __ const handleViewerPointerUpCapture [WIP]
   const handleViewerPointerUpCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
+
+      if (fingerPickerRef.current !== null && eventCameFromFingerPicker(ev)) {
+        return;
+      }
+
       if (!isEditModeRef.current) {
         return;
       }
@@ -3842,6 +4125,68 @@ export default function ScoreViewer({
             AVOID_GLYPH_MARGIN_PX,
           );
 
+        // ------------------------------------------------------------
+        // 1) Fingering intent (try FIRST): snap to nearest valid pocket and prompt 1–5.
+        // ------------------------------------------------------------
+        {
+          const measureId = dropBoxWithId.id;
+          const anchors = measureBaseGlyphAnchorsRef.current?.[measureId] ?? [];
+
+          // If we have staff lines available, we can compute staffSpacePx.
+          const staffLinesByMeasure = staffLineGlyphsByMeasureRef.current;
+
+          const metrics = computeStaffMetricsForMeasureFromStaffLines(
+            measureId,
+            staffLinesByMeasure,
+          );
+
+          if (metrics && anchors.length > 0) {
+            const snap = computeFingeringSnapForDrop({
+              anchors,
+              avoidanceGlyphs: glyphRectsForMeasure, // same avoidance set
+              staffSpacePx: metrics.staffSpacePx,
+              measureBox: { x: dropBox.x, y: dropBox.y, w: dropBox.w, h: dropBox.h },
+              dropX: tipX,
+              dropY: tipY,
+            });
+
+            if (snap) {
+              // Gate: only treat as fingering if the user actually dropped near the pocket.
+              // If snap is far away, we assume it was a text/pedal drop and let it fall through.
+              const dx = snap.snapX - tipX;
+              const dy = snap.snapY - tipY;
+              const d = Math.sqrt(dx * dx + dy * dy);
+
+              // Threshold: roughly 0.6 staff spaces feels “I meant that pocket”
+              const staffSpacePx = metrics.staffSpacePx;
+              const MAX_SNAP_DISTANCE_PX = Math.max(8, staffSpacePx * 0.60);
+
+              if (d <= MAX_SNAP_DISTANCE_PX) {
+                // Convert snapped page coords → rel
+                const rel: PointRel = {
+                  xRel: clampUnitInterval((snap.snapX - dropBox.x) / dropBox.w),
+                  yRel: clampUnitInterval((snap.snapY - dropBox.y) / dropBox.h),
+                };
+
+                const measureNumber = dropBox.measureNumber;
+                if (measureNumber > 0 && Number.isFinite(measureNumber)) {
+                  setFingerPicker({
+                    measureNumber,
+                    rel,
+                    xPx: snap.snapX,
+                    yPx: snap.snapY,
+                  });
+                }
+
+                // Fingering consumes the drop.
+                return;
+              }
+
+              // Too far → not a fingering-intent drop; fall through to text/pedal path.
+            }
+          }
+        }
+
         if (isBlocked) {
           return;
         }
@@ -3879,8 +4224,8 @@ export default function ScoreViewer({
 
       openMeasurePreview(rect);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
+      getAvoidanceGlyphsForMeasure,
       openMeasurePreview,
       promptAndSaveAnnotation,
     ],
@@ -3889,7 +4234,12 @@ export default function ScoreViewer({
   // NAV: __ const handleViewerClickCapture [WIP]
   const handleViewerClickCapture = useCallback(
     (ev: React.MouseEvent<HTMLDivElement>): void => {
+
       if (!isEditModeRef.current) {
+        return;
+      }
+
+      if (fingerPickerRef.current !== null && eventCameFromFingerPicker(ev)) {
         return;
       }
 
@@ -3938,21 +4288,6 @@ export default function ScoreViewer({
     const tag = g.glyphTag?.toLowerCase() ?? "";
     return tag.includes("vf-measure");
   };
-
-  // For placement/avoidance, we want:
-  //   all glyphs that intersect the measure
-  //   EXCEPT staff lines (vf-measure).
-  // NAV: __ const getAvoidanceGlyphsForMeasure [WIP]
-  const getAvoidanceGlyphsForMeasure = useCallback(
-    (measureId: string): GlyphRect[] => {
-      const all: GlyphRect[] = measureAllGlyphRectsRef.current[measureId] ?? [];
-      if (!all.length) {
-        return [];
-      }
-      return all.filter((g: GlyphRect) => !isStaffLineGlyph(g));
-    },
-    [] // no dependencies; refs never change identity
-  );
 
   const suppressPageTurnRef = useRef(false);
 
@@ -7422,6 +7757,11 @@ export default function ScoreViewer({
   // NAV: __ const handleViewerPointerMoveCapture [WIP]
   const handleViewerPointerMoveCapture = useCallback(
     (ev: React.PointerEvent<HTMLDivElement>): void => {
+
+      if (fingerPickerRef.current !== null && eventCameFromFingerPicker(ev)) {
+        return;
+      }
+
       const dragId = dragPointerIdRef.current;
       if (dragId === null || ev.pointerId !== dragId) {
         return;
@@ -7528,8 +7868,10 @@ export default function ScoreViewer({
           measureBox: { x: box.x, y: box.y, w: box.w, h: box.h },
         });
 
-        // Render as tiny dots at each "snap point" sample
-        const DOT = 3; // px radius-ish (diameter below)
+        // Render as translucent green "blobs" (areas), not point-dots.
+        // Size scales with staff space so it stays stable across zoom/reflow.
+        const blobD = Math.max(6, Math.round(metrics.staffSpacePx * 0.55)); // diameter px
+        const blobR = blobD / 2;
 
         return pocketDbg.flatMap((note) =>
           note.samples.map((s, i) => (
@@ -7537,13 +7879,14 @@ export default function ScoreViewer({
               key={`fp:${measureId}:${note.noteId}:${i}`}
               style={{
                 position: "absolute",
-                left: s.snapX - DOT / 2,
-                top: s.snapY - DOT / 2,
-                width: DOT,
-                height: DOT,
+                left: s.snapX - blobR,
+                top: s.snapY - blobR,
+                width: blobD,
+                height: blobD,
                 borderRadius: 9999,
-                background: "rgba(0, 120, 255, 0.85)",
-                boxShadow: "0 0 2px rgba(0,0,0,0.25)",
+                background: "rgba(0, 180, 0, 0.12)",   // translucent green
+                border: "1px solid rgba(0, 140, 0, 0.35)",
+                boxShadow: "inset 0 0 4px rgba(0,0,0,0.10)",
                 pointerEvents: "none",
               }}
             />
@@ -7572,6 +7915,90 @@ export default function ScoreViewer({
         touchAction: "none",
       }}
     >
+      {/* Inline fingering picker (1–5) */}
+      {fingerPicker && (
+        <div
+          data-finger-picker-root="1"
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 520,
+            pointerEvents: "auto",
+          }}
+          onPointerDownCapture={(e) => {
+            // Let events reach the picker buttons.
+            // Do NOT stopPropagation here, because it can prevent button handlers.
+            e.preventDefault();
+          }}
+          onClickCapture={(e) => {
+            // Background click dismisses.
+            e.preventDefault();
+            e.stopPropagation();
+            setFingerPicker(null);
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              left: fingerPicker.xPx,
+              top: fingerPicker.yPx,
+              transform: "translate(-50%, -130%)",
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center",
+              minHeight: 44,
+              gap: 6,
+              padding: "6px 8px",
+              color: "#111",
+              borderRadius: 12,
+              background: "rgba(255,255,255,0.95)",
+              border: "1px solid rgba(0,0,0,0.25)",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
+              pointerEvents: "auto",
+              touchAction: "none",
+              userSelect: "none",
+              WebkitUserSelect: "none",
+              ["msUserSelect"]: "none",
+            }}
+            onPointerDownCapture={(e) => {
+              // Inside picker: never dismiss, never leak events.
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onClickCapture={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+          >
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  commitFingerPick(n);
+                }}
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  border: "1px solid rgba(0,0,0,0.25)",
+                  background: "#fff",
+                  color: "#111",
+                  fontSize: 16,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  touchAction: "none",
+                }}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {showGlyphDebug && (
         <div
           style={{
