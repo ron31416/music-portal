@@ -8213,7 +8213,7 @@ export default function ScoreViewer({
       )}
 
       {/* NOTE HALOS (edit mode) */}
-      {!isEditMode && isAuthenticated && (
+      {isEditMode && isAuthenticated && (
         <div
           key={haloEpoch}
           style={{
